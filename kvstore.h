@@ -39,7 +39,7 @@ typedef int (*msg_handler)(char *msg, int length, char *response);
 extern int reactor_start(unsigned short port, msg_handler handler);
 extern int proactor_start(unsigned short port, msg_handler handler);
 extern int ntyco_start(unsigned short port, msg_handler handler);
-
+extern int g_shutdown_flag;
 
 
 

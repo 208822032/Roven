@@ -1,8 +1,7 @@
 [ARRAY]
 A:a
 B:b
-C:c
-Z:z
+D:d
 [RBTREE]
 A:a
 B:b
@@ -11,5 +10,4 @@ A:a
 B:b
 [SKIPTABLE]
 A:a
-B:b
 D:d

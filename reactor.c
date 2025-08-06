@@ -257,6 +257,14 @@ int r_init_server(unsigned short port) {
 
 }
 
+void reactor_wait(void) {
+    // 简单实现：等待1秒或直到关闭标志被设置
+    struct timespec req = {0, 10000000}; // 10ms
+    while (!g_shutdown_flag) {
+        nanosleep(&req, NULL);
+    }
+}
+
 int reactor_start(unsigned short port, msg_handler handler) {
 
 	//unsigned short port = 2000;
@@ -279,10 +287,12 @@ int reactor_start(unsigned short port, msg_handler handler) {
 	gettimeofday(&begin, NULL);
 
 	//修改未检查g_shutdown_flag
-	while (1) { // mainloop
+	while (!g_shutdown_flag) { // mainloop
 
 		struct epoll_event events[1024] = {0};
 		int nready = epoll_wait(epfd, events, 1024, -1);
+
+		if(g_shutdown_flag) break;
 
 		int i = 0;
 		for (i = 0;i < nready;i ++) {
@@ -308,6 +318,10 @@ int reactor_start(unsigned short port, msg_handler handler) {
 		}
 
 	}
+
+	for (int i = 0; i < CONNECTION_SIZE; i++) {
+        if (conn_list[i].fd > 0) close(conn_list[i].fd);
+    }
 	
 	close(epfd);
 	return 0;

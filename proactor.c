@@ -7,12 +7,22 @@
 #include <string.h>
 #include <unistd.h>
 #include "kvstore.h"
+#include <fcntl.h> 
 
 
 #define EVENT_ACCEPT   	0
 #define EVENT_READ		1
 #define EVENT_WRITE		2
 
+extern int g_shutdown_flag; // 声明全局关闭标志
+
+void proactor_wait(void) {
+    // 简单实现：等待1秒或直到关闭标志被设置
+    struct timespec req = {0, 10000000}; // 10ms
+    while (!g_shutdown_flag) {
+        nanosleep(&req, NULL);
+    }
+}
 
 
 extern int kvs_protocol(char *msg, int length, char *response);
@@ -38,6 +48,10 @@ int p_init_server(unsigned short port) {
 		perror("bind");		
 		return -1;	
 	}	
+
+	// 设置监听socket为非阻塞
+	int flags = fcntl(sockfd, F_GETFL, 0);
+	fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
 
 	listen(sockfd, 10);
 	
@@ -132,64 +146,74 @@ int proactor_start(unsigned short port, msg_handler handler) {
 	char response[BUFFER_LENGTH] = {0};
 
 
-	while (1) {
+	int nready;
+	while (!g_shutdown_flag) {
 
 		io_uring_submit(&ring);
 
-
+#if 0
 		struct io_uring_cqe *cqe;
 		io_uring_wait_cqe(&ring, &cqe);
+#else
+		struct io_uring_cqe *cqe;
+        struct __kernel_timespec ts = { .tv_sec = 0, .tv_nsec = 100000000 }; // 100ms超时
+        int ret = io_uring_wait_cqe_timeout(&ring, &cqe, &ts);
+#endif
 
-		struct io_uring_cqe *cqes[128];
-		int nready = io_uring_peek_batch_cqe(&ring, cqes, 128);  // epoll_wait
+		if (g_shutdown_flag) break;
+			struct io_uring_cqe *cqes[128];
+			nready = io_uring_peek_batch_cqe(&ring, cqes, 128);  // epoll_wait
 
-		int i = 0;
-		for (i = 0;i < nready;i ++) {
+			int i = 0;
+			for (i = 0;i < nready;i ++) {
 
-			struct io_uring_cqe *entries = cqes[i];
-			struct conn_info result;
-			memcpy(&result, &entries->user_data, sizeof(struct conn_info));
+				struct io_uring_cqe *entries = cqes[i];
+				struct conn_info result;
+				memcpy(&result, &entries->user_data, sizeof(struct conn_info));
 
-			if (result.event == EVENT_ACCEPT) {
+				if (result.event == EVENT_ACCEPT) {
 
-				set_event_accept(&ring, sockfd, (struct sockaddr*)&clientaddr, &len, 0);
-				//printf("set_event_accept\n"); //
+					set_event_accept(&ring, sockfd, (struct sockaddr*)&clientaddr, &len, 0);
+					//printf("set_event_accept\n"); //
 
-				int connfd = entries->res;
+					int connfd = entries->res;
 
-				set_event_recv(&ring, connfd, buffer, BUFFER_LENGTH, 0);
+					set_event_recv(&ring, connfd, buffer, BUFFER_LENGTH, 0);
 
-				
-			} else if (result.event == EVENT_READ) {  //
-
-				int ret = entries->res;
-
-				if (ret == 0) {
-					close(result.fd);
-				} else if (ret > 0) {
 					
-					//int kvs_protocol(char *msg, int length, char *response);
-					ret = kvs_handler(buffer, ret, response);
+				} else if (result.event == EVENT_READ) {  //
+
+					int ret = entries->res;
+
+					if (ret == 0) {
+						close(result.fd);
+					} else if (ret > 0) {
+						
+						//int kvs_protocol(char *msg, int length, char *response);
+						ret = kvs_handler(buffer, ret, response);
+						
+						set_event_send(&ring, result.fd, response, ret, 0);
+					}
+				}  else if (result.event == EVENT_WRITE) {
+	//
+
+					int ret = entries->res;
+					//printf("set_event_send ret: %d, %s\n", ret, buffer);
+
+					set_event_recv(&ring, result.fd, buffer, BUFFER_LENGTH, 0);
 					
-					set_event_send(&ring, result.fd, response, ret, 0);
 				}
-			}  else if (result.event == EVENT_WRITE) {
-  //
-
-				int ret = entries->res;
-				//printf("set_event_send ret: %d, %s\n", ret, buffer);
-
-				set_event_recv(&ring, result.fd, buffer, BUFFER_LENGTH, 0);
 				
 			}
-			
-		}
+		
 
 		io_uring_cq_advance(&ring, nready);
 	}
 
-	io_uring_queue_exit(&ring);
+
 	close(sockfd);
+	printf("Proactor network exited\n");
+	return 0;
 	return 0;
 
 }

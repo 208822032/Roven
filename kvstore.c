@@ -623,33 +623,21 @@ int main(int argc, char *argv[]) {
     kvs_load_all("kvstore.dat");
 	
 #if (NETWORK_SELECT == NETWORK_REACTOR)
-	reactor_start(port, kvs_protocol);  //
-#elif (NETWORK_SELECT == NETWORK_PROACTOR)
-	ntyco_start(port, kvs_protocol);
+	reactor_start(port, kvs_protocol);  // 逻辑正确
 #elif (NETWORK_SELECT == NETWORK_NTYCO)
-	proactor_start(port, kvs_protocol);
+	ntyco_start(port, kvs_protocol); // 无法正确QUIT
+#elif (NETWORK_SELECT == NETWORK_PROACTOR)
+	proactor_start(port, kvs_protocol); //貌似可以正确退出 还需要进一步改进
 #endif
 
-	// 主循环，检查关闭标志
-    while (!g_shutdown_flag) {
-        // 根据不同网络模型实现等待
-        #if (NETWORK_SELECT == NETWORK_REACTOR)
-            // 简单实现：等待1秒
-            sleep(1);
-        #elif (NETWORK_SELECT == NETWORK_PROACTOR)
-            sleep(1);
-        #elif (NETWORK_SELECT == NETWORK_NTYCO)
-            sleep(1);
-        #endif
+	printf("退出网络\n");
         
-        // 检查关闭标志
-        if (g_shutdown_flag) {
-            printf("Shutdown requested, saving data...\n");
-            kvs_save_all("kvstore.dat");
-            break;
-        }
-    }
-
+    // 保存数据并退出
+    printf("Shutdown requested, saving data...\n");
+    kvs_save_all("kvstore.dat");
+    dest_kvengine();
+    return 0;    
+    
 }
 
 
