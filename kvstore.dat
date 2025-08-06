@@ -1,0 +1,15 @@
+[ARRAY]
+A:a
+B:b
+C:c
+Z:z
+[RBTREE]
+A:a
+B:b
+[HASH]
+A:a
+B:b
+[SKIPTABLE]
+A:a
+B:b
+D:d

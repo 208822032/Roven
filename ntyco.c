@@ -1,7 +1,7 @@
 
 
 
-
+#include "kvstore.h"
 #include "nty_coroutine.h"
 
 #include <arpa/inet.h>
@@ -60,12 +60,13 @@ void server(void *arg) {
 	while (1) {
 		socklen_t len = sizeof(struct sockaddr_in);
 		int cli_fd = accept(fd, (struct sockaddr*)&remote, &len);
-		
 
 		nty_coroutine *read_co;
 		nty_coroutine_create(&read_co, server_reader, &cli_fd);
 
 	}
+
+	close(fd);
 	
 }
 

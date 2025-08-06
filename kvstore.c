@@ -4,6 +4,7 @@
 
 #include "kvstore.h"
 
+int g_shutdown_flag = 0;
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -21,6 +22,7 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
+
 void *kvs_malloc(size_t size) {
 	return malloc(size);
 }
@@ -35,6 +37,7 @@ const char *command[] = {
 	"RSET", "RGET", "RDEL", "RMOD", "REXIST","RRANGE","RSORT",
 	"HSET", "HGET", "HDEL", "HMOD", "HEXIST","HRANGE","HSORT",
 	"SSET", "SGET", "SDEL", "SMOD", "SEXIST","SRANGE","SSORT",
+	"QUIT",
 };
 
 enum {
@@ -72,8 +75,134 @@ enum {
 	KVS_CMD_SRANGE,
 	KVS_CMD_SSORT,
 	
+	//退出命令
+	KVS_CMD_QUIT,
+
 	KVS_CMD_COUNT,
 };
+
+//保存与加载文件
+//检查文件是否存在
+static int file_exists(const char *filename){
+
+	struct stat buffer;
+	return (stat(filename, &buffer) == 0);
+
+}
+
+//保存所有数据到文件
+void kvs_save_all(const char *filename){
+	FILE *fp = fopen(filename, "wb");
+	if(!fp){
+		perror("Failed to open save file\n");
+		return;
+	}
+
+	//保存数组数据
+#if ENABLE_ARRAY
+	fprintf(fp, "[ARRAY]\n");
+	int i = 0;
+	for(i = 0;i < global_array.total; i++){
+		if(global_array.table[i].key && global_array.table[i].value){
+			fprintf(fp, "%s:%s\n", global_array.table[i].key, global_array.table[i].value);
+		}
+	}
+	
+#endif
+
+	//保存红黑树数据
+#if ENABLE_RBTREE
+	fprintf(fp, "[RBTREE]\n");
+	//中序遍历保存
+	void save_rbtree(rbtree_node *node, FILE *fp){
+		if (node == global_rbtree.nil) return;
+		save_rbtree(node->left, fp);
+		fprintf(fp, "%s:%s\n", node->key, (char*)node->value);
+		save_rbtree(node->right, fp);
+	}
+	save_rbtree(global_rbtree.root, fp);
+#endif
+
+	//哈希表
+#if ENABLE_HASH
+	fprintf(fp, "[HASH]\n");
+	for(i = 0;i < global_hash.max_slots; i++){
+		hashnode_t *node = global_hash.nodes[i];
+		while(node){
+			fprintf(fp, "%s:%s\n", node->key, node->value);
+            node = node->next;
+		}
+	}
+#endif
+
+	//跳表
+#if ENABLE_SKIPTABLE
+	fprintf(fp, "[SKIPTABLE]\n");
+	Node *current = global_skiptable.header->forward[0];
+	while(current){
+		fprintf(fp, "%s:%s\n", current->key, current->value);
+        current = current->forward[0];
+	}
+#endif
+
+	fclose(fp);
+	printf("Data saved to %s\n", filename);
+}
+
+//从文件加载所有数据
+void kvs_load_all(const char *filename){
+	if(!file_exists(filename)){
+		printf("No save file found\n");
+		return;
+	}
+
+	FILE *fp = fopen(filename, "rb");
+	if(!fp){
+		perror("Failed to open save file\n");
+		return;
+	}
+
+	char line[2024];
+	char current_section[32] = {0};
+	while(fgets(line, sizeof(line), fp)){
+		//去除换行符
+		line[strcspn(line, "\n")] = 0;
+
+		//检查段标题
+		if(line[0] == '[' && line[strlen(line) - 1] == ']'){
+			strncpy(current_section, line+1, strlen(line)-2);//跳过开头的[ 减去[]
+			current_section[strlen(line) - 2] = '\0';
+			continue;
+		}
+
+		char *key = strtok(line, ":");
+		char *value = strtok(NULL, "");
+		if(!key || !value) continue;
+
+		//根据段标题选择数据结构
+		if(strcmp(current_section, "ARRAY") == 0){
+			#if ENABLE_ARRAY
+			kvs_array_set(&global_array, key, value);
+			#endif
+		}else if(strcmp(current_section, "RBTREE") == 0){
+			#if ENABLE_RBTREE
+			kvs_rbtree_set(&global_rbtree, key, value);
+			#endif
+		}else if(strcmp(current_section, "HASH") == 0){
+			#if ENABLE_HASH
+			kvs_hash_set(&global_hash, key, value);
+			#endif
+		}else if(strcmp(current_section, "SKIPTABLE") == 0){
+			#if ENABLE_SKIPTABLE
+			kvs_skiptable_set(&global_skiptable, key, value);
+			#endif
+		}
+	}
+
+	fclose(fp);
+	printf("Data loaded from %s\n", filename);
+}
+
 
 
 
@@ -325,7 +454,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 #endif
 #if ENABLE_SKIPTABLE
 		//hash
-		case KVS_CMD_SSET:{
+	case KVS_CMD_SSET:{
 		ret = kvs_skiptable_set(&global_skiptable, key, value);
 		if(ret < 0){
 			length = sprintf(response,"ERROR\r\n");
@@ -389,7 +518,12 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 		}
 		break;
 #endif
-
+	case KVS_CMD_QUIT:
+            // 设置关闭标志
+            g_shutdown_flag = 1;
+            length = sprintf(response, "Server shutting down...\r\n");
+            break;
+			
 	default: 
 		assert(0);
 	}
@@ -466,7 +600,12 @@ void dest_kvengine(void) {
 #endif
 }
 
-
+// 信号处理函数
+void handle_signal(int sig) {
+    printf("\nReceived signal %d, saving data before shutdown...\n", sig);
+    kvs_save_all("kvstore.dat");
+    exit(0);
+}
 
 int main(int argc, char *argv[]) {
 
@@ -474,8 +613,14 @@ int main(int argc, char *argv[]) {
 
 	int port = atoi(argv[1]);
 
+	// 注册信号处理函数，使Ctrl+C也能保存数据
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
 	init_kvengine();
 	
+	// 加载持久化数据
+    kvs_load_all("kvstore.dat");
 	
 #if (NETWORK_SELECT == NETWORK_REACTOR)
 	reactor_start(port, kvs_protocol);  //
@@ -485,7 +630,25 @@ int main(int argc, char *argv[]) {
 	proactor_start(port, kvs_protocol);
 #endif
 
-	dest_kvengine();
+	// 主循环，检查关闭标志
+    while (!g_shutdown_flag) {
+        // 根据不同网络模型实现等待
+        #if (NETWORK_SELECT == NETWORK_REACTOR)
+            // 简单实现：等待1秒
+            sleep(1);
+        #elif (NETWORK_SELECT == NETWORK_PROACTOR)
+            sleep(1);
+        #elif (NETWORK_SELECT == NETWORK_NTYCO)
+            sleep(1);
+        #endif
+        
+        // 检查关闭标志
+        if (g_shutdown_flag) {
+            printf("Shutdown requested, saving data...\n");
+            kvs_save_all("kvstore.dat");
+            break;
+        }
+    }
 
 }
 

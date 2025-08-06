@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <sys/stat.h>
+#include <signal.h>
+#include <unistd.h>
 
 
 #define NETWORK_REACTOR 	0
@@ -36,6 +39,7 @@ typedef int (*msg_handler)(char *msg, int length, char *response);
 extern int reactor_start(unsigned short port, msg_handler handler);
 extern int proactor_start(unsigned short port, msg_handler handler);
 extern int ntyco_start(unsigned short port, msg_handler handler);
+
 
 
 
@@ -192,6 +196,14 @@ int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len);
 int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, char *response, int max_len);
 
 #endif
+
+void kvs_save_all(const char *filename);
+void kvs_load_all(const char *filename);
+
+//网络等待函数
+extern void reactor_wait(void);
+extern void proactor_wait(void);
+extern void ntyco_wait(void);
 
 
 #endif

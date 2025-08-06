@@ -13,7 +13,7 @@
 #include <errno.h>
 #include <sys/time.h>
 
-
+#include "kvstore.h"
 #include "server.h"
 
 
@@ -45,6 +45,8 @@ int kvs_response(struct conn *c) {
 
 
 #endif
+
+
 
 
 
@@ -276,6 +278,7 @@ int reactor_start(unsigned short port, msg_handler handler) {
 
 	gettimeofday(&begin, NULL);
 
+	//修改未检查g_shutdown_flag
 	while (1) { // mainloop
 
 		struct epoll_event events[1024] = {0};
@@ -306,7 +309,8 @@ int reactor_start(unsigned short port, msg_handler handler) {
 
 	}
 	
-
+	close(epfd);
+	return 0;
 }
 
 
