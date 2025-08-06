@@ -75,6 +75,95 @@ int connect_tcpserver(const char *ip, unsigned short port) {
 	
 }
 
+//范围查找和排序测试用例
+void array_test_sort_range(int connfd) {
+    // 准备测试数据
+    testcase(connfd, "SET A_Apple Red", "OK\r\n", "SET-A_Apple");
+    testcase(connfd, "SET B_Banana Yellow", "OK\r\n", "SET-B_Banana");
+    testcase(connfd, "SET C_Cherry Red", "OK\r\n", "SET-C_Cherry");
+    testcase(connfd, "SET D_Grape Purple", "OK\r\n", "SET-D_Grape");
+    testcase(connfd, "SET E_Orange Orange", "OK\r\n", "SET-E_Orange");
+    
+    // 测试排序
+    testcase(connfd, "SORT", "A_Apple:Red\r\nB_Banana:Yellow\r\nC_Cherry:Red\r\nD_Grape:Purple\r\nE_Orange:Orange\r\n", "SORT-Array");
+    
+    // 测试范围查询
+    testcase(connfd, "RANGE B_Banana D_Grape", "B_Banana:Yellow\r\nC_Cherry:Red\r\nD_Grape:Purple\r\n", "RANGE-Array");
+    
+    // 清理测试数据
+    testcase(connfd, "DEL A_Apple", "OK\r\n", "DEL-A_Apple");
+    testcase(connfd, "DEL B_Banana", "OK\r\n", "DEL-B_Banana");
+    testcase(connfd, "DEL C_Cherry", "OK\r\n", "DEL-C_Cherry");
+    testcase(connfd, "DEL D_Grape", "OK\r\n", "DEL-D_Grape");
+    testcase(connfd, "DEL E_Orange", "OK\r\n", "DEL-E_Orange");
+}
+
+void rbtree_test_sort_range(int connfd) {
+    // 准备测试数据
+    testcase(connfd, "RSET R_Apple Red", "OK\r\n", "RSET-R_Apple");
+    testcase(connfd, "RSET R_Banana Yellow", "OK\r\n", "RSET-R_Banana");
+    testcase(connfd, "RSET R_Cherry Red", "OK\r\n", "RSET-R_Cherry");
+    testcase(connfd, "RSET R_Grape Purple", "OK\r\n", "RSET-R_Grape");
+    testcase(connfd, "RSET R_Orange Orange", "OK\r\n", "RSET-R_Orange");
+    
+    // 测试排序
+    testcase(connfd, "RSORT", "R_Apple:Red\r\nR_Banana:Yellow\r\nR_Cherry:Red\r\nR_Grape:Purple\r\nR_Orange:Orange\r\n", "RSORT-RBTree");
+    
+    // 测试范围查询
+    testcase(connfd, "RRANGE R_Banana R_Grape", "R_Banana:Yellow\r\nR_Cherry:Red\r\nR_Grape:Purple\r\n", "RRANGE-RBTree");
+    
+    // 清理测试数据
+    testcase(connfd, "RDEL R_Apple", "OK\r\n", "RDEL-R_Apple");
+    testcase(connfd, "RDEL R_Banana", "OK\r\n", "RDEL-R_Banana");
+    testcase(connfd, "RDEL R_Cherry", "OK\r\n", "RDEL-R_Cherry");
+    testcase(connfd, "RDEL R_Grape", "OK\r\n", "RDEL-R_Grape");
+    testcase(connfd, "RDEL R_Orange", "OK\r\n", "RDEL-R_Orange");
+}
+
+void hash_test_sort_range(int connfd) {
+    // 准备测试数据
+    testcase(connfd, "HSET H_Apple Red", "OK\r\n", "HSET-H_Apple");
+    testcase(connfd, "HSET H_Banana Yellow", "OK\r\n", "HSET-H_Banana");
+    testcase(connfd, "HSET H_Cherry Red", "OK\r\n", "HSET-H_Cherry");
+    testcase(connfd, "HSET H_Grape Purple", "OK\r\n", "HSET-H_Grape");
+    testcase(connfd, "HSET H_Orange Orange", "OK\r\n", "HSET-H_Orange");
+    
+    // 测试排序
+    testcase(connfd, "HSORT", "H_Apple:Red\r\nH_Banana:Yellow\r\nH_Cherry:Red\r\nH_Grape:Purple\r\nH_Orange:Orange\r\n", "HSORT-Hash");
+    
+    // 测试范围查询
+    testcase(connfd, "HRANGE H_Banana H_Grape", "H_Banana:Yellow\r\nH_Cherry:Red\r\nH_Grape:Purple\r\n", "HRANGE-Hash");
+    
+    // 清理测试数据
+    testcase(connfd, "HDEL H_Apple", "OK\r\n", "HDEL-H_Apple");
+    testcase(connfd, "HDEL H_Banana", "OK\r\n", "HDEL-H_Banana");
+    testcase(connfd, "HDEL H_Cherry", "OK\r\n", "HDEL-H_Cherry");
+    testcase(connfd, "HDEL H_Grape", "OK\r\n", "HDEL-H_Grape");
+    testcase(connfd, "HDEL H_Orange", "OK\r\n", "HDEL-H_Orange");
+}
+
+void skiptable_test_sort_range(int connfd) {
+    // 准备测试数据
+    testcase(connfd, "SSET S_Apple Red", "OK\r\n", "SSET-S_Apple");
+    testcase(connfd, "SSET S_Banana Yellow", "OK\r\n", "SSET-S_Banana");
+    testcase(connfd, "SSET S_Cherry Red", "OK\r\n", "SSET-S_Cherry");
+    testcase(connfd, "SSET S_Grape Purple", "OK\r\n", "SSET-S_Grape");
+    testcase(connfd, "SSET S_Orange Orange", "OK\r\n", "SSET-S_Orange");
+    
+    // 测试排序
+    testcase(connfd, "SSORT", "S_Apple:Red\r\nS_Banana:Yellow\r\nS_Cherry:Red\r\nS_Grape:Purple\r\nS_Orange:Orange\r\n", "SSORT-SkipTable");
+    
+    // 测试范围查询
+    testcase(connfd, "SRANGE S_Banana S_Grape", "S_Banana:Yellow\r\nS_Cherry:Red\r\nS_Grape:Purple\r\n", "SRANGE-SkipTable");
+    
+    // 清理测试数据
+    testcase(connfd, "SDEL S_Apple", "OK\r\n", "SDEL-S_Apple");
+    testcase(connfd, "SDEL S_Banana", "OK\r\n", "SDEL-S_Banana");
+    testcase(connfd, "SDEL S_Cherry", "OK\r\n", "SDEL-S_Cherry");
+    testcase(connfd, "SDEL S_Grape", "OK\r\n", "SDEL-S_Grape");
+    testcase(connfd, "SDEL S_Orange", "OK\r\n", "SDEL-S_Orange");
+}
+
 
 void array_testcase(int connfd) {
 
@@ -87,7 +176,13 @@ void array_testcase(int connfd) {
 	testcase(connfd, "GET Teacher", "NO EXIST\r\n", "GET-Teacher");
 	testcase(connfd, "MOD Teacher KING", "NO EXIST\r\n", "MOD-Teacher");
 	testcase(connfd, "EXIST Teacher", "NO EXIST\r\n", "GET-Teacher");
-
+	testcase(connfd, "SET B b", "OK\r\n", "SET-B");
+	testcase(connfd, "SET A a", "OK\r\n", "SET-A");
+	testcase(connfd, "SET C c", "OK\r\n", "SET-C");
+	testcase(connfd, "SET E e", "OK\r\n", "SET-E");
+	testcase(connfd, "SET D d", "OK\r\n", "SET-D");
+	testcase(connfd, "SORT", "A:a\r\nB:b\r\nC:c\r\nD:d\r\nE:e\r\n", "SORT");
+	testcase(connfd, "RANGE A D", "A:a\r\nB:b\r\nC:c\r\nD:d\r\n", "RANGE");
 }
 
 void array_testcase_1w(int connfd) {
@@ -224,6 +319,50 @@ void hash_testcase(int connfd) {
 
 }
 
+void skiptable_testcase(int connfd){
+
+    testcase(connfd, "SSET Teacher King", "OK\r\n", "SSET-Teacher");
+	testcase(connfd, "SGET Teacher", "King\r\n", "SGET-Teacher");
+	testcase(connfd, "SMOD Teacher Darren", "OK\r\n", "SMOD-Teacher");
+	testcase(connfd, "SGET Teacher", "Darren\r\n", "SGET-Teacher");
+	testcase(connfd, "SEXIST Teacher", "EXIST\r\n", "SGET-Teacher");
+	testcase(connfd, "SDEL Teacher", "OK\r\n", "SDEL-Teacher");
+	testcase(connfd, "SGET Teacher", "NO EXIST\r\n", "SGET-Teacher");
+	testcase(connfd, "SMOD Teacher KING", "NO EXIST\r\n", "SMOD-Teacher");
+	testcase(connfd, "SEXIST Teacher", "NO EXIST\r\n", "SEXIST-Teacher");
+
+}
+void skiptable_testcase_1w(int connfd){
+
+    int count = 10000;
+    int i = 0;
+
+    struct timeval tv_begin;
+	gettimeofday(&tv_begin, NULL);
+
+    
+    for(i = 0;i < count;i ++){
+
+        testcase(connfd, "SSET Teacher King", "OK\r\n", "SSET-Teacher");
+	    testcase(connfd, "SGET Teacher", "King\r\n", "SGET-Teacher");
+	    testcase(connfd, "SMOD Teacher Darren", "OK\r\n", "SMOD-Teacher");
+	    testcase(connfd, "SGET Teacher", "Darren\r\n", "SGET-Teacher");
+	    testcase(connfd, "SEXIST Teacher", "EXIST\r\n", "SGET-Teacher");
+	    testcase(connfd, "SDEL Teacher", "OK\r\n", "SDEL-Teacher");
+	    testcase(connfd, "SGET Teacher", "NO EXIST\r\n", "SGET-Teacher");
+	    testcase(connfd, "SMOD Teacher KING", "NO EXIST\r\n", "SMOD-Teacher");
+	    testcase(connfd, "SEXIST Teacher", "NO EXIST\r\n", "SEXIST-Teacher");
+
+    }
+
+    struct timeval tv_end;
+	gettimeofday(&tv_end, NULL);
+
+	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+
+    printf("skiptable testcase --> time_used: %d, qps: %d\n", time_used, 90000 * 1000 / time_used);
+
+}
 
 // testcase 192.168.243.131  2000
 int main(int argc, char *argv[]) {
@@ -232,6 +371,16 @@ int main(int argc, char *argv[]) {
 		printf("arg error\n");
 		return -1;
 	}
+	printf("Modes:\n");
+	printf("  0: rbtree_testcase_1w\n");
+	printf("  1: rbtree_testcase_3w\n");
+	printf("  2: array_testcase_1w\n");
+	printf("  3: hash_testcase\n");
+	printf("  4: skiptable_testcase\n");
+	printf("  5: Array Sort & Range Test\n");
+	printf("  6: RBTree Sort & Range Test\n");
+	printf("  7: Hash Sort & Range Test\n");
+	printf("  8: SkipTable Sort & Range Test\n");
 
 	char *ip = argv[1];
 	int port = atoi(argv[2]);
@@ -245,8 +394,19 @@ int main(int argc, char *argv[]) {
 		rbtree_testcase_3w(connfd);
 	} else if (mode == 2) {
 		array_testcase_1w(connfd);
+		//array_testcase(connfd);
 	} else if (mode == 3) {
 		hash_testcase(connfd);
+	}else if(mode == 4){
+        skiptable_testcase(connfd);
+    }else if(mode == 5){
+		array_test_sort_range(connfd);
+	}else if(mode == 6){
+		rbtree_test_sort_range(connfd);
+	}else if(mode == 7){
+		hash_test_sort_range(connfd);
+	}else if(mode == 8){
+		skiptable_test_sort_range(connfd);
 	}
 
 	return 0;

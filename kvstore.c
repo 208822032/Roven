@@ -17,6 +17,10 @@ extern kvs_rbtree_t global_rbtree;
 extern kvs_hash_t global_hash;
 #endif
 
+#if ENABLE_SKIPTABLE
+extern kvs_skiptable_t global_skiptable;
+#endif
+
 void *kvs_malloc(size_t size) {
 	return malloc(size);
 }
@@ -27,9 +31,10 @@ void kvs_free(void *ptr) {
 
 
 const char *command[] = {
-	"SET", "GET", "DEL", "MOD", "EXIST",
-	"RSET", "RGET", "RDEL", "RMOD", "REXIST",
-	"HSET", "HGET", "HDEL", "HMOD", "HEXIST"
+	"SET", "GET", "DEL", "MOD", "EXIST","RANGE","SORT",
+	"RSET", "RGET", "RDEL", "RMOD", "REXIST","RRANGE","RSORT",
+	"HSET", "HGET", "HDEL", "HMOD", "HEXIST","HRANGE","HSORT",
+	"SSET", "SGET", "SDEL", "SMOD", "SEXIST","SRANGE","SSORT",
 };
 
 enum {
@@ -40,27 +45,41 @@ enum {
 	KVS_CMD_DEL,
 	KVS_CMD_MOD,
 	KVS_CMD_EXIST,
+	KVS_CMD_RANGE,
+	KVS_CMD_SORT,
 	// rbtree
 	KVS_CMD_RSET,
 	KVS_CMD_RGET,
 	KVS_CMD_RDEL,
 	KVS_CMD_RMOD,
 	KVS_CMD_REXIST,
+	KVS_CMD_RRANGE,
+	KVS_CMD_RSORT,
 	// hash
 	KVS_CMD_HSET,
 	KVS_CMD_HGET,
 	KVS_CMD_HDEL,
 	KVS_CMD_HMOD,
 	KVS_CMD_HEXIST,
+	KVS_CMD_HRANGE,
+	KVS_CMD_HSORT,
+	//skiptable
+	KVS_CMD_SSET,
+    KVS_CMD_SGET,
+    KVS_CMD_SDEL,
+    KVS_CMD_SMOD,
+    KVS_CMD_SEXIST,
+	KVS_CMD_SRANGE,
+	KVS_CMD_SSORT,
 	
 	KVS_CMD_COUNT,
 };
 
 
 
-const char *response[] = {
+// const char *response[] = {
 
-};
+// };
 
 
 int kvs_split_token(char *msg, char *tokens[]) {
@@ -101,6 +120,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 	int ret = 0;
 	char *key = tokens[1];
 	char *value = tokens[2];
+	char *result = {0};
 
 	switch(cmd) {
 #if ENABLE_ARRAY
@@ -150,6 +170,23 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 			length = sprintf(response, "EXIST\r\n");
 		} else {
 			length = sprintf(response, "NO EXIST\r\n");
+		}
+		break;
+	case KVS_CMD_SORT:
+		length = kvs_array_sort(&global_array, response, KVS_MAX_RESPONSE_SIZE);
+		if(length < 0){
+			length = sprintf(response, "EMPTY\r\n");
+			break;
+		}
+		break;
+	case KVS_CMD_RANGE:
+		if(count < 3){
+			length = sprintf(response, "ERROR: Missing range parameters\r\n");
+			break;
+		}
+		length = kvs_array_range(&global_array, tokens[1], tokens[2], response, KVS_MAX_RESPONSE_SIZE);
+		if(length <= 0){
+			length = sprintf(response, "EMPTY\r\n");
 		}
 		break;
 #endif
@@ -203,6 +240,22 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 			length = sprintf(response, "NO EXIST\r\n");
 		}
 		break;
+	case KVS_CMD_RSORT:
+		length = kvs_rbtree_sort(&global_rbtree, response, KVS_MAX_RESPONSE_SIZE);
+		if(length <= 0){
+			length = sprintf(response, "EMPTY\r\n");
+		}
+		break;
+	case KVS_CMD_RRANGE:
+		if(count < 3){
+			length = sprintf(response, "ERROR: Missing range parameters\r\n");
+            break;
+		}
+		length = kvs_rbtree_range(&global_rbtree, tokens[1], tokens[2], response, KVS_MAX_RESPONSE_SIZE);
+		if (length <= 0) {
+			length = sprintf(response, "EMPTY\r\n");
+		}
+		break;
 #endif
 #if ENABLE_HASH
 	case KVS_CMD_HSET:
@@ -251,6 +304,88 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 			length = sprintf(response, "EXIST\r\n");
 		} else {
 			length = sprintf(response, "NO EXIST\r\n");
+		}
+		break;
+	case KVS_CMD_HSORT:
+		length = kvs_hash_sort(&global_hash, response, KVS_MAX_RESPONSE_SIZE);
+		if (length <= 0) {
+			length = sprintf(response, "EMPTY\r\n");
+		}
+		break;
+	case KVS_CMD_HRANGE:
+		if (count < 3) {
+			length = sprintf(response, "ERROR: Missing range parameters\r\n");
+			break;
+		}
+		length = kvs_hash_range(&global_hash, tokens[1], tokens[2], response, KVS_MAX_RESPONSE_SIZE);
+		if (length <= 0) {
+			length = sprintf(response, "EMPTY\r\n");
+		}
+		break;
+#endif
+#if ENABLE_SKIPTABLE
+		//hash
+		case KVS_CMD_SSET:{
+		ret = kvs_skiptable_set(&global_skiptable, key, value);
+		if(ret < 0){
+			length = sprintf(response,"ERROR\r\n");
+		}else if(ret == 0){
+			length = sprintf(response,"OK\r\n");
+		}else{
+			length = sprintf(response,"EXIST\r\n");
+		}
+		break;
+	}
+	case KVS_CMD_SGET:
+		result = kvs_skiptable_get(&global_skiptable, key);
+		if(result == NULL){
+			length = sprintf(response,"NO EXIST\r\n");
+		}else{
+			length = sprintf(response,"%s\r\n", result);
+		}
+		break;
+	case KVS_CMD_SDEL:
+		ret = kvs_skiptable_del(&global_skiptable, key);
+		if(ret < 0){
+			length = sprintf(response,"ERROR\r\n");
+		}else if(ret == 0){
+			length = sprintf(response,"OK\r\n");
+		}else{
+			length = sprintf(response,"NO EXIST\r\n");
+		}
+		break;
+	case KVS_CMD_SMOD:
+		ret = kvs_skiptable_mod(&global_skiptable, key, value);
+		if(ret < 0){
+			length = sprintf(response,"ERROR\r\n");
+		}else if(ret == 0){
+			length = sprintf(response,"OK\r\n");
+		}else{
+			length = sprintf(response,"NO EXIST\r\n");
+		}
+		break;
+	case KVS_CMD_SEXIST:
+		ret = kvs_skiptable_exist(&global_skiptable, key);
+		if(ret == 0){
+			length = sprintf(response,"EXIST\r\n");
+		}else {
+			length = sprintf(response,"NO EXIST\r\n");
+		}
+		break;
+	case KVS_CMD_SSORT:
+		length = kvs_skiptable_sort(&global_skiptable, response, KVS_MAX_RESPONSE_SIZE);
+		if (length <= 0) {
+			length = sprintf(response, "EMPTY\r\n");
+		}
+		break;
+	case KVS_CMD_SRANGE:
+		if (count < 3) {
+			length = sprintf(response, "ERROR: Missing range parameters\r\n");
+			break;
+		}
+		length = kvs_skiptable_range(&global_skiptable, tokens[1], tokens[2], response, KVS_MAX_RESPONSE_SIZE);
+		if (length <= 0) {
+			length = sprintf(response, "EMPTY\r\n");
 		}
 		break;
 #endif
@@ -307,6 +442,11 @@ int init_kvengine(void) {
 	kvs_hash_create(&global_hash);
 #endif
 
+#if ENABLE_SKIPTABLE
+	memset(&global_skiptable, 0, sizeof(kvs_skiptable_t));
+	kvs_skiptable_create(&global_skiptable);
+#endif
+
 	return 0;
 }
 
@@ -321,6 +461,9 @@ void dest_kvengine(void) {
 	kvs_hash_destory(&global_hash);
 #endif
 
+#if ENABLE_SKIPTABLE
+	kvs_skiptable_destroy(&global_skiptable);
+#endif
 }
 
 

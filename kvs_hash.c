@@ -249,35 +249,169 @@ int kvs_hash_exist(kvs_hash_t *hash, char *key) {
 	
 }
 
+// void *kvs_malloc(size_t size) {
+// 	return malloc(size);
+// }
+
+// void kvs_free(void *ptr) {
+// 	return free(ptr);
+// }
+
+
+// 比较函数用于排序
+static int compare_hash_items(const void *a, const void *b) {
+    const hashnode_t *nodeA = *(const hashnode_t **)a;
+    const hashnode_t *nodeB = *(const hashnode_t **)b;
+    return strcmp(nodeA->key, nodeB->key);
+}
+
+int kvs_hash_sort(kvs_hash_t *inst, char *response, int max_len){
+	if (!inst) return -1;
+    
+    // 收集所有节点
+    hashnode_t **nodes = kvs_malloc(inst->count * sizeof(hashnode_t *));
+    if (!nodes) return -1;
+    
+    int count = 0;
+    for (int i = 0; i < inst->max_slots; i++) {
+        hashnode_t *node = inst->nodes[i];
+        while (node) {
+            nodes[count++] = node;
+            node = node->next;
+        }
+    }
+    
+    // 按键排序
+    qsort(nodes, count, sizeof(hashnode_t *), compare_hash_items);
+    
+    // 格式化输出
+    int len = 0;
+    for (int i = 0; i < count; i++) {
+        int n = snprintf(response + len, max_len - len, 
+                         "%s:%s\r\n", nodes[i]->key, nodes[i]->value);
+        if (n < 0 || len + n >= max_len) break;
+        len += n;
+    }
+    
+    kvs_free(nodes);
+    return len;
+}
+int kvs_hash_range(kvs_hash_t *inst, char *start_key, char *end_key, char *response, int max_len){
+	if (!inst || !start_key || !end_key) return -1;
+    
+    // 收集所有节点
+    hashnode_t **nodes = kvs_malloc(inst->count * sizeof(hashnode_t *));
+    if (!nodes) return -1;
+    
+    int count = 0;
+    for (int i = 0; i < inst->max_slots; i++) {
+        hashnode_t *node = inst->nodes[i];
+        while (node) {
+            nodes[count++] = node;
+            node = node->next;
+        }
+    }
+    
+    // 按键排序
+    qsort(nodes, count, sizeof(hashnode_t *), compare_hash_items);
+    
+    // 格式化输出范围内的项
+    int len = 0;
+    for (int i = 0; i < count; i++) {
+        if (strcmp(nodes[i]->key, start_key) >= 0 && 
+            strcmp(nodes[i]->key, end_key) <= 0) {
+            int n = snprintf(response + len, max_len - len, 
+                             "%s:%s\r\n", nodes[i]->key, nodes[i]->value);
+            if (n < 0 || len + n >= max_len) break;
+            len += n;
+        }
+    }
+    
+    kvs_free(nodes);
+    return len;
+}
+
 #if 0
+
 int main() {
+    // 初始化测试哈希表
+    kvs_hash_t test_hash;
+    test_hash.max_slots = 10;
+    test_hash.count = 0;
+    test_hash.nodes = kvs_malloc(test_hash.max_slots * sizeof(hashnode_t*));
+    memset(test_hash.nodes, 0, test_hash.max_slots * sizeof(hashnode_t*));
 
-	kvs_hash_create(&hash);
+    // 插入测试数据(故意乱序插入)
+    const char *keys[] = {"banana", "apple", "grape", "cherry", "orange", "pear"};
+    const char *values[] = {"yellow", "red", "purple", "dark red", "orange", "green"};
+    int item_count = sizeof(keys)/sizeof(keys[0]);
+    
+    for (int i = 0; i < item_count; i++) {
+        // 简单哈希函数计算槽位
+        unsigned int slot = 0;
+        for (const char *p = keys[i]; *p; p++) {
+            slot = slot * 31 + *p;
+        }
+        slot %= test_hash.max_slots;
+        
+        // 创建新节点
+        hashnode_t *node = kvs_malloc(sizeof(hashnode_t));
+        node->key = kvs_malloc(strlen(keys[i]) + 1);
+        strcpy(node->key, keys[i]);
+        node->value = kvs_malloc(strlen(values[i]) + 1);
+        strcpy(node->value, values[i]);
+        
+        // 插入到链表头部
+        node->next = test_hash.nodes[slot];
+        test_hash.nodes[slot] = node;
+        test_hash.count++;
+    }
 
-	kvs_hash_set(&hash, "Teacher1", "King");
-	kvs_hash_set(&hash, "Teacher2", "Darren");
-	kvs_hash_set(&hash, "Teacher3", "Mark");
-	kvs_hash_set(&hash, "Teacher4", "Vico");
-	kvs_hash_set(&hash, "Teacher5", "Nick");
+    // 测试1: 排序功能
+    printf("=== Testing kvs_hash_sort ===\n");
+    char response[1024];
+    int len = kvs_hash_sort(&test_hash, response, sizeof(response));
+    if (len > 0) {
+        printf("Sorted items:\n%s", response);
+    } else {
+        printf("Sort failed\n");
+    }
 
-	char *value1 = kvs_hash_get(&hash, "Teacher1");
-	printf("Teacher1 : %s\n", value1);
+    // 测试2: 范围查询
+    printf("\n=== Testing kvs_hash_range ===\n");
+    printf("Range from 'banana' to 'orange':\n");
+    len = kvs_hash_range(&test_hash, "banana", "orange", response, sizeof(response));
+    if (len > 0) {
+        printf("%s", response);
+    } else {
+        printf("Range query failed\n");
+    }
 
-	int ret = kvs_hash_mod(&hash, "Teacher1", "King1");
-	printf("mode Teacher1 ret : %d\n", ret);
-	
-	char *value2 = kvs_hash_get(&hash, "Teacher1");
-	printf("Teacher2 : %s\n", value1);
+    // 测试3: 边界情况
+    printf("\n=== Testing edge cases ===\n");
+    // 空哈希表测试
+    kvs_hash_t empty_hash = {0};
+    printf("Empty hash sort: %d (expected 0)\n", 
+           kvs_hash_sort(&empty_hash, response, sizeof(response)));
+    
+    // 无效范围测试
+    printf("Invalid range test: %d (expected 0)\n", 
+           kvs_hash_range(&test_hash, "zebra", "aardvark", response, sizeof(response)));
 
-	ret = kvs_hash_del(&hash, "Teacher1");
-	printf("delete Teacher1 ret : %d\n", ret);
-
-	ret = kvs_hash_exist(&hash, "Teacher1");
-	printf("Exist Teacher1 ret : %d\n", ret);
-
-	kvs_hash_destory(&hash);
-
-	return 0;
+    // 清理
+    for (int i = 0; i < test_hash.max_slots; i++) {
+        hashnode_t *node = test_hash.nodes[i];
+        while (node) {
+            hashnode_t *temp = node;
+            node = node->next;
+            kvs_free(temp->key);
+            kvs_free(temp->value);
+            kvs_free(temp);
+        }
+    }
+    kvs_free(test_hash.nodes);
+    
+    return 0;
 }
 
 #endif

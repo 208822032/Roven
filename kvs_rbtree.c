@@ -550,4 +550,109 @@ int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key) {
 	return 0;
 }
 
+// void *kvs_malloc(size_t size) {
+// 	return malloc(size);
+// }
 
+// void kvs_free(void *ptr) {
+// 	return free(ptr);
+// }
+
+// 中序遍历辅助函数
+static void inorder_traversal(rbtree *T, rbtree_node *node, 
+                              char *start_key, char *end_key,
+                              char *response, int *len, int max_len) {
+    if (node == T->nil) return;
+    
+    if (strcmp(node->key, start_key) >= 0) {
+        inorder_traversal(T, node->left, start_key, end_key, response, len, max_len);
+    }
+    
+    if (strcmp(node->key, start_key) >= 0 && 
+        strcmp(node->key, end_key) <= 0) {
+        int n = snprintf(response + *len, max_len - *len, 
+                         "%s:%s\r\n", node->key, (char*)node->value);
+        if (n > 0 && *len + n < max_len) {
+            *len += n;
+        }
+    }
+    
+    if (strcmp(node->key, end_key) <= 0) {
+        inorder_traversal(T, node->right, start_key, end_key, response, len, max_len);
+    }
+}
+
+int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len){
+	if (!inst) return -1;
+    
+    int len = 0;
+    inorder_traversal(inst, inst->root, "", "\xFF", response, &len, max_len);
+    return len;
+}
+
+int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, char *response, int max_len){
+	if (!inst || !start_key || !end_key) return -1;
+    
+    int len = 0;
+    inorder_traversal(inst, inst->root, start_key, end_key, response, &len, max_len);
+    return len;
+}
+
+#if 0
+int main(){
+	// 初始化红黑树
+    kvs_rbtree_t tree;
+    if (kvs_rbtree_create(&tree) != 0) {
+        printf("Failed to create RB tree\n");
+        return -1;
+    }
+
+	// 插入测试数据(故意乱序插入)
+    const char *keys[] = {"banana", "apple", "grape", "cherry", "orange", "pear"};
+    const char *values[] = {"yellow", "red", "purple", "dark red", "orange", "green"};
+    int count = sizeof(keys)/sizeof(keys[0]);
+    
+    for (int i = 0; i < count; i++) {
+        if (kvs_rbtree_set(&tree, (char*)keys[i], (char*)values[i]) != 0) {
+            printf("Failed to insert key: %s\n", keys[i]);
+        }
+    }
+
+	// 测试1: 排序功能
+    printf("=== Testing kvs_rbtree_sort ===\n");
+    char response[1024];
+    int len = kvs_rbtree_sort(&tree, response, sizeof(response));
+    if (len > 0) {
+        printf("Sorted items:\n%s", response);
+    } else {
+        printf("Sort failed\n");
+    }
+
+	// 测试2: 范围查询
+    printf("\n=== Testing kvs_rbtree_range ===\n");
+    printf("Range from 'banana' to 'orange':\n");
+    len = kvs_rbtree_range(&tree, "banana", "orange", response, sizeof(response));
+    if (len > 0) {
+        printf("%s", response);
+    } else {
+        printf("Range query failed\n");
+    }
+
+	// 测试3: 边界情况
+    printf("\n=== Testing edge cases ===\n");
+    // 空树测试
+    kvs_rbtree_t empty_tree;
+    kvs_rbtree_create(&empty_tree);
+    printf("Empty tree sort: %d (expected 0)\n", 
+           kvs_rbtree_sort(&empty_tree, response, sizeof(response)));
+    
+    // 无效范围测试
+    printf("Invalid range test: %d (expected 0)\n", 
+           kvs_rbtree_range(&tree, "zebra", "aardvark", response, sizeof(response)));
+
+    // 清理
+    kvs_rbtree_destory(&tree);
+    kvs_rbtree_destory(&empty_tree);
+    return 0;
+}
+#endif

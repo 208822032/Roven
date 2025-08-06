@@ -5,11 +5,12 @@
 #define __KV_STORE_H__
 
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <stddef.h>
+#include <stdbool.h>
 
 
 #define NETWORK_REACTOR 	0
@@ -21,10 +22,12 @@
 
 
 #define KVS_MAX_TOKENS		128
+#define KVS_MAX_RESPONSE_SIZE  2048
 
 #define ENABLE_ARRAY		1
 #define ENABLE_RBTREE		1
 #define ENABLE_HASH			1
+#define ENABLE_SKIPTABLE 1
 
 
 typedef int (*msg_handler)(char *msg, int length, char *response);
@@ -59,6 +62,8 @@ char* kvs_array_get(kvs_array_t *inst, char *key);
 int kvs_array_del(kvs_array_t *inst, char *key);
 int kvs_array_mod(kvs_array_t *inst, char *key, char *value);
 int kvs_array_exist(kvs_array_t *inst, char *key);
+int kvs_array_sort(kvs_array_t *inst, char *response, int max_len);
+int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *response, int max_len);
 
 
 #endif
@@ -101,7 +106,8 @@ char* kvs_rbtree_get(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_del(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value);
 int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key);
-
+int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len);
+int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, char *response, int max_len);
 
 
 #endif
@@ -148,6 +154,8 @@ char * kvs_hash_get(kvs_hash_t *hash, char *key);
 int kvs_hash_mod(kvs_hash_t *hash, char *key, char *value);
 int kvs_hash_del(kvs_hash_t *hash, char *key);
 int kvs_hash_exist(kvs_hash_t *hash, char *key);
+int kvs_hash_sort(kvs_hash_t *inst, char *response, int max_len);
+int kvs_hash_range(kvs_hash_t *inst, char *start_key, char *end_key, char *response, int max_len);
 
 
 #endif
@@ -156,7 +164,34 @@ int kvs_hash_exist(kvs_hash_t *hash, char *key);
 void *kvs_malloc(size_t size);
 void kvs_free(void *ptr);
 
+#if ENABLE_SKIPTABLE
 
+#define MAX_LEVEL 6
+
+typedef struct Node {
+    char *key;
+    char *value;
+    struct Node** forward;
+} Node;
+
+typedef struct SkipList {
+    int level;
+    Node* header;
+} SkipList;
+
+typedef SkipList kvs_skiptable_t;
+
+int kvs_skiptable_create(kvs_skiptable_t *table);
+void kvs_skiptable_destroy(kvs_skiptable_t *table);
+int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value);
+char * kvs_skiptable_get(kvs_skiptable_t *table, char *key);
+int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value);
+int kvs_skiptable_del(kvs_skiptable_t *table, char *key);
+int kvs_skiptable_exist(kvs_skiptable_t *table, char *key);
+int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len);
+int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, char *response, int max_len);
+
+#endif
 
 
 #endif
