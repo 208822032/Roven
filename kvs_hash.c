@@ -79,7 +79,6 @@ int kvs_hash_create(kvs_hash_t *hash) {
 
 	hash->max_slots = MAX_TABLE_SIZE;
 	hash->count = 0; 
-
 	return 0;
 }
 

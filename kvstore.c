@@ -1,7 +1,3 @@
-
-
-
-
 #include "kvstore.h"
 
 int g_shutdown_flag = 0;
@@ -22,7 +18,9 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
+mem_manager_t g_mem_manager;
 
+#if 0
 void *kvs_malloc(size_t size) {
 	return malloc(size);
 }
@@ -30,7 +28,7 @@ void *kvs_malloc(size_t size) {
 void kvs_free(void *ptr) {
 	return free(ptr);
 }
-
+#endif
 
 const char *command[] = {
 	"SET", "GET", "DEL", "MOD", "EXIST","RANGE","SORT",
@@ -219,7 +217,7 @@ int kvs_split_token(char *msg, char *tokens[]) {
 	char *token = strtok(msg, " ");
 	
 	while (token != NULL) {
-		//printf("idx: %d, %s\n", idx, token);
+		printf("idx: %d, %s\n", idx, token);
 		
 		tokens[idx ++] = token;
 		token = strtok(NULL, " ");
@@ -241,6 +239,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 	int cmd = KVS_CMD_START;
 	for (cmd = KVS_CMD_START;cmd < KVS_CMD_COUNT;cmd ++) {
 		if (strcmp(tokens[0], command[cmd]) == 0) {
+			printf("tokens: %s, command: %s\n", tokens[0], command[cmd]);
 			break;
 		} 
 	}
@@ -486,16 +485,14 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 	case KVS_CMD_SMOD:
 		ret = kvs_skiptable_mod(&global_skiptable, key, value);
 		if(ret < 0){
-			length = sprintf(response,"ERROR\r\n");
+			length = sprintf(response,"NO EXIST\r\n");
 		}else if(ret == 0){
 			length = sprintf(response,"OK\r\n");
-		}else{
-			length = sprintf(response,"NO EXIST\r\n");
 		}
 		break;
 	case KVS_CMD_SEXIST:
 		ret = kvs_skiptable_exist(&global_skiptable, key);
-		if(ret == 0){
+		if(ret == 1){
 			length = sprintf(response,"EXIST\r\n");
 		}else {
 			length = sprintf(response,"NO EXIST\r\n");
@@ -523,9 +520,8 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
             g_shutdown_flag = 1;
             length = sprintf(response, "Server shutting down...\r\n");
             break;
-			
 	default: 
-		assert(0);
+		assert(0 && "Unknown command received");
 	}
 
 	return length;
@@ -561,6 +557,8 @@ int kvs_protocol(char *msg, int length, char *response) {  //
 
 int init_kvengine(void) {
 
+	mem_init();  // 初始化内存管理组件
+
 #if ENABLE_ARRAY
 	memset(&global_array, 0, sizeof(kvs_array_t));
 	kvs_array_create(&global_array);
@@ -585,6 +583,8 @@ int init_kvengine(void) {
 }
 
 void dest_kvengine(void) {
+
+
 #if ENABLE_ARRAY
 	kvs_array_destory(&global_array);
 #endif
@@ -598,6 +598,8 @@ void dest_kvengine(void) {
 #if ENABLE_SKIPTABLE
 	kvs_skiptable_destroy(&global_skiptable);
 #endif
+
+	mem_destroy();  // 清理内存管理组件
 }
 
 // 信号处理函数
@@ -636,6 +638,7 @@ int main(int argc, char *argv[]) {
     printf("Shutdown requested, saving data...\n");
     kvs_save_all("kvstore.dat");
     dest_kvengine();
+
     return 0;    
     
 }

@@ -14,13 +14,16 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/mman.h>
+
 
 
 #define NETWORK_REACTOR 	0
 #define NETWORK_PROACTOR	1
 #define NETWORK_NTYCO		2
 
-#define NETWORK_SELECT		NETWORK_PROACTOR
+#define NETWORK_SELECT		NETWORK_NTYCO
 
 
 
@@ -30,7 +33,7 @@
 #define ENABLE_ARRAY		1
 #define ENABLE_RBTREE		1
 #define ENABLE_HASH			1
-#define ENABLE_SKIPTABLE 1
+#define ENABLE_SKIPTABLE    1
 
 
 typedef int (*msg_handler)(char *msg, int length, char *response);
@@ -164,26 +167,29 @@ int kvs_hash_range(kvs_hash_t *inst, char *start_key, char *end_key, char *respo
 
 #endif
 
-
+#if 0
 void *kvs_malloc(size_t size);
 void kvs_free(void *ptr);
+#endif
 
 #if ENABLE_SKIPTABLE
 
-#define MAX_LEVEL 6
+#define MAX_LEVEL 16
+#define KEY_SIZE 128
+#define VALUE_SIZE 256
 
 typedef struct Node {
-    char *key;
-    char *value;
-    struct Node** forward;
+    char key[KEY_SIZE];
+    char value[VALUE_SIZE];
+    int level;  // 节点的实际层数
+    struct Node* forward[];  // 柔性数组用于存储各级指针
 } Node;
 
-typedef struct SkipList {
-    int level;
-    Node* header;
-} SkipList;
+typedef struct {
+    int level;      // 当前跳表的最大层数
+    Node* header;   // 头节点
+} kvs_skiptable_t;
 
-typedef SkipList kvs_skiptable_t;
 
 int kvs_skiptable_create(kvs_skiptable_t *table);
 void kvs_skiptable_destroy(kvs_skiptable_t *table);
@@ -200,13 +206,53 @@ int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, 
 void kvs_save_all(const char *filename);
 void kvs_load_all(const char *filename);
 
-//网络等待函数
-extern void reactor_wait(void);
-extern void proactor_wait(void);
-extern void ntyco_wait(void);
-
-
 #endif
 
 
+//内存池
+typedef struct mem_block {
+    struct mem_block* next;
+} mem_block_t;
 
+typedef struct mem_pool {
+    size_t block_size;
+    int free_count;
+    mem_block_t* free_list;
+    struct mem_pool* next;
+} mem_pool_t;
+
+// 大内存块记录结构
+typedef struct large_block_record {
+    void *block;
+    size_t size;
+    struct large_block_record *next;
+} large_block_record_t;
+
+
+typedef struct mem_block_header {
+    mem_pool_t *pool;       // 所属内存池
+    size_t block_size;      // 实际块大小
+    unsigned char is_large; // 是否为大内存
+	struct mem_block_header *next_large; // 大内存块链表指针
+} mem_block_header_t;
+
+
+
+// 内存池全局管理结构
+typedef struct {
+    mem_pool_t* pools;      // 不同大小的内存池链表
+    size_t pool_sizes[7];   // 预定义的内存块大小
+    size_t large_threshold; // 大内存阈值
+	int is_initialized;           // 内存池是否已初始化
+} mem_manager_t;
+
+void mem_init();
+void* mem_alloc(size_t size);
+void mem_free(void* ptr);
+void mem_destroy();
+
+// 替换原有的分配函数
+#define kvs_malloc(size) mem_alloc(size)
+#define kvs_free(ptr) mem_free(ptr)
+
+extern mem_manager_t g_mem_manager;

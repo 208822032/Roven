@@ -23,6 +23,7 @@ int kvs_array_create(kvs_array_t *inst) {
 	inst->total = 0;
 
 	return 0;
+
 }
 
 void kvs_array_destory(kvs_array_t *inst) {
@@ -50,13 +51,19 @@ int kvs_array_set(kvs_array_t *inst, char *key, char *value) {
 		return 1; // 
 	}
 
+     // 分配内存时记录来源
+    printf("Allocating key: %s, value: %s\n", key, value);
+
 	char *kcopy = kvs_malloc(strlen(key) + 1);
 	if (kcopy == NULL) return -2;
 	memset(kcopy, 0, strlen(key) + 1);
 	strncpy(kcopy, key, strlen(key));
 
 	char *kvalue = kvs_malloc(strlen(value) + 1);
-	if (kvalue == NULL) return -2;
+	if (kvalue == NULL) {
+        kvs_free(kcopy); // 释放已分配的内存
+        return -2;
+    }
 	memset(kvalue, 0, strlen(value) + 1);
 	strncpy(kvalue, value, strlen(value));
 
@@ -145,13 +152,12 @@ int kvs_array_del(kvs_array_t *inst, char *key) {
         }
 
         if (strcmp(inst->table[i].key, key) == 0) {
+
             // 释放内存
+            printf("释放内存\n");
             kvs_free(inst->table[i].key);
             kvs_free(inst->table[i].value);
-            
-            // 标记为已删除
-            inst->table[i].key = NULL;
-            inst->table[i].value = NULL;
+
 
             // 如果删除的是最后一个元素，减少total计数
             if (i == inst->total - 1) {

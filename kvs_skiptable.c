@@ -1,227 +1,82 @@
-#include "kvstore.h"
-#include <time.h>
 
-
-Node* createNode(int level, char* key, char* value) {
-    Node* newNode = (Node*)malloc(sizeof(Node));
-    if (!newNode) return NULL;
-    
-    // 复制字符串
-    newNode->key = strdup(key);
-    newNode->value = strdup(value);
-    
-    if (!newNode->key || !newNode->value) {
-        if (newNode->key) kvs_free(newNode->key);
-        if (newNode->value) kvs_free(newNode->value);
-        kvs_free(newNode);
-        return NULL;
-    }
-    
-    newNode->forward = (Node**)malloc((level + 1) * sizeof(Node*));
-    if (!newNode->forward) {
-        kvs_free(newNode->key);
-        kvs_free(newNode->value);
-        kvs_free(newNode);
-        return NULL;
-    }
-    
-    return newNode;
-}
-
-SkipList* createSkipList() {
-    SkipList* skipList = (SkipList*)malloc(sizeof(SkipList));
-    if (!skipList) return NULL;
-    
-    skipList->level = 0;
-    
-    // 使用空键创建头节点
-    skipList->header = createNode(MAX_LEVEL, "", "");
-    if (!skipList->header) {
-        kvs_free(skipList);
-        return NULL;
-    }
-    
-    for (int i = 0; i <= MAX_LEVEL; ++i) {
-        skipList->header->forward[i] = NULL;
-    }
-    
-   return skipList; 
-}
-
-int randomLevel() {
-   int level = 0;
-   while (rand() < RAND_MAX / 2 && level < MAX_LEVEL)
-      level++;
-   return level;
-}
-
-// 插入函数（支持字符串键值）
-bool insert(SkipList* skipList, char* key, char* value) {
-   if (!skipList || !key || !value) return false;
-   
-   Node* update[MAX_LEVEL + 1];
-   Node* current = skipList->header;
-
-   for (int i = skipList->level; i >= 0; --i) {
-      while (current->forward[i] != NULL && 
-             strcmp(current->forward[i]->key, key) < 0) {
-         current = current->forward[i];
-      }
-      update[i] = current;
-   }
-
-   current = current->forward[0];
-
-   if (current == NULL || strcmp(current->key, key) != 0) {
-      int level = randomLevel();
-
-      if (level > skipList->level) {
-         for (int i = skipList->level + 1; i <= level; ++i)
-            update[i] = skipList->header;
-         skipList->level = level;
-      }
-
-      Node* newNode = createNode(level, key, value);
-      if (!newNode) return false;
-
-      for (int i = 0; i <= level; ++i) {
-         newNode->forward[i] = update[i]->forward[i];
-         update[i]->forward[i] = newNode;
-      }
-      
-      //printf("Inserted key %s\n", key);
-      return true;
-   } else {
-       printf("Key %s already exists\n", key);
-       return false;
-   }
-}
-
-// 显示函数（支持字符串键值）
-void display(SkipList* skipList) {
-    if (!skipList) return;
-    
-    printf("Skip List:\n");
-    
-    for (int i = 0; i <= skipList->level; ++i) {
-        Node* node = skipList->header->forward[i];
-        printf("Level %d: ", i);
-        
-        while (node != NULL) {
-            printf("%s ", node->key);
-            node = node->forward[i];
-        }
-        
-        printf("\n");
-    }
-}
-
-// 查找函数（支持字符串键值）
-bool search(SkipList* skipList, char* key) {
-    if (!skipList || !key) return false;
-    
-    Node* current = skipList->header;
-
-    for (int i = skipList->level; i >= 0; --i) {
-        while (current->forward[i] != NULL && 
-               strcmp(current->forward[i]->key, key) < 0) {
-            current = current->forward[i];
-        }
-    }
-
-    current = current->forward[0];
-
-    if (current && strcmp(current->key, key) == 0) {
-        printf("Key %s found with value %s\n", key, current->value);
-        return true;
-    } else {
-        printf("Key %s not found\n", key);
-        return false;
-    }
-}
-
+#include "kvstore.h"  // 包含内存池函数声明
 
 
 kvs_skiptable_t global_skiptable;
 
-int kvs_skiptable_create(kvs_skiptable_t *table){
-    if (!table) return -1;
+// 创建跳表节点（使用内存池）
+Node* create_node(int level, const char* key, const char* value) {
+    // 计算节点总大小（结构体 + 指针数组）
+    size_t node_size = sizeof(Node) + (level + 1) * sizeof(Node*);
+    Node* node = mem_alloc(node_size);
+    if (!node) return NULL;
+    // 初始化节点数据
+    strncpy(node->key, key, KEY_SIZE);
+    strncpy(node->value, value, VALUE_SIZE);
+    node->level = level;
     
-    SkipList* sl = createSkipList();
-    if (!sl) return -1;
+    // 初始化所有指针为NULL
+    for (int i = 0; i <= level; i++) {
+        node->forward[i] = NULL;
+    }
     
-    *table = *sl;
-    kvs_free(sl);
+    return node;
+}
+
+// 销毁节点（使用内存池）
+void free_node(Node* node) {
+    if (node) mem_free(node);
+}
+
+int kvs_skiptable_create(kvs_skiptable_t *table) {
+    // 初始化跳表结构
+    table->level = 0;
+
+    // 创建头节点（使用最大层数）
+    table->header = create_node(MAX_LEVEL, "", "");
+    if (!table->header) return -1;
+
+    // 初始化所有指针为NULL
+    for (int i = 0; i <= MAX_LEVEL; i++) {
+        table->header->forward[i] = NULL;
+    }
+    
     return 0;
 }
-void kvs_skiptable_destroy(kvs_skiptable_t *table){
+
+void kvs_skiptable_destroy(kvs_skiptable_t *table) {
     if (!table || !table->header) return;
     
-    Node* current = table->header;
+    // 遍历释放所有节点
+    Node* current = table->header->forward[0];
     while (current) {
         Node* next = current->forward[0];
-        
-        if (current->key) kvs_free(current->key);
-        if (current->value) kvs_free(current->value);
-        if (current->forward) kvs_free(current->forward);
-        
-        kvs_free(current);
+        free_node(current);
         current = next;
     }
     
+    // 释放头节点
+    free_node(table->header);
     table->header = NULL;
     table->level = 0;
 }
 
-int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value){
+// 随机生成节点层数
+int random_level() {
+    int level = 0;
+    while (rand() < RAND_MAX / 2 && level < MAX_LEVEL)
+        level++;
+    return level;
+}
+
+int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !key || !value) return -1;
-    return insert(table, key, value) ? 0 : 1;
-}
-char * kvs_skiptable_get(kvs_skiptable_t *table, char *key){
-    if (!table || !key) return NULL;
-    
-    Node* current = table->header;
-    for (int i = table->level; i >= 0; --i) {
-        while (current->forward[i] && 
-               strcmp(current->forward[i]->key, key) < 0) {
-            current = current->forward[i];
-        }
-    }
-    
-    current = current->forward[0];
-    return (current && strcmp(current->key, key) == 0) ? current->value : NULL;
-}
-int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value){
-    if (!table || !key || !value) return -1;
-    
-    Node* current = table->header;
-    for (int i = table->level; i >= 0; --i) {
-        while (current->forward[i] && 
-               strcmp(current->forward[i]->key, key) < 0) {
-            current = current->forward[i];
-        }
-    }
-    
-    current = current->forward[0];
-    if (!current || strcmp(current->key, key) != 0) {
-        return 1; // 键不存在
-    }
-    
-    char* new_value = strdup(value);
-    if (!new_value) return -1;
-    
-    kvs_free(current->value);
-    current->value = new_value;
-    return 0;
-}
-int kvs_skiptable_del(kvs_skiptable_t *table, char *key){
-    if (!table || !key) return -1;
     
     Node* update[MAX_LEVEL + 1];
     Node* current = table->header;
     
-    // 查找节点并记录路径
-    for (int i = table->level; i >= 0; --i) {
+    // 从最高层开始查找插入位置
+    for (int i = table->level; i >= 0; i--) {
         while (current->forward[i] && 
                strcmp(current->forward[i]->key, key) < 0) {
             current = current->forward[i];
@@ -230,162 +85,180 @@ int kvs_skiptable_del(kvs_skiptable_t *table, char *key){
     }
     
     current = current->forward[0];
-    if (!current || strcmp(current->key, key) != 0) {
-        return 1; // 键不存在
+    
+    // 如果键已存在，更新值
+    if (current && strcmp(current->key, key) == 0) {
+        strncpy(current->value, value, VALUE_SIZE);
+        return 1;  // 表示更新
     }
     
-    // 从各层链表中移除节点
+    // 创建新节点
+    int new_level = random_level();
+    Node* new_node = create_node(new_level, key, value);
+    if (!new_node) return -1;
+    
+    // 如果新节点的层数大于当前跳表层数，更新跳表层数
+    if (new_level > table->level) {
+        for (int i = table->level + 1; i <= new_level; i++) {
+            update[i] = table->header;
+        }
+        table->level = new_level;
+    }
+    
+    // 插入新节点
+    for (int i = 0; i <= new_level; i++) {
+        new_node->forward[i] = update[i]->forward[i];
+        update[i]->forward[i] = new_node;
+    }
+    
+    return 0;  // 表示插入
+}
+
+char* kvs_skiptable_get(kvs_skiptable_t *table, char *key) {
+    if (!table || !table->header || !key) return NULL;//增加对header检查
+    
+    Node* current = table->header;
+    
+    // 从最高层开始搜索
+    for (int i = table->level; i >= 0; i--) {
+        while (current->forward[i] && 
+               strcmp(current->forward[i]->key, key) < 0) {
+            current = current->forward[i];
+        }
+    }
+    
+    current = current->forward[0];
+    
+    if (current && strcmp(current->key, key) == 0) {
+        return current->value;
+    }
+    
+    return NULL;
+}
+
+int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value) {
+    if (!table || !table->header || !key || !value) return -1;  // 添加header检查
+
+    Node* node = table->header;
+    
+    // 搜索节点
+    for (int i = table->level; i >= 0; i--) {
+        while (node->forward[i] && 
+               strcmp(node->forward[i]->key, key) < 0) {
+            node = node->forward[i];
+        }
+    }
+    node = node->forward[0];
+    
+    if (node && strcmp(node->key, key) == 0) {
+        strncpy(node->value, value, VALUE_SIZE);
+        return 0;
+    }
+    
+    return -1;  // 未找到
+}
+
+int kvs_skiptable_del(kvs_skiptable_t *table, char *key) {
+    if (!table || !key) return -1;
+    
+    Node* update[MAX_LEVEL + 1];
+    Node* current = table->header;
+    
+    // 查找要删除的节点及更新路径
+    for (int i = table->level; i >= 0; i--) {
+        while (current->forward[i] && 
+               strcmp(current->forward[i]->key, key) < 0) {
+            current = current->forward[i];
+        }
+        update[i] = current;
+    }
+    
+    current = current->forward[0];
+    
+    // 如果节点不存在
+    if (!current || strcmp(current->key, key) != 0) {
+        return -1;
+    }
+    
+    // 更新前驱节点的指针
     for (int i = 0; i <= table->level; i++) {
         if (update[i]->forward[i] != current) break;
         update[i]->forward[i] = current->forward[i];
     }
     
     // 释放节点内存
-    kvs_free(current->key);
-    kvs_free(current->value);
-    kvs_free(current->forward);
-    kvs_free(current);
+    free_node(current);
     
-    // 更新跳表层数
+    // 降低跳表层数（如果最高层变为空）
     while (table->level > 0 && table->header->forward[table->level] == NULL) {
         table->level--;
     }
     
     return 0;
 }
-int kvs_skiptable_exist(kvs_skiptable_t *table, char *key){
-    return (kvs_skiptable_get(table, key) != NULL) ? 0 : 1;
+
+int kvs_skiptable_exist(kvs_skiptable_t *table, char *key) {
+    return table && table->header && kvs_skiptable_get(table, key) != NULL;
 }
 
-// void *kvs_malloc(size_t size) {
-// 	return malloc(size);
-// }
-
-// void kvs_free(void *ptr) {
-// 	return free(ptr);
-// }
-
 int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len) {
-    if (!table) return -1;
+    if (!table || !table->header || !response || max_len <= 0) return -1;  // 添加header检查
     
-    int len = 0;
-    Node *current = table->header->forward[0];
+    Node* current = table->header->forward[0];
+    int pos = 0;
     
-    while (current != NULL) {
-        int n = snprintf(response + len, max_len - len, 
-                         "%s:%s\r\n", current->key, current->value);
-        if (n < 0 || len + n >= max_len) break;
-        len += n;
+    // 遍历第0层（有序链表）
+    while (current && pos < max_len) {
+        int written = snprintf(response + pos, max_len - pos, 
+                              "%s:%s\r\n", current->key, current->value);
+        if (written < 0 || written >= max_len - pos) break;
+        pos += written;
         current = current->forward[0];
     }
     
-    return len;
+    // 确保字符串终止
+    if (pos < max_len) response[pos] = '\0';
+    else response[max_len - 1] = '\0';
+    
+    return pos;
 }
 
 int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, 
                         char *response, int max_len) {
-    if (!table || !start_key || !end_key) return -1;
+    if (!table || !table->header || !start_key || !end_key || !response || max_len <= 0) 
+        return -1;  // 添加header检查
+
+    // 处理 start_key > end_key 的情况（空范围）
+    if (strcmp(start_key, end_key) > 0) {
+        response[0] = '\0';
+        return 0;
+    }
     
-    int len = 0;
-    Node *current = table->header->forward[0];
+    Node* current = table->header;
+    int pos = 0;
     
-    while (current != NULL) {
-        if (strcmp(current->key, start_key) >= 0) {
-            if (strcmp(current->key, end_key) <= 0) {
-                int n = snprintf(response + len, max_len - len, 
-                                 "%s:%s\r\n", current->key, current->value);
-                if (n < 0 || len + n >= max_len) break;
-                len += n;
-            } else {
-                // 超出结束键，停止遍历
-                break;
-            }
+    // 定位起始位置
+    for (int i = table->level; i >= 0; i--) {
+        while (current->forward[i] && 
+               strcmp(current->forward[i]->key, start_key) < 0) {
+            current = current->forward[i];
         }
+    }
+    current = current->forward[0];
+    
+    // 遍历范围内的节点
+    while (current && strcmp(current->key, end_key) <= 0 && pos < max_len) {
+        int written = snprintf(response + pos, max_len - pos, 
+                              "%s:%s\r\n", current->key, current->value);
+        if (written < 0 || written >= max_len - pos) break;
+        pos += written;
         current = current->forward[0];
     }
+
     
-    return len;
+    // 确保字符串终止
+    if (pos < max_len) response[pos] = '\0';
+    else response[max_len - 1] = '\0';
+    
+    return pos;
 }
-
-#if 0
-int main() {
-    // 初始化随机数种子
-    srand(time(NULL));
-    
-    // 创建跳表
-    kvs_skiptable_t table;
-    if (kvs_skiptable_create(&table) != 0) {
-        printf("Failed to create skip table\n");
-        return -1;
-    }
-
-    // 插入测试数据(故意乱序插入)
-    const char *keys[] = {"banana", "apple", "grape", "cherry", "orange", "pear", "mango", "kiwi"};
-    const char *values[] = {"yellow", "red", "purple", "dark red", "orange", "green", "yellow-red", "brown"};
-    int item_count = sizeof(keys)/sizeof(keys[0]);
-    
-    for (int i = 0; i < item_count; i++) {
-        if (kvs_skiptable_set(&table, (char*)keys[i], (char*)values[i]) != 0) {
-            printf("Failed to insert key: %s\n", keys[i]);
-        }
-    }
-
-    // 测试1: 排序功能
-    printf("=== Testing kvs_skiptable_sort ===\n");
-    char response[1024];
-    int len = kvs_skiptable_sort(&table, response, sizeof(response));
-    if (len > 0) {
-        printf("Sorted items:\n%s", response);
-    } else {
-        printf("Sort failed\n");
-    }
-
-    // 测试2: 范围查询
-    printf("\n=== Testing kvs_skiptable_range ===\n");
-    printf("Range from 'cherry' to 'orange':\n");
-    len = kvs_skiptable_range(&table, "cherry", "orange", response, sizeof(response));
-    if (len > 0) {
-        printf("%s", response);
-    } else {
-        printf("Range query failed\n");
-    }
-
-    // 测试3: 边界情况
-    printf("\n=== Testing edge cases ===\n");
-    // 空跳表测试
-    kvs_skiptable_t empty_table;
-    kvs_skiptable_create(&empty_table);
-    printf("Empty table sort: %d (expected 0)\n", 
-           kvs_skiptable_sort(&empty_table, response, sizeof(response)));
-    
-    // 无效范围测试
-    printf("Invalid range test: %d (expected 0)\n", 
-           kvs_skiptable_range(&table, "zebra", "aardvark", response, sizeof(response)));
-    
-    // 测试4: 精确边界测试
-    printf("\n=== Testing exact boundaries ===\n");
-    printf("Range from 'apple' to 'pear':\n");
-    len = kvs_skiptable_range(&table, "apple", "pear", response, sizeof(response));
-    if (len > 0) {
-        printf("%s", response);
-    }
-    
-    // 测试5: 单键范围测试
-    printf("\nSingle key range (banana to banana):\n");
-    len = kvs_skiptable_range(&table, "banana", "banana", response, sizeof(response));
-    if (len > 0) {
-        printf("%s", response);
-    }
-
-    // 测试6: 不存在的范围测试
-    printf("\nNon-existent range (watermelon to zucchini):\n");
-    len = kvs_skiptable_range(&table, "watermelon", "zucchini", response, sizeof(response));
-    printf("Result length: %d\n", len);
-
-    // 清理
-    kvs_skiptable_destroy(&table);
-    kvs_skiptable_destroy(&empty_table);
-    
-    return 0;
-}
-#endif

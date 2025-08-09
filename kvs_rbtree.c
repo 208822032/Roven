@@ -295,6 +295,11 @@ rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z) {
 		rbtree_delete_fixup(T, x);
 	}
 
+	// 释放节点内存
+    kvs_free(y->key);
+    kvs_free(y->value);
+    kvs_free(y);
+
 	return y;
 }
 
@@ -446,7 +451,6 @@ int kvs_rbtree_create(kvs_rbtree_t *inst) {
 	inst->nil = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
 	inst->nil->color = BLACK;
 	inst->root = inst->nil;
-
 	return 0;
 
 }
@@ -477,15 +481,26 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
 
 	if (!inst || !key || !value) return -1;
 
+	// 分配内存时记录来源
+    printf("Allocating RB node for key: %s, value: %s\n", key, value);
+
 	rbtree_node *node = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
+	if (!node) return -2;
 		
 	node->key = kvs_malloc(strlen(key) + 1);
-	if (!node->key) return -2;
+	if (!node->key) {
+        kvs_free(node);
+        return -2;
+    }
  	memset(node->key, 0, strlen(key) + 1);
 	strcpy(node->key, key);
 	
 	node->value = kvs_malloc(strlen(value) + 1);
-	if (!node->value) return -2;
+	if (!node->value) {
+        kvs_free(node->key);
+        kvs_free(node);
+        return -2;
+    }
 	memset(node->value, 0, strlen(value) + 1);
 	strcpy(node->value, value);
 
@@ -511,10 +526,16 @@ int kvs_rbtree_del(kvs_rbtree_t *inst, char *key) {
 	if (!inst || !key) return -1;
 
 	rbtree_node *node = rbtree_search(inst, key);
-	if (!node) return 1; // no exist
+	if (!node || node == inst->nil) return 1; // 键不存在
+
+	printf("Deleting RB node: key=%s, value=%s\n", node->key, (char*)node->value);
 	
 	rbtree_node *cur = rbtree_delete(inst, node);
-	free(cur);
+	
+	// 释放节点内存
+    kvs_free(cur->key);
+    kvs_free(cur->value);
+    kvs_free(cur);
 
 	return 0;
 }

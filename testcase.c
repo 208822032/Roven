@@ -325,7 +325,7 @@ void skiptable_testcase(int connfd){
 	testcase(connfd, "SGET Teacher", "King\r\n", "SGET-Teacher");
 	testcase(connfd, "SMOD Teacher Darren", "OK\r\n", "SMOD-Teacher");
 	testcase(connfd, "SGET Teacher", "Darren\r\n", "SGET-Teacher");
-	testcase(connfd, "SEXIST Teacher", "EXIST\r\n", "SGET-Teacher");
+	testcase(connfd, "SEXIST Teacher", "EXIST\r\n", "SEXIST-Teacher");
 	testcase(connfd, "SDEL Teacher", "OK\r\n", "SDEL-Teacher");
 	testcase(connfd, "SGET Teacher", "NO EXIST\r\n", "SGET-Teacher");
 	testcase(connfd, "SMOD Teacher KING", "NO EXIST\r\n", "SMOD-Teacher");
@@ -371,16 +371,6 @@ int main(int argc, char *argv[]) {
 		printf("arg error\n");
 		return -1;
 	}
-	printf("Modes:\n");
-	printf("  0: rbtree_testcase_1w\n");
-	printf("  1: rbtree_testcase_3w\n");
-	printf("  2: array_testcase_1w\n");
-	printf("  3: hash_testcase\n");
-	printf("  4: skiptable_testcase\n");
-	printf("  5: Array Sort & Range Test\n");
-	printf("  6: RBTree Sort & Range Test\n");
-	printf("  7: Hash Sort & Range Test\n");
-	printf("  8: SkipTable Sort & Range Test\n");
 
 	char *ip = argv[1];
 	int port = atoi(argv[2]);
@@ -388,24 +378,32 @@ int main(int argc, char *argv[]) {
 
 	int connfd = connect_tcpserver(ip, port);
 
-	if (mode == 0) {
-		rbtree_testcase_1w(connfd);
-	} else if (mode == 1) {
+	if (mode == 0) {//正确
+		printf("  0: rbtree_testcase_1w\n");
+		rbtree_testcase(connfd);
+	} else if (mode == 1) {//正确
 		rbtree_testcase_3w(connfd);
-	} else if (mode == 2) {
-		array_testcase_1w(connfd);
+	} else if (mode == 2) {//正确
+		printf("  2: array_testcase_1w\n");
+		array_testcase(connfd);
 		//array_testcase(connfd);
-	} else if (mode == 3) {
+	} else if (mode == 3) {//正确
+		printf("  3: hash_testcase\n");
 		hash_testcase(connfd);
-	}else if(mode == 4){
+	}else if(mode == 4){//不正确
+		printf("  4: skiptable_testcase\n");
         skiptable_testcase(connfd);
-    }else if(mode == 5){
+    }else if(mode == 5){//正确
+		printf("  5: Array Sort & Range Test\n");
 		array_test_sort_range(connfd);
-	}else if(mode == 6){
-		rbtree_test_sort_range(connfd);
-	}else if(mode == 7){
+	}else if(mode == 6){//正确
+		printf("  6: RBTree Sort & Range Test\n");
+		rbtree_test_sort_range(connfd);	
+	}else if(mode == 7){//正确
+		printf("  7: Hash Sort & Range Test\n");
 		hash_test_sort_range(connfd);
-	}else if(mode == 8){
+	}else if(mode == 8){//正确
+		printf("  8: SkipTable Sort & Range Test\n");
 		skiptable_test_sort_range(connfd);
 	}
 

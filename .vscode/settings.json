@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "stat.h": "c",
-        "stddef.h": "c"
+        "stddef.h": "c",
+        "kvstore.h": "c"
     }
 }
