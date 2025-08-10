@@ -95,12 +95,13 @@ char* kvs_array_get(kvs_array_t *inst, char *key) {
 		if (inst->table[i].key == NULL) {
 			continue;
 		}
-
+        
 		if (strcmp(inst->table[i].key, key) == 0) {
 			return inst->table[i].value;
 		}
+        
 	}
-
+    
 	return NULL;
 }
 

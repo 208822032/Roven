@@ -16,7 +16,6 @@ void server_reader(void *arg) {
 	int fd = *(int *)arg;
 	int ret = 0;
 
-	printf("开始接收数据\n");
 	while (1) {
 		
 		char buf[1024] = {0};
@@ -25,6 +24,7 @@ void server_reader(void *arg) {
 			
 			char response[1024] = {0};
 			int slength = kvs_handler(buf, ret, response);
+			printf("response msg: %s", response);
 
 			// 检查是否收到QUIT命令
             if (g_shutdown_flag) {

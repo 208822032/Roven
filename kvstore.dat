@@ -1,4 +1,8 @@
 [ARRAY]
+B:b
+A:a
 [RBTREE]
 [HASH]
 [SKIPTABLE]
+A:a
+B:b

@@ -211,20 +211,28 @@ void kvs_load_all(const char *filename){
 
 
 int kvs_split_token(char *msg, char *tokens[]) {
+    if (msg == NULL || tokens == NULL) return -1;
 
-	if (msg == NULL || tokens == NULL) return -1;
+    int idx = 0;
+    char *msg_copy = kvs_malloc(strlen(msg) + 1);
+    if (!msg_copy) return -1;
+    strcpy(msg_copy, msg);
 
-	int idx = 0;
-	char *token = strtok(msg, " ");
-	
-	while (token != NULL) {
-		printf("idx: %d, %s\n", idx, token);
-		
-		tokens[idx ++] = token;
-		token = strtok(NULL, " ");
-	}
+    char *token = strtok(msg_copy, " ");
+    while (token != NULL && idx < KVS_MAX_TOKENS) {
+        tokens[idx] = strdup(token);
+        if (!tokens[idx]) {
+            // 分配失败时清理已分配的内存
+            for (int i = 0; i < idx; i++) kvs_free(tokens[i]);
+            kvs_free(msg_copy);
+            return -1;
+        }
+        idx++;
+        token = strtok(NULL, " ");
+    }
 
-	return idx;
+    kvs_free(msg_copy);
+    return idx;
 }
 
 
@@ -249,11 +257,15 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 	int ret = 0;
 	char *key = tokens[1];
 	char *value = tokens[2];
+	//key = strdup(tokens[1]);
+	//value = strdup(tokens[2]);
 	char *result = {0};
+	printf("cmd: %s, key: %s, value: %s\n", tokens[0], tokens[1], value);
 
 	switch(cmd) {
 #if ENABLE_ARRAY
 	case KVS_CMD_SET:
+		printf("kvs_array_set\n");
 		ret = kvs_array_set(&global_array ,key, value);
 		if (ret < 0) {
 			length = sprintf(response, "ERROR\r\n");
@@ -262,15 +274,17 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 		} else {
 			length = sprintf(response, "EXIST\r\n");
 		} 
-		
+		printf("kvs_array_set_end\n");
 		break;
 	case KVS_CMD_GET: {
+		printf("kvs_array_get\n");
 		char *result = kvs_array_get(&global_array, key);
 		if (result == NULL) {
 			length = sprintf(response, "NO EXIST\r\n");
 		} else {
 			length = sprintf(response, "%s\r\n", result);
 		}
+		printf("kvs_array_get_end\n");
 		break;
 	}
 	case KVS_CMD_DEL:
@@ -535,7 +549,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
  * response: need to send
  * @return : length of response
  */
-
+#if 0
 int kvs_protocol(char *msg, int length, char *response) {  //
 	
 // SET Key Value
@@ -554,6 +568,91 @@ int kvs_protocol(char *msg, int length, char *response) {  //
 
 	return kvs_filter_protocol(tokens, count, response);
 }
+#else
+
+//支持pipeline
+int kvs_protocol(char *msg, int length, char *response) {
+    if (msg == NULL || length <= 0 || response == NULL) return -1;
+    
+    // 创建消息副本（strtok会修改原始字符串）
+    char *msg_copy = kvs_malloc(length + 1);
+    if (!msg_copy) return -1;
+    memcpy(msg_copy, msg, length);
+    msg_copy[length] = '\0';
+    
+    int total_response_len = 0;
+    char *current_pos = msg_copy;
+    
+    while (current_pos < msg_copy + length && *current_pos != '\0') {
+        // 查找行结束符
+        char *line_end = strstr(current_pos, "\r\n");
+        size_t line_length = 0;
+        
+        if (line_end != NULL) {
+            line_length = line_end - current_pos;
+        } else {
+            // 处理最后一行（无\r\n）
+            line_length = strlen(current_pos);
+            line_end = current_pos + line_length;
+        }
+        
+        // 跳过空行
+        if (line_length > 0) {
+            // 临时终止当前行
+            char temp = *line_end;
+            *line_end = '\0';
+            
+            // 解析命令
+            char *tokens[KVS_MAX_TOKENS] = {0};
+            int token_count = kvs_split_token(current_pos, tokens);
+            
+            if (token_count > 0) {
+                char single_response[KVS_MAX_RESPONSE_SIZE];
+                int resp_len = kvs_filter_protocol(tokens, token_count, single_response);
+                if (resp_len > 0) {
+                    // 检查响应缓冲区容量
+					
+                    if (total_response_len + resp_len < KVS_MAX_RESPONSE_SIZE) {
+                        memcpy(response + total_response_len, single_response, resp_len);
+                        total_response_len += resp_len;
+						
+                    } else {
+                        // 缓冲区溢出处理
+                        const char *error_msg = "ERROR: Response buffer full\r\n";
+                        int error_len = strlen(error_msg);
+                        if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE) {
+                            memcpy(response + total_response_len, error_msg, error_len);
+                            total_response_len += error_len;
+                        }
+                        break;
+                    }
+					
+                }
+            }
+            
+            // 恢复原始字符
+            *line_end = temp;
+            
+            // 释放当前行的tokens
+            for (int i = 0; i < token_count; i++) {
+                if (tokens[i]) free(tokens[i]);
+            }
+			printf("-----------\n");
+        }
+        
+        // 移动到下一行
+        if (line_end < msg_copy + length) {
+            current_pos = line_end + (line_end == current_pos ? 0 : 2);  // 跳过\r\n
+        } else {
+            break;  // 超出缓冲区范围
+        }
+    }
+    
+    kvs_free(msg_copy);
+    return total_response_len;
+}
+#endif
+
 
 
 int init_kvengine(void) {
