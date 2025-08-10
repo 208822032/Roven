@@ -209,6 +209,7 @@ void kvs_load_all(const char *filename);
 #endif
 
 
+
 //内存池
 typedef struct mem_block {
     struct mem_block* next;
@@ -237,11 +238,10 @@ typedef struct mem_block_header {
 } mem_block_header_t;
 
 
-
 // 内存池全局管理结构
 typedef struct {
     mem_pool_t* pools;      // 不同大小的内存池链表
-    size_t pool_sizes[7];   // 预定义的内存块大小
+    size_t pool_sizes[13];   // 预定义的内存块大小
     size_t large_threshold; // 大内存阈值
 	int is_initialized;           // 内存池是否已初始化
 } mem_manager_t;
@@ -251,8 +251,19 @@ void* mem_alloc(size_t size);
 void mem_free(void* ptr);
 void mem_destroy();
 
+#ifndef USE_MEMPOOL
+
 // 替换原有的分配函数
 #define kvs_malloc(size) mem_alloc(size)
 #define kvs_free(ptr) mem_free(ptr)
 
+#else
+// 使用系统内存管理
+#define kvs_malloc(size) malloc(size)
+#define kvs_free(ptr) free(ptr)
+#endif
+
 extern mem_manager_t g_mem_manager;
+
+int init_kvengine(void);
+void dest_kvengine(void);

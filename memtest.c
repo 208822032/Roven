@@ -42,6 +42,7 @@ TestResult run_test_scenario(int use_mempool, int allocation_pattern) {
     TestResult result = {0};
     size_t initial_vss, initial_rss;
     get_memory_usage(&initial_vss, &initial_rss);
+    
     result.initial_rss = initial_rss;
 
     void **pointers = malloc(NUM_ALLOCATIONS * sizeof(void*));
@@ -237,7 +238,7 @@ int main() {
     for (int pattern = 0; pattern < 3; pattern++) {
         // 初始化内存池
         mem_init();
-        
+
         // 测试内存池版本
         TestResult pooled = run_test_scenario(1, pattern);
         

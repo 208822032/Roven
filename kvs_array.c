@@ -51,9 +51,6 @@ int kvs_array_set(kvs_array_t *inst, char *key, char *value) {
 		return 1; // 
 	}
 
-     // 分配内存时记录来源
-    printf("Allocating key: %s, value: %s\n", key, value);
-
 	char *kcopy = kvs_malloc(strlen(key) + 1);
 	if (kcopy == NULL) return -2;
 	memset(kcopy, 0, strlen(key) + 1);

@@ -8,7 +8,7 @@ kvs_skiptable_t global_skiptable;
 Node* create_node(int level, const char* key, const char* value) {
     // 计算节点总大小（结构体 + 指针数组）
     size_t node_size = sizeof(Node) + (level + 1) * sizeof(Node*);
-    Node* node = mem_alloc(node_size);
+    Node* node = kvs_malloc(node_size);//mem_alloc
     if (!node) return NULL;
     // 初始化节点数据
     strncpy(node->key, key, KEY_SIZE);
@@ -25,7 +25,7 @@ Node* create_node(int level, const char* key, const char* value) {
 
 // 销毁节点（使用内存池）
 void free_node(Node* node) {
-    if (node) mem_free(node);
+    if (node) kvs_free(node);//mem_free
 }
 
 int kvs_skiptable_create(kvs_skiptable_t *table) {

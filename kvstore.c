@@ -18,6 +18,7 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
+
 mem_manager_t g_mem_manager;
 
 #if 0
@@ -600,6 +601,7 @@ void dest_kvengine(void) {
 #endif
 
 	mem_destroy();  // 清理内存管理组件
+
 }
 
 // 信号处理函数
@@ -609,6 +611,7 @@ void handle_signal(int sig) {
     exit(0);
 }
 
+#if 1
 int main(int argc, char *argv[]) {
 
 	if (argc != 2) return -1;
@@ -642,5 +645,6 @@ int main(int argc, char *argv[]) {
     return 0;    
     
 }
+#endif
 
 

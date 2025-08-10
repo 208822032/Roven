@@ -7,10 +7,10 @@ mem_manager_t g_mem_manager;
 
 void mem_init() {
     // 初始化内存池配置
-    size_t sizes[] = {16, 32, 64, 128, 256, 512, 1024};
+    size_t sizes[] = {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024};
     g_mem_manager = (mem_manager_t){
         .pools = NULL,
-        .pool_sizes = {16, 32, 64, 128, 256, 512, 1024},
+        .pool_sizes = {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024},
         .large_threshold = 1024,
         .is_initialized = 1  // 标记为已初始化
     };
@@ -20,7 +20,7 @@ void mem_init() {
     large_blocks_head = NULL;
 
     // 创建不同规格的内存池
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 13; i++) {
         mem_pool_t* pool = malloc(sizeof(mem_pool_t));
         *pool = (mem_pool_t){
             .block_size = g_mem_manager.pool_sizes[i],
