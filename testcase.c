@@ -90,7 +90,7 @@ void array_test_sort_range(int connfd) {
     // 测试范围查询
     testcase(connfd, "RANGE B_Banana D_Grape", "B_Banana:Yellow\r\nC_Cherry:Red\r\nD_Grape:Purple\r\n", "RANGE-Array");
     
-    // 清理测试数据
+    //清理测试数据
     testcase(connfd, "DEL A_Apple", "OK\r\n", "DEL-A_Apple");
     testcase(connfd, "DEL B_Banana", "OK\r\n", "DEL-B_Banana");
     testcase(connfd, "DEL C_Cherry", "OK\r\n", "DEL-C_Cherry");
@@ -364,6 +364,73 @@ void skiptable_testcase_1w(int connfd){
 
 }
 
+void pipeline_testcase(int connfd) {
+    printf("Testing pipeline functionality...\n");
+
+    // 构建包含多个命令的pipeline请求
+    const char *pipeline_cmd = 
+        "RSET PipeKey1 Value1\r\n"
+        "RGET PipeKey1\r\n"
+        "RMOD PipeKey1 NewValue1\r\n"
+        "RGET PipeKey1\r\n"
+        "RDEL PipeKey1\r\n"
+        "RGET PipeKey1\r\n"
+        "RSET PipeKey2 Value2\r\n"
+        "RSET PipeKey3 Value3\r\n"
+        "RSORT\r\n";
+
+    // 发送pipeline请求
+    send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
+
+    // 接收响应缓冲区
+    char response[2048] = {0};
+    int total_received = 0;
+    int expected_responses = 9; // 我们发送了9个命令
+
+    // 接收所有响应（可能需要多次recv）
+    while (total_received < sizeof(response) - 1) {
+        int n = recv(connfd, response + total_received, 
+                    sizeof(response) - total_received - 1, 0);
+        if (n <= 0) break;
+        total_received += n;
+        
+        // 检查是否收到全部响应（按\r\n计数）
+        int response_count = 0;
+        for (int i = 0; i < total_received; i++) {
+            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
+                response_count++;
+            }
+        }
+        if (response_count >= expected_responses) break;
+    }
+    response[total_received] = '\0';
+
+    // 验证响应内容
+    const char *expected_response = 
+        "OK\r\n"
+        "Value1\r\n"
+        "OK\r\n"
+        "NewValue1\r\n"
+        "OK\r\n"
+        "NO EXIST\r\n"
+        "OK\r\n"
+        "OK\r\n"
+        "PipeKey2:Value2\r\nPipeKey3:Value3\r\n"; // 最后是SORT的结果
+
+    if (strcmp(response, expected_response) == 0) {
+        printf("==> PASS -> Pipeline test\n");
+    } else {
+        printf("==> FAILED -> Pipeline test\n");
+        printf("Expected:\n%s\n", expected_response);
+        printf("Received:\n%s\n", response);
+    }
+
+    // 清理测试数据
+    testcase(connfd, "RDEL PipeKey2", "OK\r\n", "Pipeline cleanup");
+    testcase(connfd, "RDEL PipeKey3", "OK\r\n", "Pipeline cleanup");
+}
+
+
 // testcase 192.168.243.131  2000
 int main(int argc, char *argv[]) {
 
@@ -405,6 +472,8 @@ int main(int argc, char *argv[]) {
 	}else if(mode == 8){//正确
 		printf("  8: SkipTable Sort & Range Test\n");
 		skiptable_test_sort_range(connfd);
+	}else if(mode == 9){
+		pipeline_testcase(connfd);
 	}
 
 	return 0;
