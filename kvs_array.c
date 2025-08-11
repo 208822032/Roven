@@ -155,6 +155,8 @@ int kvs_array_del(kvs_array_t *inst, char *key) {
             printf("释放内存\n");
             kvs_free(inst->table[i].key);
             kvs_free(inst->table[i].value);
+            inst->table[i].key = NULL;   // 关键修复！
+            inst->table[i].value = NULL; // 保持一致性
 
 
             // 如果删除的是最后一个元素，减少total计数

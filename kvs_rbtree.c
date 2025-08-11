@@ -9,6 +9,7 @@
 #include "kvstore.h"
 
 rbtree_node *rbtree_mini(rbtree *T, rbtree_node *x) {
+	if (x == T->nil) return T->nil; // 空树检查
 	while (x->left != T->nil) {
 		x = x->left;
 	}
@@ -143,8 +144,11 @@ void rbtree_insert(rbtree *T, rbtree_node *z) {
 			x = x->left;
 		} else if (strcmp(z->key, x->key) > 0) {
 			x = x->right;
-		} else {
-			return ;
+		} else {//如果已存在值
+			kvs_free(z->key);
+			kvs_free(z->value);
+			kvs_free(z);
+			return;
 		}
 
 #else
@@ -449,8 +453,15 @@ int kvs_rbtree_create(kvs_rbtree_t *inst) {
 	if (inst == NULL) return 1;
 
 	inst->nil = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
+	if (!inst->nil) return 1; // 分配失败检查
+
 	inst->nil->color = BLACK;
 	inst->root = inst->nil;
+#if 1
+	inst->nil->right = inst->nil;
+    inst->nil->parent = inst->nil;
+	inst->root = inst->nil;
+#endif
 	return 0;
 
 }
@@ -461,12 +472,14 @@ void kvs_rbtree_destory(kvs_rbtree_t *inst) {
 
 	rbtree_node *node = NULL;
 
-	while (!(node = inst->root)) {
+	//while (!(node = inst->root)) {
+	while(inst->root != inst->nil){
 		
-		rbtree_node *mini = rbtree_mini(inst, node);
+		//rbtree_node *mini = rbtree_mini(inst, node);
+		rbtree_node *mini = rbtree_mini(inst, inst->root);
 		
 		rbtree_node *cur = rbtree_delete(inst, mini);
-		kvs_free(cur);
+		//kvs_free(cur);
 		
 	}
 
@@ -476,33 +489,40 @@ void kvs_rbtree_destory(kvs_rbtree_t *inst) {
 
 }
 
+// 辅助函数：安全字符串复制
+char* kvs_strdup(const char *src) {
+    if (!src) return NULL;
+    size_t len = strlen(src) + 1;
+    char *dest = kvs_malloc(len);
+    if (dest) memcpy(dest, src, len);  // 比strcpy更安全
+    return dest;
+}
 
 int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
 
-	if (!inst || !key || !value) return -1;
+	if (!inst || !key || !value || inst->nil == NULL)  return -1;
 
-	// 分配内存时记录来源
-    printf("Allocating RB node for key: %s, value: %s\n", key, value);
 
 	rbtree_node *node = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
 	if (!node) return -2;
-		
-	node->key = kvs_malloc(strlen(key) + 1);
-	if (!node->key) {
+
+
+	// 分配并复制键
+    node->key = kvs_strdup(key);
+    if (!node->key) {
         kvs_free(node);
         return -2;
     }
- 	memset(node->key, 0, strlen(key) + 1);
-	strcpy(node->key, key);
-	
-	node->value = kvs_malloc(strlen(value) + 1);
+
+
+	node->value = kvs_strdup(value);
 	if (!node->value) {
         kvs_free(node->key);
         kvs_free(node);
         return -2;
     }
-	memset(node->value, 0, strlen(value) + 1);
-	strcpy(node->value, value);
+
+	printf("[ALLOC] %p for key: %s\n", node->key, key);
 
 	rbtree_insert(inst, node);
 
@@ -532,10 +552,12 @@ int kvs_rbtree_del(kvs_rbtree_t *inst, char *key) {
 	
 	rbtree_node *cur = rbtree_delete(inst, node);
 	
+#if 0
 	// 释放节点内存
     kvs_free(cur->key);
     kvs_free(cur->value);
     kvs_free(cur);
+#endif
 
 	return 0;
 }
