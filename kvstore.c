@@ -1,4 +1,5 @@
 #include "kvstore.h"
+#include "distributed.h"
 
 int g_shutdown_flag = 0;
 
@@ -21,15 +22,17 @@ extern kvs_skiptable_t global_skiptable;
 
 mem_manager_t g_mem_manager;
 
-#if 0
-void *kvs_malloc(size_t size) {
-	return malloc(size);
+extern distributed_config_t global_dist_config;
+
+static __thread int sync_context = 0;//每个线程都有的局部变量
+
+void set_sync_context(int context) {
+	sync_context = context;
+}
+int get_sync_context() {
+	return sync_context;
 }
 
-void kvs_free(void *ptr) {
-	return free(ptr);
-}
-#endif
 
 const char *command[] = {
 	"SET", "GET", "DEL", "MOD", "EXIST","RANGE","SORT",
@@ -78,6 +81,14 @@ enum {
 	KVS_CMD_QUIT,
 
 	KVS_CMD_COUNT,
+};
+
+// 定义写操作命令集合
+static const int write_commands[] = {
+    KVS_CMD_SET, KVS_CMD_DEL, KVS_CMD_MOD,
+    KVS_CMD_RSET, KVS_CMD_RDEL, KVS_CMD_RMOD,
+    KVS_CMD_HSET, KVS_CMD_HDEL, KVS_CMD_HMOD,
+    KVS_CMD_SSET, KVS_CMD_SDEL, KVS_CMD_SMOD
 };
 
 //保存与加载文件
@@ -248,7 +259,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 	int cmd = KVS_CMD_START;
 	for (cmd = KVS_CMD_START;cmd < KVS_CMD_COUNT;cmd ++) {
 		if (strcmp(tokens[0], command[cmd]) == 0) {
-			printf("tokens: %s, command: %s\n", tokens[0], command[cmd]);
+			//printf("tokens: %s, command: %s\n", tokens[0], command[cmd]);
 			break;
 		} 
 	}
@@ -260,12 +271,27 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 	//key = strdup(tokens[1]);
 	//value = strdup(tokens[2]);
 	char *result = {0};
-	printf("cmd: %s, key: %s, value: %s\n", tokens[0], tokens[1], value);
+	//printf("cmd: %s, key: %s, value: %s\n", tokens[0], tokens[1], value);
+
+	int is_write_command = 0;
+	int i;
+	for(i = 0;i < sizeof(write_commands)/sizeof(write_commands[0]); i++){
+		if(cmd == write_commands[i]){
+			is_write_command = 1;
+			break;
+		}
+	}
+
+	//如果是从节点 且为写操作 直接返回错误
+	//get_sync_context() == 0 说明当前是从节点角色 且当前命令不是用于同步
+	if(global_dist_config.role == ROLE_SLAVE && is_write_command && get_sync_context() == 0){
+		length = sprintf(response, "ERROR, This is a slave node and only read operation are allowed.\r\n");
+		return length;
+	}
 
 	switch(cmd) {
 #if ENABLE_ARRAY
 	case KVS_CMD_SET:
-		printf("kvs_array_set\n");
 		ret = kvs_array_set(&global_array ,key, value);
 		if (ret < 0) {
 			length = sprintf(response, "ERROR\r\n");
@@ -274,17 +300,14 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 		} else {
 			length = sprintf(response, "EXIST\r\n");
 		} 
-		printf("kvs_array_set_end\n");
 		break;
 	case KVS_CMD_GET: {
-		printf("kvs_array_get\n");
 		char *result = kvs_array_get(&global_array, key);
 		if (result == NULL) {
 			length = sprintf(response, "NO EXIST\r\n");
 		} else {
 			length = sprintf(response, "%s\r\n", result);
 		}
-		printf("kvs_array_get_end\n");
 		break;
 	}
 	case KVS_CMD_DEL:
@@ -539,6 +562,27 @@ int kvs_filter_protocol(char **tokens, int count, char *response) {
 		assert(0 && "Unknown command received");
 	}
 
+	//判断是否为写操作 主向从进行同步
+	is_write_command = 0;
+	for(i = 0;i < sizeof(write_commands)/sizeof(write_commands[0]); i++){
+		if(cmd == write_commands[i]){
+			is_write_command = 1;
+			break;
+		}
+	}
+
+	if (global_dist_config.role == ROLE_MASTER && is_write_command) {
+        // 对于DEL命令，value参数为NULL
+        if (strcmp(tokens[0], "DEL") == 0 ||
+            strcmp(tokens[0], "RDEL") == 0 || 
+            strcmp(tokens[0], "HDEL") == 0 || 
+            strcmp(tokens[0], "SDEL") == 0) {
+            master_sync_command(tokens[0], tokens[1], NULL);
+        } else {
+            master_sync_command(tokens[0], tokens[1], tokens[2]);
+        }
+    }
+
 	return length;
 }
 
@@ -637,7 +681,6 @@ int kvs_protocol(char *msg, int length, char *response) {
             for (int i = 0; i < token_count; i++) {
                 if (tokens[i]) free(tokens[i]);
             }
-			printf("-----------\n");
         }
         
         // 移动到下一行
@@ -658,6 +701,7 @@ int kvs_protocol(char *msg, int length, char *response) {
 int init_kvengine(void) {
 
 	mem_init();  // 初始化内存管理组件
+
 
 #if ENABLE_ARRAY
 	memset(&global_array, 0, sizeof(kvs_array_t));
@@ -713,9 +757,35 @@ void handle_signal(int sig) {
 #if 1
 int main(int argc, char *argv[]) {
 
-	if (argc != 2) return -1;
+	//if (argc != 2) return -1;
 
-	int port = atoi(argv[1]);
+	//默认配置
+	int port = 6380;
+	int is_slave = 0;
+	char *master_ip = NULL;
+	int master_port = 0;
+	int sync_port = 0;
+
+	//int port = atoi(argv[1]);
+
+	//解析命令行参数
+	int i;
+	for(i = 1;i < argc; i++){
+		if(strcmp(argv[i], "--slave") == 0){
+			is_slave = 1;
+		}else if(strcmp(argv[i], "--master") == 0){
+			if(i + 2 < argc){
+				master_ip = argv[++i];
+				master_port = atoi(argv[++i]);
+			}else{
+				fprintf(stderr, "Error, --master requires IP and PORT\n");
+			}
+		}else if(i == 1 && !is_slave){//都没有 说明是正常启动 master
+			port = atoi(argv[i]);
+		}else if(i == 5 && is_slave && master_ip){//从节点端口
+			port = atoi(argv[i]);
+		}
+	}
 
 	// 注册信号处理函数，使Ctrl+C也能保存数据
     signal(SIGINT, handle_signal);
@@ -725,6 +795,24 @@ int main(int argc, char *argv[]) {
 	
 	// 加载持久化数据
     kvs_load_all("kvstore.dat");
+
+	//分布式初始化
+	if(is_slave){
+		if(!master_ip || master_port == 0){
+			fprintf(stderr, "Error: Slave mode requires master IP and port\n");
+            return 1;
+		}
+
+		//主节点的同步端口 = 主节点服务端口 + 1000
+		int master_sync_port = master_port + 1000;
+		distributed_init(ROLE_SLAVE, master_ip, master_sync_port, port);
+		printf("Starting as SLAVE on port %d, connecting to master %s:%d\n", port, master_ip, master_sync_port);
+	}else{
+		//主节点同步端口 = 服务端口 + 1000
+		sync_port = port + 1000;
+		distributed_init(ROLE_MASTER, NULL, 0, sync_port);
+		printf("Starting as MASTER on port %d, sync port %d\n", port, sync_port);
+	}
 	
 #if (NETWORK_SELECT == NETWORK_REACTOR)
 	reactor_start(port, kvs_protocol);  // 逻辑正确

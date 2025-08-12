@@ -267,3 +267,12 @@ extern mem_manager_t g_mem_manager;
 
 int init_kvengine(void);
 void dest_kvengine(void);
+
+
+int kvs_filter_protocol(char **tokens, int count, char *response);
+//分布式
+
+
+
+extern void set_sync_context(int context);
+extern int get_sync_context();
