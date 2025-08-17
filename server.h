@@ -5,6 +5,8 @@
 #ifndef __SERVER_H__
 #define __SERVER_H__
 
+#include "resp_protocol.h"
+
 #define BUFFER_LENGTH		1024
 
 #define ENABLE_HTTP			0
@@ -30,6 +32,8 @@ struct conn {
 		RCALLBACK recv_callback;
 		RCALLBACK accept_callback;
 	} r_action;
+	resp_parser_t parser;      // RESP解析器
+    int parser_initialized;  // 解析器是否已初始化
 
 	int status;
 #if 1 // websocket

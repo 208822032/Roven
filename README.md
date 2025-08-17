@@ -31,10 +31,12 @@ MEMPOOL GET 100000 ops: 552.19 ms (181.10 ops/ms)
 
 ===== TESTING WITH MALLOC/FREE =====
 MALLOC SET 100000 ops: 5.12 ms (19538.88 ops/ms)
-MALLOC GET 100000 ops: 571.86 ms (174.87 ops/ms
+MALLOC GET 100000 ops: 571.86 ms (174.87 ops/ms)
 ```
 ## 主从分布式架构
 
+
+性能参数 使用说明 编译命令
 
 
 

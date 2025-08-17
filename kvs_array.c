@@ -152,7 +152,6 @@ int kvs_array_del(kvs_array_t *inst, char *key) {
         if (strcmp(inst->table[i].key, key) == 0) {
 
             // 释放内存
-            printf("释放内存\n");
             kvs_free(inst->table[i].key);
             kvs_free(inst->table[i].value);
             inst->table[i].key = NULL;   // 关键修复！
@@ -241,6 +240,7 @@ static int compare_array_items(const void *a, const void *b) {
 /**
  * @return >0 success; <0 false 
  */
+//sort hight/low num    高num个/低num个
 int kvs_array_sort(kvs_array_t *inst, char *response, int max_len) {
     if (!inst) return -1;
     

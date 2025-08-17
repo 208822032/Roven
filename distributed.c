@@ -224,8 +224,7 @@ void slave_connect_master(){
         
 
         buffer[bytes_read] = '\0';
-        printf("recv buffer: %s\n", buffer);
-        printf("同步主节点的写信息\n");
+
         //处理同步命令
         //分割命令
         char *line = strtok(buffer, "\n");
@@ -233,7 +232,7 @@ void slave_connect_master(){
             char *cmd = strtok(line, "|");
             char *key = strtok(NULL, "|");
             char *value = strtok(NULL, "|");
-            printf("cmd: %s, key: %s,value: %s\n", cmd, key, value);
+
             //检查是否为有效写命令
             int is_valid_write_cmd = 0;
             if(cmd){
@@ -248,7 +247,6 @@ void slave_connect_master(){
                 }
             }
 
-            printf("本地执行写命令\n");
             if(cmd && key && is_valid_write_cmd){
                 set_sync_context(1);
                 //在本地执行命令
@@ -256,7 +254,6 @@ void slave_connect_master(){
                 kvs_filter_protocol(tokens, value ? 3 : 2, response);
                 set_sync_context(0);
             }
-            printf("本地执行写命令end\n");
 
             line = strtok(NULL, "\n");
         }
@@ -280,15 +277,9 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
         strcmp(cmd, "MOD") == 0 || strcmp(cmd, "RMOD") == 0 ||
         strcmp(cmd, "HMOD") == 0 || strcmp(cmd, "SMOD") == 0
     );
-    printf("主节点向从节点同步信息\n");
+
 
     if (!is_valid_write_cmd) return;
-
-    // 检查是否为DEL命令（包括所有数据结构的DEL命令）
-    // int is_del_command = (strcmp(cmd, "DEL") == 0) || 
-    //                      (strcmp(cmd, "RDEL") == 0) || 
-    //                      (strcmp(cmd, "HDEL") == 0) || 
-    //                      (strcmp(cmd, "SDEL") == 0);
 
     pthread_mutex_lock(&global_dist_config.slave_mutex);
     
@@ -296,25 +287,7 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     for (i = 0; i < global_dist_config.slave_count; i++) {
         slave_info_t *slave = &global_dist_config.slaves[i];
 
-        //同步给已连接的从节点
-        //if(slave->connected){
-            // // 对于DEL命令，value参数为NULL，需要特殊处理
-            // if (is_del_command) {
-            //     // 发送格式：COMMAND|KEY| (value部分为空)
-            //     send_cmd(global_dist_config.slaves[i].sockfd, cmd, key, "");
-            //     // 更新复制偏移量
-            //     slave->replication_offset++;
-            // } else {
-            //     // 其他命令正常发送
-            //     send_cmd(global_dist_config.slaves[i].sockfd, cmd, key, value);
-            //     // 更新复制偏移量
-            //     slave->replication_offset++;
-            // }
-
-            // 其他命令正常发送
-            send_cmd(global_dist_config.slaves[i].sockfd, cmd, key, value);
-
-        //}
+        send_cmd(global_dist_config.slaves[i].sockfd, cmd, key, value);
         
     }
 

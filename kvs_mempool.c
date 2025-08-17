@@ -1,6 +1,9 @@
 #include "kvstore.h"
 
 // 新增：全局大内存块链表
+//gmalloc 自定义 系统自带 对比
+    //虚拟内存占用率
+    //一百万次请求
 static mem_block_header_t *large_blocks_head = NULL;
 
 mem_manager_t g_mem_manager;

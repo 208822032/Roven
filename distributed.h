@@ -4,12 +4,6 @@
 #include <pthread.h>
 #include <netinet/in.h>
 
-//增加增量同步相关宏定义
-//心跳间隔
-#define HEARTBEAT_INTERVAL 5 
-//心跳超时时间
-#define HEARTBEAT_TIMEOUT 15
-
 //节点角色
 typedef enum {
     ROLE_MASTER, //可读可写

@@ -119,11 +119,11 @@ int main() {
     srand(time(NULL));
 
     // 测试内存池版本
-    printf("===== TESTING WITH MEMORY POOL =====\n");
+    printf("===== 自定义内存池 =====\n");
     run_performance_test(1);
     
     // 测试malloc/free版本
-    printf("\n===== TESTING WITH MALLOC/FREE =====\n");
+    printf("\n===== malloc/free =====\n");
     run_performance_test(0);
     
     return 0;

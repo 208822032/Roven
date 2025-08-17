@@ -2,6 +2,7 @@
     "files.associations": {
         "stat.h": "c",
         "stddef.h": "c",
-        "kvstore.h": "c"
+        "kvstore.h": "c",
+        "resp_protocol.h": "c"
     }
 }

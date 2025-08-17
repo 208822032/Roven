@@ -522,8 +522,6 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
         return -2;
     }
 
-	printf("[ALLOC] %p for key: %s\n", node->key, key);
-
 	rbtree_insert(inst, node);
 
 	return 0;
@@ -547,8 +545,6 @@ int kvs_rbtree_del(kvs_rbtree_t *inst, char *key) {
 
 	rbtree_node *node = rbtree_search(inst, key);
 	if (!node || node == inst->nil) return 1; // 键不存在
-
-	printf("Deleting RB node: key=%s, value=%s\n", node->key, (char*)node->value);
 	
 	rbtree_node *cur = rbtree_delete(inst, node);
 	
