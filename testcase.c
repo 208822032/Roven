@@ -369,15 +369,15 @@ void pipeline_testcase(int connfd) {
 
     // 构建包含多个命令的pipeline请求
     const char *pipeline_cmd = 
-        "RSET PipeKey1 Value1\r\n"
-        "RGET PipeKey1\r\n"
-        "RMOD PipeKey1 NewValue1\r\n"
-        "RGET PipeKey1\r\n"
-        "RDEL PipeKey1\r\n"
-        "RGET PipeKey1\r\n"
-        "RSET PipeKey2 Value2\r\n"
-        "RSET PipeKey3 Value3\r\n"
-        "RSORT\r\n";
+        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey1\r\n$6\r\nValue1\r\n"
+        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$4\r\nSMOD\r\n$8\r\nPipeKey1\r\n$9\r\nNewValue1\r\n"
+        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey2\r\n$6\r\nValue2\r\n"
+        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey3\r\n$6\r\nValue3\r\n"
+        "*1\r\n$5\r\nSSORT\r\n";
 
     // 发送pipeline请求
     send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
@@ -407,15 +407,15 @@ void pipeline_testcase(int connfd) {
 
     // 验证响应内容
     const char *expected_response = 
-        "OK\r\n"
-        "Value1\r\n"
-        "OK\r\n"
-        "NewValue1\r\n"
-        "OK\r\n"
-        "NO EXIST\r\n"
-        "OK\r\n"
-        "OK\r\n"
-        "PipeKey2:Value2\r\nPipeKey3:Value3\r\n"; // 最后是SORT的结果
+        "+OK\r\n"
+        "$6\r\nValue1\r\n"
+        "+OK\r\n"
+        "$9\r\nNewValue1\r\n"
+        "+OK\r\n"
+        "+NO EXIST\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+        "*2\r\n$6\r\nValue2\r\n$6\r\nValue3\r\n"; 
 
     if (strcmp(response, expected_response) == 0) {
         printf("==> PASS -> Pipeline test\n");
@@ -426,10 +426,83 @@ void pipeline_testcase(int connfd) {
     }
 
     // 清理测试数据
-    testcase(connfd, "RDEL PipeKey2", "OK\r\n", "Pipeline cleanup");
-    testcase(connfd, "RDEL PipeKey3", "OK\r\n", "Pipeline cleanup");
+    testcase(connfd, "*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey2\r\n", "+OK\r\n", "Pipeline cleanup");
+    testcase(connfd, "*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey3\r\n", "+OK\r\n", "Pipeline cleanup");
 }
 
+/*
+ 1. 简单字符串：以"+"开头，以"\r\n"结尾。例如："+OK\r\n"
+ 2. 错误：以"-"开头，以"\r\n"结尾。例如："-Error message\r\n"
+ 3. 整数：以":"开头，以"\r\n"结尾。例如：":1000\r\n"
+ 4. 批量字符串：以"$"开头，后面跟字符串长度，然后是"\r\n"，然后是字符串，
+    最后是"\r\n"。如果字符串为空，则为"$-1\r\n"。例如："$5\r\nhello\r\n"
+ 5. 数组：以"*"开头，后面跟数组元素个数，然后是"\r\n"，然后每个元素按照自己的类型编码。
+    例如：数组["SET", "key", "value"]编码为："*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
+*/
+void array_resp_testcase(int connfd){
+
+	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key1\r\n$5\r\napple\r\n", "+OK\r\n", "SET-arr_key1");
+	testcase(connfd, "*2\r\n$3\r\nGET\r\n$8\r\narr_key1\r\n", "$5\r\napple\r\n", "GET-arr_key1");
+	testcase(connfd, "*2\r\n$5\r\nEXIST\r\n$8\r\narr_key1\r\n", "+EXIST\r\n","EXIST-arr_key1");
+	testcase(connfd, "*3\r\n$3\r\nMOD\r\n$8\r\narr_key1\r\n$5\r\nAPPLE\r\n", "+OK\r\n","MOD-arr_key1");
+	testcase(connfd, "*2\r\n$3\r\nGET\r\n$8\r\narr_key1\r\n", "$5\r\nAPPLE\r\n","GET-arr_key1");
+	testcase(connfd, "*2\r\n$3\r\nDEL\r\n$8\r\narr_key1\r\n", "+OK\r\n","DEL-arr_key1");
+	testcase(connfd, "*2\r\n$5\r\nEXIST\r\n$8\r\narr_key1\r\n", "+NO EXIST\r\n","EXIST-arr_key1");
+	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key2\r\n$6\r\nbanana\r\n", "+OK\r\n", "SET-arr_key2");
+	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key3\r\n$6\r\ncherry\r\n", "+OK\r\n", "SET-arr_key3");
+	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key4\r\n$4\r\ndate\r\n", "+OK\r\n", "SET-arr_key4");
+	testcase(connfd, "*1\r\n$4\r\nSORT\r\n", "*3\r\n$6\r\nbanana\r\n$6\r\ncherry\r\n$4\r\ndate\r\n", "array_SORT");
+	testcase(connfd, "*3\r\n$5\r\nRANGE\r\n$8\r\narr_key2\r\n$8\r\narr_key4\r\n", "*3\r\n$6\r\nbanana\r\n$6\r\ncherry\r\n$4\r\ndate\r\n", "array_RANGE");
+	
+}
+void rbtree_resp_testcase(int connfd){
+
+	testcase(connfd, "*3\r\n$4\r\nRSET\r\n$9\r\ntree_key1\r\n$8\r\nelephant\r\n", "+OK\r\n", "RSET-tree_key1");
+	testcase(connfd, "*2\r\n$4\r\nRGET\r\n$9\r\ntree_key1\r\n", "$8\r\nelephant\r\n", "RGET-tree_key1");
+	testcase(connfd, "*2\r\n$6\r\nREXIST\r\n$9\r\ntree_key1\r\n", "+EXIST\r\n","EXIST-tree_key1");
+	testcase(connfd, "*3\r\n$4\r\nRMOD\r\n$9\r\ntree_key1\r\n$8\r\nELEPHANT\r\n", "+OK\r\n","RMOD-tree_key1");
+	testcase(connfd, "*2\r\n$4\r\nRGET\r\n$9\r\ntree_key1\r\n", "$8\r\nELEPHANT\r\n","GET-tree_key1");
+	testcase(connfd, "*2\r\n$4\r\nRDEL\r\n$9\r\ntree_key1\r\n", "+OK\r\n","DEL-tree_key1");
+	testcase(connfd, "*2\r\n$6\r\nREXIST\r\n$9\r\ntree_key1\r\n", "+NO EXIST\r\n","EXIST-tree_key1");
+	testcase(connfd, "*3\r\n$4\r\nRSET\r\n$9\r\ntree_key2\r\n$3\r\nfox\r\n", "+OK\r\n", "SET-arr_key2");
+	testcase(connfd, "*3\r\n$4\r\nRSET\r\n$9\r\ntree_key3\r\n$7\r\ngiraffe\r\n", "+OK\r\n", "SET-arr_key3");
+	testcase(connfd, "*3\r\n$4\r\nRSET\r\n$9\r\ntree_key4\r\n$5\r\nhippo\r\n", "+OK\r\n", "SET-arr_key4");
+	testcase(connfd, "*1\r\n$5\r\nRSORT\r\n", "*3\r\n$3\r\nfox\r\n$7\r\ngiraffe\r\n$5\r\nhippo\r\n", "rbtree_SORT");
+	testcase(connfd, "*3\r\n$6\r\nRRANGE\r\n$9\r\ntree_key2\r\n$9\r\ntree_key4\r\n", "*3\r\n$3\r\nfox\r\n$7\r\ngiraffe\r\n$5\r\nhippo\r\n", "rbtree_RANGE");
+	
+}
+void hash_resp_testcase(int connfd){
+
+	testcase(connfd, "*3\r\n$4\r\nHSET\r\n$9\r\nhash_key1\r\n$6\r\niguana\r\n", "+OK\r\n", "HSET-hash_key1");
+	testcase(connfd, "*2\r\n$4\r\nHGET\r\n$9\r\nhash_key1\r\n", "$6\r\niguana\r\n", "HGET-hash_key1");
+	testcase(connfd, "*2\r\n$6\r\nHEXIST\r\n$9\r\nhash_key1\r\n", "+EXIST\r\n","EXIST-hash_key1");
+	testcase(connfd, "*3\r\n$4\r\nHMOD\r\n$9\r\nhash_key1\r\n$6\r\nIGUANA\r\n", "+OK\r\n","HMOD-hash_key1");
+	testcase(connfd, "*2\r\n$4\r\nHGET\r\n$9\r\nhash_key1\r\n", "$6\r\nIGUANA\r\n","GET-hash_key1");
+	testcase(connfd, "*2\r\n$4\r\nHDEL\r\n$9\r\nhash_key1\r\n", "+OK\r\n","DEL-hash_key1");
+	testcase(connfd, "*2\r\n$6\r\nHEXIST\r\n$9\r\nhash_key1\r\n", "+NO EXIST\r\n","EXIST-hash_key1");
+	testcase(connfd, "*3\r\n$4\r\nHSET\r\n$9\r\nhash_key2\r\n$6\r\njaguar\r\n", "+OK\r\n", "SET-hash_key2");
+	testcase(connfd, "*3\r\n$4\r\nHSET\r\n$9\r\nhash_key3\r\n$5\r\nkoala\r\n", "+OK\r\n", "SET-hash_key3");
+	testcase(connfd, "*3\r\n$4\r\nHSET\r\n$9\r\nhash_key4\r\n$5\r\nlemur\r\n", "+OK\r\n", "SET-hash_key4");
+	testcase(connfd, "*1\r\n$5\r\nHSORT\r\n", "*3\r\n$6\r\njaguar\r\n$5\r\nkoala\r\n$5\r\nlemur\r\n", "hash_SORT");
+	testcase(connfd, "*3\r\n$6\r\nHRANGE\r\n$9\r\nhash_key2\r\n$9\r\nhash_key4\r\n", "*3\r\n$6\r\njaguar\r\n$5\r\nkoala\r\n$5\r\nlemur\r\n", "hash_RANGE");
+	
+}
+void skiptable_resp_testcase(int connfd){
+
+	testcase(connfd, "*3\r\n$4\r\nSSET\r\n$9\r\nskip_key1\r\n$6\r\nmonkey\r\n", "+OK\r\n", "SSET-skip_key1");
+	testcase(connfd, "*2\r\n$4\r\nSGET\r\n$9\r\nskip_key1\r\n", "$6\r\nmonkey\r\n", "DGET-skip_key1");
+	testcase(connfd, "*2\r\n$6\r\nSEXIST\r\n$9\r\nskip_key1\r\n", "+EXIST\r\n","EXIST-skip_key1");
+	testcase(connfd, "*3\r\n$4\r\nSMOD\r\n$9\r\nskip_key1\r\n$6\r\nMONKEY\r\n", "+OK\r\n","HMOD-skip_key1");
+	testcase(connfd, "*2\r\n$4\r\nSGET\r\n$9\r\nskip_key1\r\n", "$6\r\nMONKEY\r\n","GET-skip_key1");
+	testcase(connfd, "*2\r\n$4\r\nSDEL\r\n$9\r\nskip_key1\r\n", "+OK\r\n","DEL-skip_key1");
+	testcase(connfd, "*2\r\n$6\r\nSEXIST\r\n$9\r\nskip_key1\r\n", "+NO EXIST\r\n","EXIST-skip_key1");
+	testcase(connfd, "*3\r\n$4\r\nSSET\r\n$9\r\nskip_key2\r\n$7\r\nnarwhal\r\n", "+OK\r\n", "SET-skip_key2");
+	testcase(connfd, "*3\r\n$4\r\nSSET\r\n$9\r\nskip_key3\r\n$7\r\noctopus\r\n", "+OK\r\n", "SET-skip_key3");
+	testcase(connfd, "*3\r\n$4\r\nSSET\r\n$9\r\nskip_key4\r\n$7\r\npenguin\r\n", "+OK\r\n", "SET-skip_key4");
+	testcase(connfd, "*1\r\n$5\r\nSSORT\r\n", "*3\r\n$7\r\nnarwhal\r\n$7\r\noctopus\r\n$7\r\npenguin\r\n", "skiptable_SORT");
+	testcase(connfd, "*3\r\n$6\r\nSRANGE\r\n$9\r\nskip_key2\r\n$9\r\nskip_key4\r\n", "*3\r\n$7\r\nnarwhal\r\n$7\r\noctopus\r\n$7\r\npenguin\r\n", "skiptable_RANGE");
+	
+}
 
 // testcase 192.168.243.131  2000
 int main(int argc, char *argv[]) {
@@ -474,6 +547,14 @@ int main(int argc, char *argv[]) {
 		skiptable_test_sort_range(connfd);
 	}else if(mode == 9){
 		pipeline_testcase(connfd);
+	}else if(mode == 10){
+		array_resp_testcase(connfd);
+	}else if(mode == 11){
+		rbtree_resp_testcase(connfd);
+	}else if(mode == 12){
+		hash_resp_testcase(connfd);
+	}else if(mode == 13){
+		skiptable_resp_testcase(connfd);
 	}
 
 	return 0;

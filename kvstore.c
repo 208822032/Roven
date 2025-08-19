@@ -2,8 +2,6 @@
 #include "distributed.h"
 #include "resp_protocol.h"
 
-//配置协议  0=旧协议 1=RESP协议
-#define USER_RESP_PROTOCOL 1 
 
 int g_shutdown_flag = 0;
 
@@ -641,7 +639,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	case KVS_CMD_GET: {
 		char *result = kvs_array_get(&global_array, key);
 		if (result == NULL) {
-			resp_len = resp_generate_bulk_string(response, "NO EXIST");
+			resp_len = resp_generate_simple_string(response, "NO EXIST");
 		} else {
 			resp_len = resp_generate_bulk_string(response, result);
 		}
@@ -682,25 +680,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}else{
 			//将多行响应转换为RESP数组
 			char *line = strtok(response, "\r\n");
-			int line_count = 0;
+			int valid_line_count = 0;
+			char *values[KVS_MAX_LINE] = {0};
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
 			int pos = 0;
 
 			//计算行数
-			while(line){
-				line_count++;
+			while(line != NULL && valid_line_count < KVS_MAX_LINE){
+				char *colon_pos = strchr(line, ':');
+				values[valid_line_count++] = colon_pos + 1;
 				line = strtok(NULL, "\r\n");
 			}
-
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
+			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);//表示有多少行
 
-			//重新解析数据
-			line = strtok(response, "\r\n");
-			while(line){
-				//生成每行数据
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
+			//遍历valuse数组
+			int i;
+			for(i = 0;i < valid_line_count;i++){
+				char *val = values[i];
+				size_t val_len = strlen(val);
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", val_len, val);
 			}
 
 			memcpy(response, temp, pos);
@@ -718,23 +717,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}else{
 			//同理处理多行数据
 			char *line = strtok(response, "\r\n");
-			int line_count = 0;
+			int valid_line_count = 0;
+			char *valuse[KVS_MAX_LINE] = {0};
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
 			int pos = 0;
 
-			//计算行数
-			while(line){
-				line_count++;
+			//计算行数 解析放入values数组中
+			while(line != NULL && valid_line_count < KVS_MAX_LINE){
+				char *colon_pos = strchr(line, ':');
+				valuse[valid_line_count++] = colon_pos + 1;
 				line = strtok(NULL, "\r\n");
 			}
 
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
 
-			line = strtok(response, "\r\n");
-			while(line){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
+			int i;
+			for(i = 0;i < valid_line_count;i++){
+				char *val = valuse[i];
+				size_t val_len = strlen(val);
+				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
 			}
 
 			memcpy(response, temp, pos);
@@ -758,7 +760,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		char *result = kvs_rbtree_get(&global_rbtree, key);
 
 		if (result == NULL) {
-			resp_len = resp_generate_bulk_string(response, "NO EXIST");
+			resp_len = resp_generate_simple_string(response, "NO EXIST");
 		} else {
 			resp_len = resp_generate_bulk_string(response, result);
 		}
@@ -799,25 +801,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}else{
 			//将多行响应转换为RESP数组
 			char *line = strtok(response, "\r\n");
-			int line_count = 0;
+			int valid_line_count = 0;
+			char *valuse[KVS_MAX_LINE] = {0};
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
 			int pos = 0;
 
-			//计算行数
-			while(line){
-				line_count++;
+			//计算行数 解析放入values数组中
+			while(line != NULL && valid_line_count < KVS_MAX_LINE){
+				char *colon_pos = strchr(line, ':');
+				valuse[valid_line_count++] = colon_pos + 1;
 				line = strtok(NULL, "\r\n");
 			}
 
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
+			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
 
-			//重新解析数据
-			line = strtok(response, "\r\n");
-			while(line){
-				//生成每行数据
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
+			int i;
+			for(i = 0;i < valid_line_count;i++){
+				char *val = valuse[i];
+				size_t val_len = strlen(val);
+				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
 			}
 
 			memcpy(response, temp, pos);
@@ -835,23 +838,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}else{
 			//同理处理多行数据
 			char *line = strtok(response, "\r\n");
-			int line_count = 0;
+			int valid_line_count = 0;
+			char *valuse[KVS_MAX_LINE] = {0};
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
 			int pos = 0;
 
-			//计算行数
-			while(line){
-				line_count++;
+			//计算行数 解析放入values数组中
+			while(line != NULL && valid_line_count < KVS_MAX_LINE){
+				char *colon_pos = strchr(line, ':');
+				valuse[valid_line_count++] = colon_pos + 1;
 				line = strtok(NULL, "\r\n");
 			}
 
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
 
-			line = strtok(response, "\r\n");
-			while(line){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
+			int i;
+			for(i = 0;i < valid_line_count;i++){
+				char *val = valuse[i];
+				size_t val_len = strlen(val);
+				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
 			}
 
 			memcpy(response, temp, pos);
@@ -873,7 +879,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	case KVS_CMD_HGET: {
 		char *result = kvs_hash_get(&global_hash, key);
 		if (result == NULL) {
-			resp_len = resp_generate_bulk_string(response, "NO EXIST");
+			resp_len = resp_generate_simple_string(response, "NO EXIST");
 		} else {
 			resp_len = resp_generate_bulk_string(response, result);
 		}
@@ -914,25 +920,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}else{
 			//将多行响应转换为RESP数组
 			char *line = strtok(response, "\r\n");
-			int line_count = 0;
+			int valid_line_count = 0;
+			char *valuse[KVS_MAX_LINE] = {0};
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
 			int pos = 0;
 
-			//计算行数
-			while(line){
-				line_count++;
+			//计算行数 解析放入values数组中
+			while(line != NULL && valid_line_count < KVS_MAX_LINE){
+				char *colon_pos = strchr(line, ':');
+				valuse[valid_line_count++] = colon_pos + 1;
 				line = strtok(NULL, "\r\n");
 			}
 
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
+			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
 
-			//重新解析数据
-			line = strtok(response, "\r\n");
-			while(line){
-				//生成每行数据
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
+			int i;
+			for(i = 0;i < valid_line_count;i++){
+				char *val = valuse[i];
+				size_t val_len = strlen(val);
+				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
 			}
 
 			memcpy(response, temp, pos);
@@ -950,23 +957,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}else{
 			//同理处理多行数据
 			char *line = strtok(response, "\r\n");
-			int line_count = 0;
+			int valid_line_count = 0;
+			char *valuse[KVS_MAX_LINE] = {0};
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
 			int pos = 0;
 
-			//计算行数
-			while(line){
-				line_count++;
+			//计算行数 解析放入values数组中
+			while(line != NULL && valid_line_count < KVS_MAX_LINE){
+				char *colon_pos = strchr(line, ':');
+				valuse[valid_line_count++] = colon_pos + 1;
 				line = strtok(NULL, "\r\n");
 			}
 
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
 
-			line = strtok(response, "\r\n");
-			while(line){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
+			int i;
+			for(i = 0;i < valid_line_count;i++){
+				char *val = valuse[i];
+				size_t val_len = strlen(val);
+				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
 			}
 
 			memcpy(response, temp, pos);
@@ -990,7 +1000,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	case KVS_CMD_SGET:
 		result = kvs_skiptable_get(&global_skiptable, key);
 		if (result == NULL) {
-			resp_len = resp_generate_bulk_string(response, "NO EXIST");
+			resp_len = resp_generate_simple_string(response, "NO EXIST");
 		} else {
 			resp_len = resp_generate_bulk_string(response, result);
 		}
@@ -1028,25 +1038,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}else{
 			//将多行响应转换为RESP数组
 			char *line = strtok(response, "\r\n");
-			int line_count = 0;
+			int valid_line_count = 0;
+			char *valuse[KVS_MAX_LINE] = {0};
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
 			int pos = 0;
 
-			//计算行数
-			while(line){
-				line_count++;
+			//计算行数 解析放入values数组中
+			while(line != NULL && valid_line_count < KVS_MAX_LINE){
+				char *colon_pos = strchr(line, ':');
+				valuse[valid_line_count++] = colon_pos + 1;
 				line = strtok(NULL, "\r\n");
 			}
 
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
+			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
 
-			//重新解析数据
-			line = strtok(response, "\r\n");
-			while(line){
-				//生成每行数据
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
+			int i;
+			for(i = 0;i < valid_line_count;i++){
+				char *val = valuse[i];
+				size_t val_len = strlen(val);
+				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
 			}
 
 			memcpy(response, temp, pos);
@@ -1064,23 +1075,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}else{
 			//同理处理多行数据
 			char *line = strtok(response, "\r\n");
-			int line_count = 0;
+			int valid_line_count = 0;
+			char *valuse[KVS_MAX_LINE] = {0};
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
 			int pos = 0;
 
-			//计算行数
-			while(line){
-				line_count++;
+			//计算行数 解析放入values数组中
+			while(line != NULL && valid_line_count < KVS_MAX_LINE){
+				char *colon_pos = strchr(line, ':');
+				valuse[valid_line_count++] = colon_pos + 1;
 				line = strtok(NULL, "\r\n");
 			}
 
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
 
-			line = strtok(response, "\r\n");
-			while(line){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
+			int i;
+			for(i = 0;i < valid_line_count;i++){
+				char *val = valuse[i];
+				size_t val_len = strlen(val);
+				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
 			}
 
 			memcpy(response, temp, pos);
@@ -1115,86 +1129,8 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 //问题1 大量数据无法读完 分包粘包问题
 //问题2 考虑拓展之后的功能 key value1 value2 value3
 	//了解 kv协议重新设计 key/value如何传 JSON/redis 做法
-#if 0
-int kvs_protocol(char *msg, int length, char *response) {
-    if (msg == NULL || length <= 0 || response == NULL) return -1;
-    
-    // 创建消息副本（strtok会修改原始字符串）
-    char *msg_copy = kvs_malloc(length + 1);
-    if (!msg_copy) return -1;
-    memcpy(msg_copy, msg, length);
-    msg_copy[length] = '\0';
-    
-    int total_response_len = 0;
-    char *current_pos = msg_copy;
-    
-    while (current_pos < msg_copy + length && *current_pos != '\0') {
-        // 查找行结束符
-        char *line_end = strstr(current_pos, "\r\n");
-        size_t line_length = 0;
-        
-        if (line_end != NULL) {
-            line_length = line_end - current_pos;
-        } else {
-            // 处理最后一行（无\r\n）
-            line_length = strlen(current_pos);
-            line_end = current_pos + line_length;
-        }
-        
-        // 跳过空行
-        if (line_length > 0) {
-            // 临时终止当前行
-            char temp = *line_end;
-            *line_end = '\0';
-            
-            // 解析命令
-            char *tokens[KVS_MAX_TOKENS] = {0};
-            int token_count = kvs_split_token(current_pos, tokens);
-            
-            if (token_count > 0) {
-                char single_response[KVS_MAX_RESPONSE_SIZE];
-                int resp_len = kvs_filter_protocol(tokens, token_count, single_response);
-                if (resp_len > 0) {
-                    // 检查响应缓冲区容量
-                    if (total_response_len + resp_len < KVS_MAX_RESPONSE_SIZE) {
-                        memcpy(response + total_response_len, single_response, resp_len);
-                        total_response_len += resp_len;
-                    } else {
-                        // 缓冲区溢出处理
-                        const char *error_msg = "ERROR: Response buffer full\r\n";
-                        int error_len = strlen(error_msg);
-                        if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE) {
-                            memcpy(response + total_response_len, error_msg, error_len);
-                            total_response_len += error_len;
-                        }
-                        break;
-                    }
-					
-                }
-            }
-            
-            // 恢复原始字符
-            *line_end = temp;
-            
-            // 释放当前行的tokens
-            for (int i = 0; i < token_count; i++) {
-                if (tokens[i]) free(tokens[i]);
-            }
-        }
-        
-        // 移动到下一行
-        if (line_end < msg_copy + length) {
-            current_pos = line_end + (line_end == current_pos ? 0 : 2);  // 跳过\r\n
-        } else {
-            break;  // 超出缓冲区范围
-        }
-    }
-    
-    kvs_free(msg_copy);
-    return total_response_len;
-}
-#else 
 
+#if 0
 int kvs_protocol(char *msg, int length, char *response){
 	static resp_parser_t parser;
 	static int initialized = 0;
@@ -1203,6 +1139,7 @@ int kvs_protocol(char *msg, int length, char *response){
 		resp_parser_init(&parser);
 		initialized = 1;
 	}
+
 
 	int parsed = resp_parser(&parser, msg, length);//解析客户端信息
 	if(parsed > 0){
@@ -1219,9 +1156,85 @@ int kvs_protocol(char *msg, int length, char *response){
 		resp_parser_init(&parser);
 		return resp_generate_error(response, "Protocol error");
 	}
-}
 
+	return 0;
+
+}
+#else
+// 修改kvstore.c中的kvs_protocol函数，支持Pipeline功能
+int kvs_protocol(char *msg, int length, char *response) {
+    //动态缓冲区存储总响应
+	char *total_response = kvs_malloc(KVS_MAX_RESPONSE_SIZE * 4);
+	if(!total_response) return -1;
+	int total_response_len = 0;
+	int parsed = 0;//已解析字节数
+
+	while(parsed < length){
+		resp_parser_t parser;
+		resp_parser_init(&parser);
+
+		//解析当前命令
+		int ret = resp_parser(&parser, msg + parsed, length - parsed);
+		
+		if(ret > 0){
+			//成功解析一个命令
+			char cmd_response[KVS_MAX_RESPONSE_SIZE] = {0};
+			int resp_len = kvs_filter_protocol(parser.tokens, parser.arg_index, cmd_response);
+
+			//追加到总响应
+			if(total_response_len + resp_len < KVS_MAX_RESPONSE_SIZE * 4){
+				memcpy(total_response + total_response_len, cmd_response, resp_len);
+				total_response_len += resp_len;
+			}else{
+				//响应缓冲区不足
+				const char *error_msg = "-ERROR Response buffer full\r\n";
+				int error_len = strlen(error_msg);
+				if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE * 4) {
+                    memcpy(total_response + total_response_len, error_msg, error_len);
+                    total_response_len += error_len;
+                }
+				resp_parser_free(&parser);
+                break;
+			}
+
+			parsed += ret;//移动已解析位置
+			resp_parser_free(&parser);
+		}else if(ret == 0){
+			//需要更多数据 停止解析
+			resp_parser_free(&parser);
+			break;
+		}else if(ret < 0 && parsed < length && (msg[parsed] == '\r' || msg[parsed] == '\n') ){
+			parsed++;
+			continue;
+		}else{
+			//解析错误
+			const char *error_msg = "-ERROR Protocol error\r\n";
+            int error_len = strlen(error_msg);
+            if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE * 4) {
+                memcpy(total_response + total_response_len, error_msg, error_len);
+                total_response_len += error_len;
+            }
+            resp_parser_free(&parser);
+
+			//跳过错误数据继续解析
+            // parsed++;  // 跳过当前字节
+            // while (parsed < length && msg[parsed] != '*') {
+            //     parsed++;
+            // }
+            break;
+		}
+	}
+
+	//复制总响应到输出缓冲区
+	int copy_size = (total_response_len < KVS_MAX_RESPONSE_SIZE) ? total_response_len : KVS_MAX_RESPONSE_SIZE - 1;
+	memcpy(response, total_response, copy_size);
+	response[copy_size] = '\0';
+
+	kvs_free(total_response);
+	return copy_size;
+}
 #endif
+
 
 int init_kvengine(void) {
 

@@ -74,6 +74,11 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length){
                         parser->bulk_len = parser->bulk_len * 10 + (*ptr - '0');
                         ptr++;
                     }
+                    // 添加最大长度限制
+                    if(parser->bulk_len > KVS_MAX_RESPONSE_SIZE) {
+                        return -1; // 数据过长
+                    }
+
                     if(ptr >= end) return 0;
                     if(*ptr == '\r'){
                         if(ptr+1 >= end) return 0;//需要更多数据

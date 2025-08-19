@@ -29,6 +29,7 @@
 
 #define KVS_MAX_TOKENS		128
 #define KVS_MAX_RESPONSE_SIZE  2048
+#define KVS_MAX_LINE        1000
 
 #define ENABLE_ARRAY		1
 #define ENABLE_RBTREE		1
