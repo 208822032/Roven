@@ -598,6 +598,55 @@ int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key) {
 // }
 
 // 中序遍历辅助函数
+static void inorder_traversal_with_limit(rbtree *T, rbtree_node *node, int order, int *count, int limit, char *response, int *len, int max_len) {
+    if (node == T->nil) return;
+    
+	if(order == 0){//升序
+		inorder_traversal_with_limit(T, node->left, order, count, limit, response, len, max_len);
+
+		if (*count < limit || limit <= 0) {
+            int n = snprintf(response + *len, max_len - *len, 
+                             "%s:%s\r\n", node->key, (char*)node->value);
+            if (n > 0 && *len + n < max_len) {
+                *len += n;
+                (*count)++;
+            }
+        }
+
+		if (*count < limit || limit <= 0) {
+            inorder_traversal_with_limit(T, node->right, order, count, limit, response, len, max_len);
+        }
+	}else{//升序
+
+		inorder_traversal_with_limit(T, node->right, order, count, limit, response, len, max_len);
+
+		if (*count < limit || limit <= 0) {
+            int n = snprintf(response + *len, max_len - *len, 
+                             "%s:%s\r\n", node->key, (char*)node->value);
+            if (n > 0 && *len + n < max_len) {
+                *len += n;
+                (*count)++;
+            }
+        }
+
+		if (*count < limit || limit <= 0) {
+            inorder_traversal_with_limit(T, node->left, order, count, limit, response, len, max_len);
+        }
+
+	}
+}
+
+int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, int max_len){
+	if (!inst) return -1;
+    
+    int len = 0;
+    int count = 0;
+    inorder_traversal_with_limit(inst, inst->root, order, &count, limit, response, &len, max_len);
+    return len;
+}
+
+
+// 中序遍历辅助函数
 static void inorder_traversal(rbtree *T, rbtree_node *node, 
                               char *start_key, char *end_key,
                               char *response, int *len, int max_len) {
@@ -621,13 +670,6 @@ static void inorder_traversal(rbtree *T, rbtree_node *node,
     }
 }
 
-int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len){
-	if (!inst) return -1;
-    
-    int len = 0;
-    inorder_traversal(inst, inst->root, "", "\xFF", response, &len, max_len);
-    return len;
-}
 
 int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, char *response, int max_len){
 	if (!inst || !start_key || !end_key) return -1;

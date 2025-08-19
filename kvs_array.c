@@ -241,6 +241,8 @@ static int compare_array_items(const void *a, const void *b) {
  * @return >0 success; <0 false 
  */
 //sort hight/low num    高num个/低num个
+//升序降序  order 0/1
+#if 0
 int kvs_array_sort(kvs_array_t *inst, char *response, int max_len) {
     if (!inst) return -1;
     
@@ -270,6 +272,49 @@ int kvs_array_sort(kvs_array_t *inst, char *response, int max_len) {
     kvs_free(items);
     return len;
 }
+#else
+int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int max_len){
+    if(!inst) return -1;
+
+    kvs_array_item_t *items = kvs_malloc(inst->total * sizeof(kvs_array_item_t));
+    if(!items) return -1;
+
+    int count = 0;
+    int i;
+    for(i = 0;i < inst->total; i++){
+        if(inst->table[i].key){
+            items[count++] = inst->table[i];
+        }
+    }
+
+    //按键值排序
+    qsort(items, count, sizeof(kvs_array_item_t), compare_array_items);
+
+    //处理排序方向
+    if(order == 1){
+        for(i = 0;i < count/2; i++){
+            kvs_array_item_t temp = items[i];
+            items[i] = items[count - 1 - i];
+            items[count - 1 - i] = temp;
+        }
+    }
+
+    //数量限制
+    int output_count = (limit > 0 && limit < count) ? limit : count;
+
+    // 格式化输出
+    int len = 0;
+    for (int i = 0; i < output_count; i++) {
+        int n = snprintf(response + len, max_len - len, 
+                         "%s:%s\r\n", items[i].key, items[i].value);
+        if (n < 0 || len + n >= max_len) break;
+        len += n;
+    }
+    
+    kvs_free(items);
+    return len;
+}
+#endif
 
 int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *response, int max_len) {
     if (!inst || !start_key || !end_key) return -1;

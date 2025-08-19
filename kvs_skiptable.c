@@ -31,6 +31,7 @@ void free_node(Node* node) {
 int kvs_skiptable_create(kvs_skiptable_t *table) {
     // 初始化跳表结构
     table->level = 0;
+    table->count = 0;
 
     // 创建头节点（使用最大层数）
     table->header = create_node(MAX_LEVEL, "", "");
@@ -96,6 +97,8 @@ int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     int new_level = random_level();
     Node* new_node = create_node(new_level, key, value);
     if (!new_node) return -1;
+
+    table->count++;
     
     // 如果新节点的层数大于当前跳表层数，更新跳表层数
     if (new_level > table->level) {
@@ -185,6 +188,8 @@ int kvs_skiptable_del(kvs_skiptable_t *table, char *key) {
         if (update[i]->forward[i] != current) break;
         update[i]->forward[i] = current->forward[i];
     }
+
+    table->count--;
     
     // 释放节点内存
     free_node(current);
@@ -201,18 +206,50 @@ int kvs_skiptable_exist(kvs_skiptable_t *table, char *key) {
     return table && table->header && kvs_skiptable_get(table, key) != NULL;
 }
 
-int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len) {
+int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *response, int max_len) {
     if (!table || !table->header || !response || max_len <= 0) return -1;  // 添加header检查
     
-    Node* current = table->header->forward[0];
+    Node* current;
     int pos = 0;
+    int count = 0;
+
+    // Node* current = table->header->forward[0];
+    // int pos = 0;
     
-    // 遍历第0层（有序链表）
-    while (current && pos < max_len) {
+    if (order == 0) { // 升序
+        current = table->header->forward[0];
+    }else { // 降序 - 需要先收集所有节点
+        // 收集所有节点
+        Node** nodes = kvs_malloc(table->count * sizeof(Node*));
+        if (!nodes) return -1;
+        
+        current = table->header->forward[0];
+        int i = 0;
+        while (current) {
+            nodes[i++] = current;
+            current = current->forward[0];
+        }
+        
+        // 反向遍历
+        for (int j = i - 1; j >= 0 && (limit <= 0 || count < limit); j--) {
+            int written = snprintf(response + pos, max_len - pos, 
+                                  "%s:%s\r\n", nodes[j]->key, nodes[j]->value);
+            if (written < 0 || written >= max_len - pos) break;
+            pos += written;
+            count++;
+        }
+        
+        kvs_free(nodes);
+        return pos;
+    }
+
+    // 升序遍历
+    while (current && (limit <= 0 || count < limit) && pos < max_len) {
         int written = snprintf(response + pos, max_len - pos, 
                               "%s:%s\r\n", current->key, current->value);
         if (written < 0 || written >= max_len - pos) break;
         pos += written;
+        count++;
         current = current->forward[0];
     }
     

@@ -607,6 +607,8 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	int ret = 0;
 	char *result = NULL;
 	int resp_len = 0;
+	int order = 0;//0升序 1降序
+	int limit = -1;//-1无限制
 
 	int is_write_command = 0;
 	int i;
@@ -674,32 +676,38 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}
 		break;
 	case KVS_CMD_SORT:
-		ret = kvs_array_sort(&global_array, response, KVS_MAX_RESPONSE_SIZE);
+		//SORT high
+		if (count >= 2) {
+			if (strcmp(tokens[1], "high") == 0) order = 1;
+			else if (strcmp(tokens[1], "low") == 0) order = 0;
+			if (count >= 3) limit = atoi(tokens[2]);
+    	}
+
+		ret = kvs_array_sort(&global_array, order, limit, response, KVS_MAX_RESPONSE_SIZE);
 		if(ret <= 0){
 			resp_len = resp_generate_array_start(response, 0);
 		}else{
 			//将多行响应转换为RESP数组
-			char *line = strtok(response, "\r\n");
-			int valid_line_count = 0;
-			char *values[KVS_MAX_LINE] = {0};
+			char *response_copy = strdup(response);
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
+			int line_count = 0;
 			int pos = 0;
 
+			char *line = strtok(response_copy, "\r\n");
+
 			//计算行数
-			while(line != NULL && valid_line_count < KVS_MAX_LINE){
-				char *colon_pos = strchr(line, ':');
-				values[valid_line_count++] = colon_pos + 1;
+			while(line != NULL){
+				line_count++;
 				line = strtok(NULL, "\r\n");
 			}
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);//表示有多少行
+			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
 
-			//遍历valuse数组
 			int i;
-			for(i = 0;i < valid_line_count;i++){
-				char *val = values[i];
-				size_t val_len = strlen(val);
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", val_len, val);
+			line = strtok(response, "\r\n");
+			for(i = 0;i < line_count; i++){
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
+				line = strtok(NULL, "\r\n");
 			}
 
 			memcpy(response, temp, pos);
@@ -716,27 +724,27 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 			resp_len = resp_generate_array_start(response, 0);
 		}else{
 			//同理处理多行数据
-			char *line = strtok(response, "\r\n");
-			int valid_line_count = 0;
-			char *valuse[KVS_MAX_LINE] = {0};
+			//将多行响应转换为RESP数组
+			char *response_copy = strdup(response);
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
+			int line_count = 0;
 			int pos = 0;
 
-			//计算行数 解析放入values数组中
-			while(line != NULL && valid_line_count < KVS_MAX_LINE){
-				char *colon_pos = strchr(line, ':');
-				valuse[valid_line_count++] = colon_pos + 1;
+			char *line = strtok(response_copy, "\r\n");
+
+			//计算行数
+			while(line != NULL){
+				line_count++;
 				line = strtok(NULL, "\r\n");
 			}
-
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
 
 			int i;
-			for(i = 0;i < valid_line_count;i++){
-				char *val = valuse[i];
-				size_t val_len = strlen(val);
-				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
+			line = strtok(response, "\r\n");
+			for(i = 0;i < line_count; i++){
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
+				line = strtok(NULL, "\r\n");
 			}
 
 			memcpy(response, temp, pos);
@@ -795,32 +803,38 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}
 		break;
 	case KVS_CMD_RSORT:
-		ret = kvs_rbtree_sort(&global_rbtree, response, KVS_MAX_RESPONSE_SIZE);
+		if (count >= 2) {
+			if (strcmp(tokens[1], "high") == 0) order = 1;
+			else if (strcmp(tokens[1], "low") == 0) order = 0;
+			if (count >= 3) limit = atoi(tokens[2]);
+    	}
+
+		ret = kvs_rbtree_sort(&global_rbtree, order, limit, response, KVS_MAX_RESPONSE_SIZE);
 		if(ret <= 0){
 			resp_len = resp_generate_array_start(response, 0);
 		}else{
 			//将多行响应转换为RESP数组
-			char *line = strtok(response, "\r\n");
-			int valid_line_count = 0;
-			char *valuse[KVS_MAX_LINE] = {0};
+			//将多行响应转换为RESP数组
+			char *response_copy = strdup(response);
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
+			int line_count = 0;
 			int pos = 0;
 
-			//计算行数 解析放入values数组中
-			while(line != NULL && valid_line_count < KVS_MAX_LINE){
-				char *colon_pos = strchr(line, ':');
-				valuse[valid_line_count++] = colon_pos + 1;
+			char *line = strtok(response_copy, "\r\n");
+
+			//计算行数
+			while(line != NULL){
+				line_count++;
 				line = strtok(NULL, "\r\n");
 			}
-
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
 
 			int i;
-			for(i = 0;i < valid_line_count;i++){
-				char *val = valuse[i];
-				size_t val_len = strlen(val);
-				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
+			line = strtok(response, "\r\n");
+			for(i = 0;i < line_count; i++){
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
+				line = strtok(NULL, "\r\n");
 			}
 
 			memcpy(response, temp, pos);
@@ -837,27 +851,27 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 			resp_len = resp_generate_array_start(response, 0);
 		}else{
 			//同理处理多行数据
-			char *line = strtok(response, "\r\n");
-			int valid_line_count = 0;
-			char *valuse[KVS_MAX_LINE] = {0};
+			//将多行响应转换为RESP数组
+			char *response_copy = strdup(response);
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
+			int line_count = 0;
 			int pos = 0;
 
-			//计算行数 解析放入values数组中
-			while(line != NULL && valid_line_count < KVS_MAX_LINE){
-				char *colon_pos = strchr(line, ':');
-				valuse[valid_line_count++] = colon_pos + 1;
+			char *line = strtok(response_copy, "\r\n");
+
+			//计算行数
+			while(line != NULL){
+				line_count++;
 				line = strtok(NULL, "\r\n");
 			}
-
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
 
 			int i;
-			for(i = 0;i < valid_line_count;i++){
-				char *val = valuse[i];
-				size_t val_len = strlen(val);
-				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
+			line = strtok(response, "\r\n");
+			for(i = 0;i < line_count; i++){
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
+				line = strtok(NULL, "\r\n");
 			}
 
 			memcpy(response, temp, pos);
@@ -914,32 +928,37 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}
 		break;
 	case KVS_CMD_HSORT:
-		ret = kvs_hash_sort(&global_hash, response, KVS_MAX_RESPONSE_SIZE);
+		if (count >= 2) {
+			if (strcmp(tokens[1], "high") == 0) order = 1;
+			else if (strcmp(tokens[1], "low") == 0) order = 0;
+			if (count >= 3) limit = atoi(tokens[2]);
+    	}
+		ret = kvs_hash_sort(&global_hash, order, limit, response, KVS_MAX_RESPONSE_SIZE);
 		if (ret <= 0) {
 			resp_len = resp_generate_array_start(response, 0);
 		}else{
 			//将多行响应转换为RESP数组
-			char *line = strtok(response, "\r\n");
-			int valid_line_count = 0;
-			char *valuse[KVS_MAX_LINE] = {0};
+			//将多行响应转换为RESP数组
+			char *response_copy = strdup(response);
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
+			int line_count = 0;
 			int pos = 0;
 
-			//计算行数 解析放入values数组中
-			while(line != NULL && valid_line_count < KVS_MAX_LINE){
-				char *colon_pos = strchr(line, ':');
-				valuse[valid_line_count++] = colon_pos + 1;
+			char *line = strtok(response_copy, "\r\n");
+
+			//计算行数
+			while(line != NULL){
+				line_count++;
 				line = strtok(NULL, "\r\n");
 			}
-
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
 
 			int i;
-			for(i = 0;i < valid_line_count;i++){
-				char *val = valuse[i];
-				size_t val_len = strlen(val);
-				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
+			line = strtok(response, "\r\n");
+			for(i = 0;i < line_count; i++){
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
+				line = strtok(NULL, "\r\n");
 			}
 
 			memcpy(response, temp, pos);
@@ -956,27 +975,27 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 			resp_len = resp_generate_array_start(response, 0);
 		}else{
 			//同理处理多行数据
-			char *line = strtok(response, "\r\n");
-			int valid_line_count = 0;
-			char *valuse[KVS_MAX_LINE] = {0};
+			//将多行响应转换为RESP数组
+			char *response_copy = strdup(response);
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
+			int line_count = 0;
 			int pos = 0;
 
-			//计算行数 解析放入values数组中
-			while(line != NULL && valid_line_count < KVS_MAX_LINE){
-				char *colon_pos = strchr(line, ':');
-				valuse[valid_line_count++] = colon_pos + 1;
+			char *line = strtok(response_copy, "\r\n");
+
+			//计算行数
+			while(line != NULL){
+				line_count++;
 				line = strtok(NULL, "\r\n");
 			}
-
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
 
 			int i;
-			for(i = 0;i < valid_line_count;i++){
-				char *val = valuse[i];
-				size_t val_len = strlen(val);
-				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
+			line = strtok(response, "\r\n");
+			for(i = 0;i < line_count; i++){
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
+				line = strtok(NULL, "\r\n");
 			}
 
 			memcpy(response, temp, pos);
@@ -1032,32 +1051,37 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}
 		break;
 	case KVS_CMD_SSORT:
-		ret = kvs_skiptable_sort(&global_skiptable, response, KVS_MAX_RESPONSE_SIZE);
+		if (count >= 2) {
+			if (strcmp(tokens[1], "high") == 0) order = 1;
+			else if (strcmp(tokens[1], "low") == 0) order = 0;
+			if (count >= 3) limit = atoi(tokens[2]);
+    	}
+		ret = kvs_skiptable_sort(&global_skiptable, order, limit, response, KVS_MAX_RESPONSE_SIZE);
 		if (ret <= 0) {
 			resp_len = resp_generate_array_start(response, 0);
 		}else{
 			//将多行响应转换为RESP数组
-			char *line = strtok(response, "\r\n");
-			int valid_line_count = 0;
-			char *valuse[KVS_MAX_LINE] = {0};
+			//将多行响应转换为RESP数组
+			char *response_copy = strdup(response);
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
+			int line_count = 0;
 			int pos = 0;
 
-			//计算行数 解析放入values数组中
-			while(line != NULL && valid_line_count < KVS_MAX_LINE){
-				char *colon_pos = strchr(line, ':');
-				valuse[valid_line_count++] = colon_pos + 1;
+			char *line = strtok(response_copy, "\r\n");
+
+			//计算行数
+			while(line != NULL){
+				line_count++;
 				line = strtok(NULL, "\r\n");
 			}
-
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
 
 			int i;
-			for(i = 0;i < valid_line_count;i++){
-				char *val = valuse[i];
-				size_t val_len = strlen(val);
-				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
+			line = strtok(response, "\r\n");
+			for(i = 0;i < line_count; i++){
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
+				line = strtok(NULL, "\r\n");
 			}
 
 			memcpy(response, temp, pos);
@@ -1074,27 +1098,27 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 			resp_len = resp_generate_array_start(response, 0);
 		}else{
 			//同理处理多行数据
-			char *line = strtok(response, "\r\n");
-			int valid_line_count = 0;
-			char *valuse[KVS_MAX_LINE] = {0};
+			//将多行响应转换为RESP数组
+			char *response_copy = strdup(response);
 			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
+			int line_count = 0;
 			int pos = 0;
 
-			//计算行数 解析放入values数组中
-			while(line != NULL && valid_line_count < KVS_MAX_LINE){
-				char *colon_pos = strchr(line, ':');
-				valuse[valid_line_count++] = colon_pos + 1;
+			char *line = strtok(response_copy, "\r\n");
+
+			//计算行数
+			while(line != NULL){
+				line_count++;
 				line = strtok(NULL, "\r\n");
 			}
-
 			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", valid_line_count);
+			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
 
 			int i;
-			for(i = 0;i < valid_line_count;i++){
-				char *val = valuse[i];
-				size_t val_len = strlen(val);
-				pos += sprintf(pos + temp, "$%zu\r\n%s\r\n", val_len, val);
+			line = strtok(response, "\r\n");
+			for(i = 0;i < line_count; i++){
+				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
+				line = strtok(NULL, "\r\n");
 			}
 
 			memcpy(response, temp, pos);

@@ -70,7 +70,8 @@ char* kvs_array_get(kvs_array_t *inst, char *key);
 int kvs_array_del(kvs_array_t *inst, char *key);
 int kvs_array_mod(kvs_array_t *inst, char *key, char *value);
 int kvs_array_exist(kvs_array_t *inst, char *key);
-int kvs_array_sort(kvs_array_t *inst, char *response, int max_len);
+//int kvs_array_sort(kvs_array_t *inst, char *response, int max_len);
+int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int max_len);
 int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *response, int max_len);
 
 
@@ -114,7 +115,8 @@ char* kvs_rbtree_get(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_del(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value);
 int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key);
-int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len);
+//int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len);
+int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, int max_len);
 int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, char *response, int max_len);
 
 
@@ -162,7 +164,8 @@ char * kvs_hash_get(kvs_hash_t *hash, char *key);
 int kvs_hash_mod(kvs_hash_t *hash, char *key, char *value);
 int kvs_hash_del(kvs_hash_t *hash, char *key);
 int kvs_hash_exist(kvs_hash_t *hash, char *key);
-int kvs_hash_sort(kvs_hash_t *inst, char *response, int max_len);
+//int kvs_hash_sort(kvs_hash_t *inst, char *response, int max_len);
+int kvs_hash_sort(kvs_hash_t *inst, int order, int limit, char *response, int max_len);
 int kvs_hash_range(kvs_hash_t *inst, char *start_key, char *end_key, char *response, int max_len);
 
 
@@ -189,6 +192,7 @@ typedef struct Node {
 typedef struct {
     int level;      // 当前跳表的最大层数
     Node* header;   // 头节点
+	int count;//节点总数
 } kvs_skiptable_t;
 
 
@@ -199,7 +203,8 @@ char * kvs_skiptable_get(kvs_skiptable_t *table, char *key);
 int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value);
 int kvs_skiptable_del(kvs_skiptable_t *table, char *key);
 int kvs_skiptable_exist(kvs_skiptable_t *table, char *key);
-int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len);
+//int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len);
+int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *response, int max_len);
 int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, char *response, int max_len);
 
 #endif

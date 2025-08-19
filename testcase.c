@@ -451,8 +451,8 @@ void array_resp_testcase(int connfd){
 	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key2\r\n$6\r\nbanana\r\n", "+OK\r\n", "SET-arr_key2");
 	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key3\r\n$6\r\ncherry\r\n", "+OK\r\n", "SET-arr_key3");
 	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key4\r\n$4\r\ndate\r\n", "+OK\r\n", "SET-arr_key4");
-	testcase(connfd, "*1\r\n$4\r\nSORT\r\n", "*3\r\n$6\r\nbanana\r\n$6\r\ncherry\r\n$4\r\ndate\r\n", "array_SORT");
-	testcase(connfd, "*3\r\n$5\r\nRANGE\r\n$8\r\narr_key2\r\n$8\r\narr_key4\r\n", "*3\r\n$6\r\nbanana\r\n$6\r\ncherry\r\n$4\r\ndate\r\n", "array_RANGE");
+	testcase(connfd, "*1\r\n$4\r\nSORT\r\n", "*3\r\n$15\r\narr_key2:banana\r\n$15\r\narr_key3:cherry\r\n$13\r\narr_key4:date\r\n", "array_SORT");
+	testcase(connfd, "*3\r\n$5\r\nRANGE\r\n$8\r\narr_key2\r\n$8\r\narr_key4\r\n", "*3\r\n$15\r\narr_key2:banana\r\n$15\r\narr_key3:cherry\r\n$13\r\narr_key4:date\r\n", "array_RANGE");
 	
 }
 void rbtree_resp_testcase(int connfd){
@@ -467,8 +467,8 @@ void rbtree_resp_testcase(int connfd){
 	testcase(connfd, "*3\r\n$4\r\nRSET\r\n$9\r\ntree_key2\r\n$3\r\nfox\r\n", "+OK\r\n", "SET-arr_key2");
 	testcase(connfd, "*3\r\n$4\r\nRSET\r\n$9\r\ntree_key3\r\n$7\r\ngiraffe\r\n", "+OK\r\n", "SET-arr_key3");
 	testcase(connfd, "*3\r\n$4\r\nRSET\r\n$9\r\ntree_key4\r\n$5\r\nhippo\r\n", "+OK\r\n", "SET-arr_key4");
-	testcase(connfd, "*1\r\n$5\r\nRSORT\r\n", "*3\r\n$3\r\nfox\r\n$7\r\ngiraffe\r\n$5\r\nhippo\r\n", "rbtree_SORT");
-	testcase(connfd, "*3\r\n$6\r\nRRANGE\r\n$9\r\ntree_key2\r\n$9\r\ntree_key4\r\n", "*3\r\n$3\r\nfox\r\n$7\r\ngiraffe\r\n$5\r\nhippo\r\n", "rbtree_RANGE");
+	testcase(connfd, "*1\r\n$5\r\nRSORT\r\n", "*3\r\n$13\r\ntree_key2:fox\r\n$17\r\ntree_key3:giraffe\r\n$15\r\ntree_key4:hippo\r\n", "rbtree_SORT");
+	testcase(connfd, "*3\r\n$6\r\nRRANGE\r\n$9\r\ntree_key2\r\n$9\r\ntree_key4\r\n", "*3\r\n$13\r\ntree_key2:fox\r\n$17\r\ntree_key3:giraffe\r\n$15\r\ntree_key4:hippo\r\n", "rbtree_RANGE");
 	
 }
 void hash_resp_testcase(int connfd){
@@ -483,8 +483,8 @@ void hash_resp_testcase(int connfd){
 	testcase(connfd, "*3\r\n$4\r\nHSET\r\n$9\r\nhash_key2\r\n$6\r\njaguar\r\n", "+OK\r\n", "SET-hash_key2");
 	testcase(connfd, "*3\r\n$4\r\nHSET\r\n$9\r\nhash_key3\r\n$5\r\nkoala\r\n", "+OK\r\n", "SET-hash_key3");
 	testcase(connfd, "*3\r\n$4\r\nHSET\r\n$9\r\nhash_key4\r\n$5\r\nlemur\r\n", "+OK\r\n", "SET-hash_key4");
-	testcase(connfd, "*1\r\n$5\r\nHSORT\r\n", "*3\r\n$6\r\njaguar\r\n$5\r\nkoala\r\n$5\r\nlemur\r\n", "hash_SORT");
-	testcase(connfd, "*3\r\n$6\r\nHRANGE\r\n$9\r\nhash_key2\r\n$9\r\nhash_key4\r\n", "*3\r\n$6\r\njaguar\r\n$5\r\nkoala\r\n$5\r\nlemur\r\n", "hash_RANGE");
+	testcase(connfd, "*1\r\n$5\r\nHSORT\r\n", "*3\r\n$16\r\nhash_key2:jaguar\r\n$15\r\nhash_key3:koala\r\n$15\r\nhash_key4:lemur\r\n", "hash_SORT");
+	testcase(connfd, "*3\r\n$6\r\nHRANGE\r\n$9\r\nhash_key2\r\n$9\r\nhash_key4\r\n", "*3\r\n$16\r\nhash_key2:jaguar\r\n$15\r\nhash_key3:koala\r\n$15\r\nhash_key4:lemur\r\n", "hash_RANGE");
 	
 }
 void skiptable_resp_testcase(int connfd){
@@ -499,8 +499,8 @@ void skiptable_resp_testcase(int connfd){
 	testcase(connfd, "*3\r\n$4\r\nSSET\r\n$9\r\nskip_key2\r\n$7\r\nnarwhal\r\n", "+OK\r\n", "SET-skip_key2");
 	testcase(connfd, "*3\r\n$4\r\nSSET\r\n$9\r\nskip_key3\r\n$7\r\noctopus\r\n", "+OK\r\n", "SET-skip_key3");
 	testcase(connfd, "*3\r\n$4\r\nSSET\r\n$9\r\nskip_key4\r\n$7\r\npenguin\r\n", "+OK\r\n", "SET-skip_key4");
-	testcase(connfd, "*1\r\n$5\r\nSSORT\r\n", "*3\r\n$7\r\nnarwhal\r\n$7\r\noctopus\r\n$7\r\npenguin\r\n", "skiptable_SORT");
-	testcase(connfd, "*3\r\n$6\r\nSRANGE\r\n$9\r\nskip_key2\r\n$9\r\nskip_key4\r\n", "*3\r\n$7\r\nnarwhal\r\n$7\r\noctopus\r\n$7\r\npenguin\r\n", "skiptable_RANGE");
+	testcase(connfd, "*1\r\n$5\r\nSSORT\r\n", "*3\r\n$17\r\nskip_key2:narwhal\r\n$17\r\nskip_key3:octopus\r\n$17\r\nskip_key4:penguin\r\n", "skiptable_SORT");
+	testcase(connfd, "*3\r\n$6\r\nSRANGE\r\n$9\r\nskip_key2\r\n$9\r\nskip_key4\r\n", "*3\r\n$17\r\nskip_key2:narwhal\r\n$17\r\nskip_key3:octopus\r\n$17\r\nskip_key4:penguin\r\n", "skiptable_RANGE");
 	
 }
 

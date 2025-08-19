@@ -264,7 +264,7 @@ static int compare_hash_items(const void *a, const void *b) {
     return strcmp(nodeA->key, nodeB->key);
 }
 
-int kvs_hash_sort(kvs_hash_t *inst, char *response, int max_len){
+int kvs_hash_sort(kvs_hash_t *inst, int order, int limit, char *response, int max_len){
 	if (!inst) return -1;
     
     // 收集所有节点
@@ -283,9 +283,21 @@ int kvs_hash_sort(kvs_hash_t *inst, char *response, int max_len){
     // 按键排序
     qsort(nodes, count, sizeof(hashnode_t *), compare_hash_items);
     
-    // 格式化输出
+    // 处理排序方向
+    if (order == 1) { // 降序
+        for (int i = 0; i < count / 2; i++) {
+            hashnode_t *temp = nodes[i];
+            nodes[i] = nodes[count - 1 - i];
+            nodes[count - 1 - i] = temp;
+        }
+    }
+
+	// 处理数量限制
+    int output_count = (limit > 0 && limit < count) ? limit : count;
+
+	// 格式化输出
     int len = 0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < output_count; i++) {
         int n = snprintf(response + len, max_len - len, 
                          "%s:%s\r\n", nodes[i]->key, nodes[i]->value);
         if (n < 0 || len + n >= max_len) break;
