@@ -22,10 +22,6 @@
 
 #define MAX_PORTS			20
 
-#define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
-
-
-
 #if ENABLE_KVSTORE
 
 typedef int (*msg_handler)(char *msg, int length, char *response);
@@ -39,10 +35,6 @@ int kvs_request(struct conn *c) {
 }
 
 #endif
-
-
-
-
 
 int accept_cb(int fd);
 int recv_cb(int fd);
@@ -61,52 +53,51 @@ struct conn conn_list[CONNECTION_SIZE] = {0};
 
 int set_event(int fd, int event, int flag) {
 
+	struct epoll_event ev;
+	ev.events = event;
+	ev.data.fd = fd;
+
 	if (flag) {  // non-zero add
-
-		struct epoll_event ev;
-		ev.events = event;
-		ev.data.fd = fd;
 		epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
-
 	} else {  // zero mod
-
-		struct epoll_event ev;
-		ev.events = event;
-		ev.data.fd = fd;
 		epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
-		
 	}
-	
 
 }
 
 
 int event_register(int fd, int event) {
 
-	if (fd < 0) return -1;
+	if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
 
 	memset(&conn_list[fd], 0, sizeof(struct conn));
 	conn_list[fd].fd = fd;
 	conn_list[fd].r_action.recv_callback = recv_cb;
 	conn_list[fd].send_callback = send_cb;
 
+	//初始化接收缓冲区
 	memset(conn_list[fd].rbuffer, 0, BUFFER_LENGTH);
 	conn_list[fd].rlength = 0;
+	conn_list[fd].rbuffer[0] = '\0';
 
 	memset(conn_list[fd].wbuffer, 0, BUFFER_LENGTH);
 	conn_list[fd].wlength = 0;
+	conn_list[fd].wbuffer[0] = '\0';
 
 	// 初始化RESP解析器
     resp_parser_init(&conn_list[fd].parser);
     conn_list[fd].parser_initialized = 1;
 
-	set_event(fd, event, 1);
+	return set_event(fd, event, 1);
 }
 
 void event_unregister(int fd) {
-    if (fd >= 0 && fd < CONNECTION_SIZE && conn_list[fd].parser_initialized) {
-        resp_parser_free(&conn_list[fd].parser);
-        conn_list[fd].parser_initialized = 0;
+    if (fd >= 0 && fd < CONNECTION_SIZE) {
+        if (conn_list[fd].parser_initialized) {
+            resp_parser_free(&conn_list[fd].parser);
+            conn_list[fd].parser_initialized = 0;
+        }
+        close(fd);
     }
 }
 
@@ -125,54 +116,233 @@ int accept_cb(int fd) {
 	
 	event_register(clientfd, EPOLLIN);  // | EPOLLET
 
-	if ((clientfd % 1000) == 0) {
-
-		struct timeval current;
-		gettimeofday(&current, NULL);
-
-		int time_used = TIME_SUB_MS(current, begin);
-		memcpy(&begin, &current, sizeof(struct timeval));
-		
-
-		//printf("accept finshed: %d, time_used: %d\n", clientfd, time_used);
-
-	}
 
 	return 0;
 }
 
-
+#if 0
 int recv_cb(int fd) {
-
-	int count = recv(fd, conn_list[fd].rbuffer + conn_list[fd].rlength, BUFFER_LENGTH - conn_list[fd].rlength - 1, 0);
-	if (count <= 0) { // disconnect
-		//printf("client disconnect: %d\n", fd);
-		event_unregister(fd);
-		close(fd);
-		epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL); // unfinished
-		return 0;
-	} 
-
-	
-	conn_list[fd].rlength = count;
-	conn_list[fd].rbuffer[conn_list[fd].rlength] = '\0';
-	//printf("RECV: %s\n", conn_list[fd].rbuffer);
-
-	conn_list[fd].wlength = kvs_handler(conn_list[fd].rbuffer, conn_list[fd].rlength, conn_list[fd].wbuffer);
-    set_event(fd, EPOLLOUT, 0);
-	
-	return count;
+	if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
+    
+    // 计算剩余空间
+    int remaining = BUFFER_LENGTH - conn_list[fd].rlength - 1;
+    if (remaining <= 0) {
+        // 缓冲区已满，关闭连接
+        event_unregister(fd);
+        return -1;
+    }
+    
+    // 接收数据
+    int count = recv(fd, conn_list[fd].rbuffer + conn_list[fd].rlength, remaining, 0);
+    if (count <= 0) {
+        // 连接关闭或错误
+        event_unregister(fd);
+        return 0;
+    }
+    
+    conn_list[fd].rlength += count;
+    conn_list[fd].rbuffer[conn_list[fd].rlength] = '\0';
+    
+    // 处理接收到的数据
+    int parsed_total = 0;
+    int parsed = 0;
+    
+    do {
+        // 解析RESP协议
+        parsed = resp_parser(&conn_list[fd].parser, 
+                            conn_list[fd].rbuffer + parsed_total, 
+                            conn_list[fd].rlength - parsed_total);
+        
+        if (parsed > 0) {
+            // 成功解析一个完整命令
+            char response_buf[KVS_MAX_RESPONSE_SIZE];
+            int resp_len = kvs_filter_protocol(conn_list[fd].parser.tokens, 
+                                      conn_list[fd].parser.arg_index, 
+                                      response_buf);
+            
+            // 将响应添加到发送缓冲区
+            if (conn_list[fd].wlength + resp_len < BUFFER_LENGTH) {
+                memcpy(conn_list[fd].wbuffer + conn_list[fd].wlength, 
+                       response_buf, resp_len);
+                conn_list[fd].wlength += resp_len;
+            } else {
+                // 发送缓冲区满，关闭连接
+                event_unregister(fd);
+                return -1;
+            }
+            
+            // 释放解析器资源并重置
+            resp_parser_free(&conn_list[fd].parser);
+            resp_parser_init(&conn_list[fd].parser);
+            
+            parsed_total += parsed;
+        } else if (parsed == 0) {
+            // 需要更多数据
+            break;
+        } else {
+            // 解析错误
+            const char *error_msg = "-ERROR Protocol error\r\n";
+            int error_len = strlen(error_msg);
+            if (conn_list[fd].wlength + error_len < BUFFER_LENGTH) {
+                memcpy(conn_list[fd].wbuffer + conn_list[fd].wlength, 
+                       error_msg, error_len);
+                conn_list[fd].wlength += error_len;
+            }
+            break;
+        }
+    } while (parsed_total < conn_list[fd].rlength);
+    
+    // 移动未处理的数据到缓冲区开头
+    if (parsed_total > 0) {
+        int remaining_data = conn_list[fd].rlength - parsed_total;
+        if (remaining_data > 0) {
+            memmove(conn_list[fd].rbuffer, 
+                    conn_list[fd].rbuffer + parsed_total, 
+                    remaining_data);
+        }
+        conn_list[fd].rlength = remaining_data;
+    }
+    
+    // 如果有数据要发送，注册写事件
+    if (conn_list[fd].wlength > 0) {
+        set_event(fd, EPOLLOUT, 0);
+    }
+    
+    return count;
 }
-
+#else
+int recv_cb(int fd) {
+    if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
+    
+    // 计算剩余空间
+    int remaining = BUFFER_LENGTH - conn_list[fd].rlength - 1;
+    if (remaining <= 0) {
+        // 缓冲区已满，关闭连接
+        event_unregister(fd);
+        return -1;
+    }
+    
+    // 接收数据
+    int count = recv(fd, conn_list[fd].rbuffer + conn_list[fd].rlength, remaining, 0);
+    if (count <= 0) {
+        // 连接关闭或错误
+        event_unregister(fd);
+        return 0;
+    }
+    
+    conn_list[fd].rlength += count;
+    conn_list[fd].rbuffer[conn_list[fd].rlength] = '\0';
+    
+    // 处理接收到的数据
+    int parsed_total = 0;
+    int parsed = 0;
+    
+    do {
+        // 解析RESP协议
+        parsed = resp_parser(&conn_list[fd].parser, 
+                            conn_list[fd].rbuffer + parsed_total, 
+                            conn_list[fd].rlength - parsed_total);
+        
+        printf("recv count: %d, parsed value: %d\n", count, parsed);
+        
+        if (parsed > 0) {
+            // 成功解析一个完整命令
+            if (conn_list[fd].parser.state == RESP_PARSE_COMPLETE) {
+                char response_buf[KVS_MAX_RESPONSE_SIZE];
+                int resp_len = kvs_filter_protocol(conn_list[fd].parser.tokens, 
+                                                  conn_list[fd].parser.arg_index, 
+                                                  response_buf);
+                
+                // 将响应添加到发送缓冲区
+                if (conn_list[fd].wlength + resp_len < BUFFER_LENGTH) {
+                    memcpy(conn_list[fd].wbuffer + conn_list[fd].wlength, 
+                           response_buf, resp_len);
+                    conn_list[fd].wlength += resp_len;
+                } else {
+                    // 发送缓冲区满，关闭连接
+                    event_unregister(fd);
+                    return -1;
+                }
+                
+                // 重置解析器状态，准备解析下一个命令
+                resp_parser_reset(&conn_list[fd].parser);
+            }
+            
+            parsed_total += parsed;
+        } else if (parsed == 0) {
+            // 需要更多数据
+            break;
+        } else {
+            // 解析错误
+            printf("解析错误\n");
+            
+            // 尝试从错误中恢复：查找下一个RESP起始符
+            const char *next_start = memchr(conn_list[fd].rbuffer + parsed_total + 1, '*', 
+                                          conn_list[fd].rlength - parsed_total - 1);
+            if (next_start) {
+                // 找到下一个RESP起始符，跳过错误数据
+                parsed_total = next_start - conn_list[fd].rbuffer;
+                resp_parser_reset(&conn_list[fd].parser);
+            } else {
+                // 没有找到更多RESP数据，清空缓冲区
+                parsed_total = conn_list[fd].rlength;
+                resp_parser_reset(&conn_list[fd].parser);
+                break;
+            }
+        }
+    } while (parsed_total < conn_list[fd].rlength);
+    
+    // 移动未处理的数据到缓冲区开头
+    if (parsed_total > 0) {
+        int remaining_data = conn_list[fd].rlength - parsed_total;
+        if (remaining_data > 0) {
+            memmove(conn_list[fd].rbuffer, 
+                    conn_list[fd].rbuffer + parsed_total, 
+                    remaining_data);
+        }
+        conn_list[fd].rlength = remaining_data;
+        conn_list[fd].rbuffer[conn_list[fd].rlength] = '\0';
+    }
+    
+    // 如果有数据要发送，注册写事件
+    if (conn_list[fd].wlength > 0) {
+        set_event(fd, EPOLLOUT, 0);
+    }
+    
+    return count;
+}
+#endif
 
 int send_cb(int fd) {
-
-	if (conn_list[fd].wlength != 0) {
-		send(fd, conn_list[fd].wbuffer, conn_list[fd].wlength, 0);
-		conn_list[fd].wlength = 0;  // 清空发送缓冲区
-	}
 	
-	set_event(fd, EPOLLIN, 0);
+	if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
+
+	if(conn_list[fd].wlength > 0){
+		// char msg[2048] = {0};
+		// strncpy(msg, conn_list[fd].wbuffer, conn_list[fd].wlength);
+		// printf("发送数据: %s\n", msg);
+		int sent = send(fd, conn_list[fd].wbuffer, conn_list[fd].wlength, 0);
+		
+		if (sent < 0) {
+            event_unregister(fd);
+            return -1;
+        }
+
+		// 移动未发送的数据
+        if (sent < conn_list[fd].wlength) {
+            memmove(conn_list[fd].wbuffer, 
+                    conn_list[fd].wbuffer + sent, 
+                    conn_list[fd].wlength - sent);
+        }
+        conn_list[fd].wlength -= sent;
+	}
+
+	// 如果还有数据要发送，保持EPOLLOUT事件
+    if (conn_list[fd].wlength > 0) {
+        set_event(fd, EPOLLOUT, 0);
+    } else {
+        set_event(fd, EPOLLIN, 0);
+    }
 
 	return 0;
 }
@@ -182,17 +352,35 @@ int send_cb(int fd) {
 int r_init_server(unsigned short port) {
 
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	if (sockfd < 0) {
+        perror("socket");
+        return -1;
+    }
+
+	// 设置SO_REUSEADDR选项
+	int reuse = 1;
+	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        perror("setsockopt");
+        close(sockfd);
+        return -1;
+    }
 
 	struct sockaddr_in servaddr;
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_addr.s_addr = htonl(INADDR_ANY); // 0.0.0.0
 	servaddr.sin_port = htons(port); // 0-1023, 
 
-	if (-1 == bind(sockfd, (struct sockaddr*)&servaddr, sizeof(struct sockaddr))) {
+	if (bind(sockfd, (struct sockaddr*)&servaddr, sizeof(struct sockaddr)) < 0) {
 		printf("bind failed: %s\n", strerror(errno));
+		close(sockfd);
+        return -1;
 	}
 
-	listen(sockfd, 10);
+	if (listen(sockfd, 1024) < 0) {
+        perror("listen");
+        close(sockfd);
+        return -1;
+    }
 	//printf("listen finshed: %d\n", sockfd); // 3 
 
 	return sockfd;

@@ -2,6 +2,3 @@
 [RBTREE]
 [HASH]
 [SKIPTABLE]
-skip_key2:narwhal
-skip_key3:octopus
-skip_key4:penguin

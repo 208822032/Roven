@@ -45,7 +45,7 @@ void testcase(int connfd, char *msg, char *pattern, char *casename) {
 	recv_msg(connfd, result, MAX_MSG_LENGTH);
 
 	if (strcmp(result, pattern) == 0) {
-		printf("==> PASS ->  %s\n", casename);
+		//printf("==> PASS ->  %s\n", casename);
 	} else {
 		printf("==> FAILED -> %s, '%s' != '%s' \n", casename, result, pattern);
 		exit(1);
@@ -364,20 +364,29 @@ void skiptable_testcase_1w(int connfd){
 
 }
 
-void pipeline_testcase(int connfd) {
-    printf("Testing pipeline functionality...\n");
+
+
+void array_pipeline_testcase(int connfd) {
+    //printf("Testing pipeline functionality...\n");
 
     // 构建包含多个命令的pipeline请求
     const char *pipeline_cmd = 
-        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey1\r\n$6\r\nValue1\r\n"
-        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
-        "*3\r\n$4\r\nSMOD\r\n$8\r\nPipeKey1\r\n$9\r\nNewValue1\r\n"
-        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
-        "*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey1\r\n"
-        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
-        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey2\r\n$6\r\nValue2\r\n"
-        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey3\r\n$6\r\nValue3\r\n"
-        "*1\r\n$5\r\nSSORT\r\n";
+        "*3\r\n$3\r\nSET\r\n$8\r\nPipeKey1\r\n$6\r\nValue1\r\n"
+        "*2\r\n$3\r\nGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$3\r\nMOD\r\n$8\r\nPipeKey1\r\n$9\r\nNewValue1\r\n"
+        "*2\r\n$3\r\nGET\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$3\r\nDEL\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$3\r\nGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$3\r\nSET\r\n$8\r\nPipeKey2\r\n$6\r\nValue2\r\n"
+        "*3\r\n$3\r\nSET\r\n$8\r\nPipeKey3\r\n$6\r\nValue3\r\n"
+		"*3\r\n$3\r\nSET\r\n$8\r\nPipeKey4\r\n$6\r\nValue4\r\n"
+        "*2\r\n$4\r\nSORT\r\n$4\r\nhigh\r\n"
+		"*2\r\n$4\r\nSORT\r\n$3\r\nlow\r\n"
+		"*3\r\n$5\r\nRANGE\r\n$8\r\nPipeKey2\r\n$8\r\nPipeKey4\r\n"
+		"*2\r\n$3\r\nDEL\r\n$8\r\nPipeKey2\r\n"
+		"*2\r\n$3\r\nDEL\r\n$8\r\nPipeKey3\r\n"
+		"*2\r\n$3\r\nDEL\r\n$8\r\nPipeKey4\r\n";
+
 
     // 发送pipeline请求
     send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
@@ -415,20 +424,332 @@ void pipeline_testcase(int connfd) {
         "+NO EXIST\r\n"
         "+OK\r\n"
         "+OK\r\n"
-        "*2\r\n$6\r\nValue2\r\n$6\r\nValue3\r\n"; 
+		"+OK\r\n"
+        "*3\r\n$15\r\nPipeKey4:Value4\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey2:Value2\r\n"
+		"*3\r\n$15\r\nPipeKey2:Value2\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey4:Value4\r\n"
+		"*3\r\n$15\r\nPipeKey2:Value2\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey4:Value4\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n";
+    
+	if (strcmp(response, expected_response) == 0) {
+        //printf("==> PASS -> Pipeline test\n");
+    } else {
+        printf("==> FAILED -> Pipeline test\n");
+        printf("Expected:\n%s\n", expected_response);
+        printf("Received:\n%s\n", response);
+    }
+}
+void array_pipeline_qps_testcase(int connfd){
+	int count = 100000;
+    int i = 0;
+
+    struct timeval tv_begin;
+	gettimeofday(&tv_begin, NULL);
+
+    
+    for(i = 0;i < count;i ++){
+
+        array_pipeline_testcase(connfd);
+
+    }
+
+    struct timeval tv_end;
+	gettimeofday(&tv_end, NULL);
+
+	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+
+    printf("array pipeline testcase --> time_used: %d, qps: %d\n", time_used, 1500000 * 1000 / time_used);
+}
+void rbtree_pipeline_testcase(int connfd) {
+    //printf("Testing pipeline functionality...\n");
+
+    // 构建包含多个命令的pipeline请求
+    const char *pipeline_cmd = 
+        "*3\r\n$4\r\nRSET\r\n$8\r\nPipeKey1\r\n$6\r\nValue1\r\n"
+        "*2\r\n$4\r\nRGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$4\r\nRMOD\r\n$8\r\nPipeKey1\r\n$9\r\nNewValue1\r\n"
+        "*2\r\n$4\r\nRGET\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$4\r\nRDEL\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$4\r\nRGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$4\r\nRSET\r\n$8\r\nPipeKey2\r\n$6\r\nValue2\r\n"
+        "*3\r\n$4\r\nRSET\r\n$8\r\nPipeKey3\r\n$6\r\nValue3\r\n"
+		"*3\r\n$4\r\nRSET\r\n$8\r\nPipeKey4\r\n$6\r\nValue4\r\n"
+        "*2\r\n$5\r\nRSORT\r\n$4\r\nhigh\r\n"
+		"*2\r\n$5\r\nRSORT\r\n$3\r\nlow\r\n"
+		"*3\r\n$6\r\nRRANGE\r\n$8\r\nPipeKey2\r\n$8\r\nPipeKey4\r\n"
+		"*2\r\n$4\r\nRDEL\r\n$8\r\nPipeKey2\r\n"
+		"*2\r\n$4\r\nRDEL\r\n$8\r\nPipeKey3\r\n"
+		"*2\r\n$4\r\nRDEL\r\n$8\r\nPipeKey4\r\n";
+
+    // 发送pipeline请求
+    send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
+
+    // 接收响应缓冲区
+    char response[2048] = {0};
+    int total_received = 0;
+    int expected_responses = 9; // 我们发送了9个命令
+
+    // 接收所有响应（可能需要多次recv）
+    while (total_received < sizeof(response) - 1) {
+        int n = recv(connfd, response + total_received, 
+                    sizeof(response) - total_received - 1, 0);
+        if (n <= 0) break;
+        total_received += n;
+        
+        // 检查是否收到全部响应（按\r\n计数）
+        int response_count = 0;
+        for (int i = 0; i < total_received; i++) {
+            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
+                response_count++;
+            }
+        }
+        if (response_count >= expected_responses) break;
+    }
+    response[total_received] = '\0';
+
+    // 验证响应内容
+    const char *expected_response = 
+        "+OK\r\n"
+        "$6\r\nValue1\r\n"
+        "+OK\r\n"
+        "$9\r\nNewValue1\r\n"
+        "+OK\r\n"
+        "+NO EXIST\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "*3\r\n$15\r\nPipeKey4:Value4\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey2:Value2\r\n"
+		"*3\r\n$15\r\nPipeKey2:Value2\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey4:Value4\r\n"
+		"*3\r\n$15\r\nPipeKey2:Value2\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey4:Value4\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n";
 
     if (strcmp(response, expected_response) == 0) {
-        printf("==> PASS -> Pipeline test\n");
+        //printf("==> PASS -> Pipeline test\n");
     } else {
         printf("==> FAILED -> Pipeline test\n");
         printf("Expected:\n%s\n", expected_response);
         printf("Received:\n%s\n", response);
     }
 
-    // 清理测试数据
-    testcase(connfd, "*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey2\r\n", "+OK\r\n", "Pipeline cleanup");
-    testcase(connfd, "*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey3\r\n", "+OK\r\n", "Pipeline cleanup");
 }
+void rbtreee_pipeline_qps_testcase(int connfd){
+	int count = 10000;
+    int i = 0;
+
+    struct timeval tv_begin;
+	gettimeofday(&tv_begin, NULL);
+
+    
+    for(i = 0;i < count;i ++){
+
+        rbtree_pipeline_testcase(connfd);
+
+    }
+
+    struct timeval tv_end;
+	gettimeofday(&tv_end, NULL);
+
+	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+
+    printf("rbtree pipeline testcase --> time_used: %d, qps: %d\n", time_used, 150000 * 1000 / time_used);
+}
+void hash_pipeline_testcase(int connfd) {
+    //printf("Testing pipeline functionality...\n");
+
+    // 构建包含多个命令的pipeline请求
+    const char *pipeline_cmd = 
+        "*3\r\n$4\r\nHSET\r\n$8\r\nPipeKey1\r\n$6\r\nValue1\r\n"
+        "*2\r\n$4\r\nHGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$4\r\nHMOD\r\n$8\r\nPipeKey1\r\n$9\r\nNewValue1\r\n"
+        "*2\r\n$4\r\nHGET\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$4\r\nHDEL\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$4\r\nHGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$4\r\nHSET\r\n$8\r\nPipeKey2\r\n$6\r\nValue2\r\n"
+        "*3\r\n$4\r\nHSET\r\n$8\r\nPipeKey3\r\n$6\r\nValue3\r\n"
+		"*3\r\n$4\r\nHSET\r\n$8\r\nPipeKey4\r\n$6\r\nValue4\r\n"
+        "*2\r\n$5\r\nHSORT\r\n$4\r\nhigh\r\n"
+		"*2\r\n$5\r\nHSORT\r\n$3\r\nlow\r\n"
+		"*3\r\n$6\r\nHRANGE\r\n$8\r\nPipeKey2\r\n$8\r\nPipeKey4\r\n"
+		"*2\r\n$4\r\nHDEL\r\n$8\r\nPipeKey2\r\n"
+		"*2\r\n$4\r\nHDEL\r\n$8\r\nPipeKey3\r\n"
+		"*2\r\n$4\r\nHDEL\r\n$8\r\nPipeKey4\r\n";
+
+
+    // 发送pipeline请求
+    send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
+
+    // 接收响应缓冲区
+    char response[2048] = {0};
+    int total_received = 0;
+    int expected_responses = 9; // 我们发送了9个命令
+
+    // 接收所有响应（可能需要多次recv）
+    while (total_received < sizeof(response) - 1) {
+        int n = recv(connfd, response + total_received, 
+                    sizeof(response) - total_received - 1, 0);
+        if (n <= 0) break;
+        total_received += n;
+        
+        // 检查是否收到全部响应（按\r\n计数）
+        int response_count = 0;
+        for (int i = 0; i < total_received; i++) {
+            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
+                response_count++;
+            }
+        }
+        if (response_count >= expected_responses) break;
+    }
+    response[total_received] = '\0';
+
+    // 验证响应内容
+    const char *expected_response = 
+        "+OK\r\n"
+        "$6\r\nValue1\r\n"
+        "+OK\r\n"
+        "$9\r\nNewValue1\r\n"
+        "+OK\r\n"
+        "+NO EXIST\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "*3\r\n$15\r\nPipeKey4:Value4\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey2:Value2\r\n"
+		"*3\r\n$15\r\nPipeKey2:Value2\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey4:Value4\r\n"
+		"*3\r\n$15\r\nPipeKey2:Value2\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey4:Value4\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n";
+
+    if (strcmp(response, expected_response) == 0) {
+        //printf("==> PASS -> Pipeline test\n");
+    } else {
+        printf("==> FAILED -> Pipeline test\n");
+        printf("Expected:\n%s\n", expected_response);
+        printf("Received:\n%s\n", response);
+    }
+
+}
+void hash_pipeline_qps_testcase(int connfd){
+	int count = 10000;
+    int i = 0;
+
+    struct timeval tv_begin;
+	gettimeofday(&tv_begin, NULL);
+
+    
+    for(i = 0;i < count;i ++){
+
+        hash_pipeline_testcase(connfd);
+
+    }
+
+    struct timeval tv_end;
+	gettimeofday(&tv_end, NULL);
+
+	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+
+    printf("hash pipeline testcase --> time_used: %d, qps: %d\n", time_used, 150000 * 1000 / time_used);
+}
+void skiptable_pipeline_testcase(int connfd) {
+    //printf("Testing pipeline functionality...\n");
+
+    // 构建包含多个命令的pipeline请求
+    const char *pipeline_cmd = 
+        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey1\r\n$6\r\nValue1\r\n"
+        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$4\r\nSMOD\r\n$8\r\nPipeKey1\r\n$9\r\nNewValue1\r\n"
+        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey1\r\n"
+        "*2\r\n$4\r\nSGET\r\n$8\r\nPipeKey1\r\n"
+        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey2\r\n$6\r\nValue2\r\n"
+        "*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey3\r\n$6\r\nValue3\r\n"
+		"*3\r\n$4\r\nSSET\r\n$8\r\nPipeKey4\r\n$6\r\nValue4\r\n"
+        "*2\r\n$5\r\nSSORT\r\n$4\r\nhigh\r\n"
+		"*2\r\n$5\r\nSSORT\r\n$3\r\nlow\r\n"
+		"*3\r\n$6\r\nSRANGE\r\n$8\r\nPipeKey2\r\n$8\r\nPipeKey4\r\n"
+		"*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey2\r\n"
+		"*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey3\r\n"
+		"*2\r\n$4\r\nSDEL\r\n$8\r\nPipeKey4\r\n";
+
+
+    // 发送pipeline请求
+    send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
+
+    // 接收响应缓冲区
+    char response[2048] = {0};
+    int total_received = 0;
+    int expected_responses = 9; // 我们发送了9个命令
+
+    // 接收所有响应（可能需要多次recv）
+    while (total_received < sizeof(response) - 1) {
+        int n = recv(connfd, response + total_received, 
+                    sizeof(response) - total_received - 1, 0);
+        if (n <= 0) break;
+        total_received += n;
+        
+        // 检查是否收到全部响应（按\r\n计数）
+        int response_count = 0;
+        for (int i = 0; i < total_received; i++) {
+            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
+                response_count++;
+            }
+        }
+        if (response_count >= expected_responses) break;
+    }
+    response[total_received] = '\0';
+
+    // 验证响应内容
+    const char *expected_response = 
+        "+OK\r\n"
+        "$6\r\nValue1\r\n"
+        "+OK\r\n"
+        "$9\r\nNewValue1\r\n"
+        "+OK\r\n"
+        "+NO EXIST\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "*3\r\n$15\r\nPipeKey4:Value4\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey2:Value2\r\n"
+		"*3\r\n$15\r\nPipeKey2:Value2\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey4:Value4\r\n"
+		"*3\r\n$15\r\nPipeKey2:Value2\r\n$15\r\nPipeKey3:Value3\r\n$15\r\nPipeKey4:Value4\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n";
+
+    if (strcmp(response, expected_response) == 0) {
+        //printf("==> PASS -> Pipeline test\n");
+    } else {
+        printf("==> FAILED -> Pipeline test\n");
+        printf("Expected:\n%s\n", expected_response);
+        printf("Received:\n%s\n", response);
+    }
+}
+void skiptable_pipeline_qps_testcase(int connfd){
+	int count = 10000;
+    int i = 0;
+
+    struct timeval tv_begin;
+	gettimeofday(&tv_begin, NULL);
+
+    
+    for(i = 0;i < count;i ++){
+
+        skiptable_pipeline_testcase(connfd);
+
+    }
+
+    struct timeval tv_end;
+	gettimeofday(&tv_end, NULL);
+
+	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+
+    printf("skiptable pipeline testcase --> time_used: %d, qps: %d\n", time_used, 150000 * 1000 / time_used);
+}
+
+
+
 
 /*
  1. 简单字符串：以"+"开头，以"\r\n"结尾。例如："+OK\r\n"
@@ -546,7 +867,7 @@ int main(int argc, char *argv[]) {
 		printf("  8: SkipTable Sort & Range Test\n");
 		skiptable_test_sort_range(connfd);
 	}else if(mode == 9){
-		pipeline_testcase(connfd);
+		//pipeline_testcase(connfd);
 	}else if(mode == 10){
 		array_resp_testcase(connfd);
 	}else if(mode == 11){
@@ -555,6 +876,14 @@ int main(int argc, char *argv[]) {
 		hash_resp_testcase(connfd);
 	}else if(mode == 13){
 		skiptable_resp_testcase(connfd);
+	}else if(mode == 14){
+		array_pipeline_qps_testcase(connfd);
+	}else if(mode == 15){
+		hash_pipeline_qps_testcase(connfd);
+	}else if(mode == 16){
+		rbtreee_pipeline_qps_testcase(connfd);
+	}else if(mode == 17){
+		skiptable_pipeline_qps_testcase(connfd);
 	}
 
 	return 0;
