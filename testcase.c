@@ -5,20 +5,56 @@
 #include <stdlib.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
-
+#include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>  // 包含 fcntl() 函数的声明
 
 #define MAX_MSG_LENGTH		1024
 #define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
 
 int send_msg(int connfd, char *msg, int length) {
-
+#if 0
 	int res = send(connfd, msg, length, 0);
+    printf("数据发送: %d, 数据长度: %d\n", res, length);
 	if (res < 0) {
 		perror("send");
 		exit(1);
 	}
 	return res;
+#else
+    int total_sent = 0;
+    int remaining = length;
+    
+    while (total_sent < length) {
+        int res = send(connfd, msg + total_sent, remaining, 0);
+        
+        if (res < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // 如果是非阻塞socket且缓冲区满，可以稍等或处理其他任务
+                //usleep(1000); // 等待1ms
+                continue;
+            }
+            perror("send");
+            exit(1);
+        }
+        
+        if (res == 0) {
+            // 连接已关闭
+            printf("连接已关闭\n");
+            break;
+        }
+        
+        total_sent += res;
+        remaining -= res;
+        
+        printf("本次发送: %d, 累计发送: %d, 剩余: %d\n", 
+               res, total_sent, remaining);
+    }
+    
+    printf("数据发送完成: %d, 总长度: %d\n", total_sent, length);
+    return total_sent;
+#endif
 }
 
 int recv_msg(int connfd, char *msg, int length) {
@@ -45,7 +81,7 @@ void testcase(int connfd, char *msg, char *pattern, char *casename) {
 	recv_msg(connfd, result, MAX_MSG_LENGTH);
 
 	if (strcmp(result, pattern) == 0) {
-		//printf("==> PASS ->  %s\n", casename);
+		printf("==> PASS ->  %s\n", casename);
 	} else {
 		printf("==> FAILED -> %s, '%s' != '%s' \n", casename, result, pattern);
 		exit(1);
@@ -58,6 +94,7 @@ void testcase(int connfd, char *msg, char *pattern, char *casename) {
 int connect_tcpserver(const char *ip, unsigned short port) {
 
 	int connfd = socket(AF_INET, SOCK_STREAM, 0);
+
 
 	struct sockaddr_in server_addr;
 	memset(&server_addr, 0, sizeof(struct sockaddr_in));
@@ -825,6 +862,214 @@ void skiptable_resp_testcase(int connfd){
 	
 }
 
+/**
+ * @brief 生成包含i条SET命令的RESP管道
+ * @param count 要生成的SET命令数量
+ * @param key_prefix 键名前缀
+ * @param value_prefix 值前缀
+ * @return RESP管道字符串，需要调用者free释放
+ */
+char* generate_set_pipeline(int count, const char* key_prefix, const char* value_prefix) {
+    if (count <= 0 || key_prefix == NULL || value_prefix == NULL) {
+        return NULL;
+    }
+
+    // 第一次遍历：计算总长度
+    size_t total_len = 0;
+    
+    for (int i = 0; i < count; i++) {
+        // 生成key和value
+        char key[256], value[256];
+        snprintf(key, sizeof(key), "%s%d", key_prefix, i + 1);
+        snprintf(value, sizeof(value), "%s%d", value_prefix, i + 1);
+        
+        // 计算这条SET命令的长度
+        total_len += snprintf(NULL, 0, "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n", 
+                            strlen(key), key, strlen(value), value);
+    }
+    
+    // 分配内存
+    char* pipeline = (char*)malloc(total_len + 1);
+    if (!pipeline) {
+        return NULL;
+    }
+    
+    // 第二次遍历：实际写入
+    size_t written = 0;
+    for (int i = 0; i < count; i++) {
+        char key[256], value[256];
+        snprintf(key, sizeof(key), "%s%d", key_prefix, i + 1);
+        snprintf(value, sizeof(value), "%s%d", value_prefix, i + 1);
+        
+        size_t key_len = strlen(key);
+        size_t value_len = strlen(value);
+        
+        written += sprintf(pipeline + written, "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n", 
+                         key_len, key, value_len, value);
+    }
+    
+    pipeline[written] = '\0';
+    return pipeline;
+}
+
+/**
+ * @brief 生成包含i条SET命令的RESP管道（带自定义格式）
+ * @param count 命令数量
+ * @param key_format 键名格式字符串（包含%d占位符）
+ * @param value_format 值格式字符串（包含%d占位符）
+ * @return RESP管道字符串
+ */
+char* generate_custom_set_pipeline(int count, const char* key_format, const char* value_format) {
+    if (count <= 0 || key_format == NULL || value_format == NULL) {
+        return NULL;
+    }
+
+    size_t total_len = 0;
+    
+    // 计算总长度
+    for (int i = 0; i < count; i++) {
+        char key[256], value[256];
+        snprintf(key, sizeof(key), key_format, i + 1);
+        snprintf(value, sizeof(value), value_format, i + 1);
+        
+        total_len += snprintf(NULL, 0, "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n", 
+                            strlen(key), key, strlen(value), value);
+    }
+    
+    char* pipeline = (char*)malloc(total_len + 1);
+    if (!pipeline) return NULL;
+    
+    size_t written = 0;
+    for (int i = 0; i < count; i++) {
+        char key[256], value[256];
+        snprintf(key, sizeof(key), key_format, i + 1);
+        snprintf(value, sizeof(value), value_format, i + 1);
+        
+        written += sprintf(pipeline + written, "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n", 
+                         strlen(key), key, strlen(value), value);
+    }
+    
+    pipeline[written] = '\0';
+    return pipeline;
+}
+
+void hugepacket_testcase(int connfd){
+
+    char *pipeline_cmd = generate_set_pipeline(900, "key", "value");
+    //pipeline_cmd = 
+
+    //printf("send msg: %s\n", pipeline_cmd);
+    // 发送pipeline请求
+    send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
+
+#if 0
+    // 接收响应缓冲区
+    char response[2048] = {0};
+    int total_received = 0;
+    int expected_responses = 9; // 我们发送了9个命令
+
+    // 接收所有响应（可能需要多次recv）
+    while (total_received < sizeof(response) - 1) {
+        int n = recv(connfd, response + total_received, 
+                    sizeof(response) - total_received - 1, 0);
+        if (n <= 0) break;
+        total_received += n;
+        
+        // 检查是否收到全部响应（按\r\n计数）
+        int response_count = 0;
+        for (int i = 0; i < total_received; i++) {
+            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
+                response_count++;
+            }
+        }
+        if (response_count >= expected_responses) break;
+    }
+    response[total_received] = '\0';
+
+    // 验证响应内容
+    const char *expected_response = 
+        "+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n"
+		"+OK\r\n"
+        "+OK\r\n"
+		"+OK\r\n";
+    
+	if (strcmp(response, expected_response) == 0) {
+        //printf("==> PASS -> Pipeline test\n");
+    } else {
+        printf("==> FAILED -> Pipeline test\n");
+        printf("Expected:\n%s\n", expected_response);
+        printf("Received:\n%s\n", response);
+    }
+#else
+    // 接收所有响应
+    char response[65536] = {0};
+    int total_received = 0;
+    int expected_responses = 1000;
+    
+    // 接收所有响应（可能需要多次recv）
+    while (total_received < sizeof(response) - 1) {
+        int n = recv(connfd, response + total_received, 
+                    sizeof(response) - total_received - 1, 0);
+        if (n <= 0) break;
+        total_received += n;
+        
+        // 检查是否收到全部响应（按\r\n计数）
+        int response_count = 0;
+        for (int i = 0; i < total_received; i++) {
+            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
+                response_count++;
+            }
+        }
+        if (response_count >= expected_responses) break;
+    }
+    response[total_received] = '\0';
+    printf("response: %s\n", response);
+    
+    // 验证响应
+    char expected_response[1001] = {0};
+    for (int i = 0; i < 200; i++) {
+        strcat(expected_response, "+OK\r\n");
+    }
+    
+    if (strcmp(response, expected_response) == 0) {
+        printf("==> PASS -> Huge packet test\n");
+    } else {
+        printf("==> FAILED -> Huge packet test\n");
+        printf("Expected %d bytes, Received %d bytes\n", 
+               (int)strlen(expected_response), total_received);
+    }
+    
+    free(pipeline_cmd);
+#endif
+}
+
 // testcase 192.168.243.131  2000
 int main(int argc, char *argv[]) {
 
@@ -884,7 +1129,9 @@ int main(int argc, char *argv[]) {
 		rbtreee_pipeline_qps_testcase(connfd);
 	}else if(mode == 17){
 		skiptable_pipeline_qps_testcase(connfd);
-	}
+	}else if(mode == 18){
+        hugepacket_testcase(connfd);
+    }
 
 	return 0;
 	
