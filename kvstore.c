@@ -217,7 +217,7 @@ void kvs_load_all(const char *filename){
 	printf("Data loaded from %s\n", filename);
 }
 
-
+#if 0
 int kvs_split_token(char *msg, char *tokens[]) {
     if (msg == NULL || tokens == NULL) return -1;
 
@@ -242,7 +242,7 @@ int kvs_split_token(char *msg, char *tokens[]) {
     kvs_free(msg_copy);
     return idx;
 }
-
+#endif
 
 /*
  1. 简单字符串：以"+"开头，以"\r\n"结尾。例如："+OK\r\n"
@@ -280,6 +280,8 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 			break;
 		}
 	}
+
+	
 
 	//如果是从节点 且为写操作 直接返回错误
 	//get_sync_context() == 0 说明当前是从节点角色 且当前命令不是用于同步
@@ -810,6 +812,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	//了解 kv协议重新设计 key/value如何传 JSON/redis 做法
 
 // 修改kvstore.c中的kvs_protocol函数，支持Pipeline功能
+#if 1
 int kvs_protocol(char *msg, int length, char *response) {
     //动态缓冲区存储总响应
 	char *total_response = kvs_malloc(KVS_MAX_RESPONSE_SIZE * 4);
@@ -881,6 +884,83 @@ int kvs_protocol(char *msg, int length, char *response) {
 	kvs_free(total_response);
 	return copy_size;
 }
+#else
+int kvs_protocol(char *msg, int length, char *response){
+	if (!msg || length <= 0 || !response) {
+        return resp_generate_error(response, "Invalid parameters");
+    }
+
+	//使用连接专属的解析器
+	resp_parser_t *parser = &c->parser;
+
+	int total_processed = 0;
+	int total_response_len = 0;
+	char *total_response = kvs_malloc(KVS_MAX_RESPONSE_SIZE * 4);
+	if(!total_response) return resp_generate_error(response, "Memory allocation failed");
+
+	while(total_processed < length){
+		//解析下一个命令
+		int ret = resp_parser(parser, msg + total_processed, length - total_processed);
+
+		if(ret > 0){
+			//成功解析一个命令
+			char cmd_response[KVS_MAX_RESPONSE_SIZE] = {0};
+			int resp_len = kvs_filter_protocol(parser->tokens, parser->arg_index, cmd_response);
+
+			//添加到总响应
+			if(total_response_len + resp_len < KVS_MAX_RESPONSE_SIZE * 4){
+				memcpy(total_response + total_response_len, cmd_response, resp_len);
+                total_response_len += resp_len;
+			}else{
+				// 响应缓冲区不足
+                const char *error_msg = "-ERROR Response buffer full\r\n";
+                int error_len = strlen(error_msg);
+                if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE * 4) {
+                    memcpy(total_response + total_response_len, error_msg, error_len);
+                    total_response_len += error_len;
+                }
+                break;
+			}
+
+			total_processed += ret;
+
+			// 重置解析器以处理下一个命令
+            resp_parser_free(parser);
+            resp_parser_init(parser);
+		}else if (ret == 0) {
+            // 需要更多数据
+            break;
+        }else if(ret < 0 && total_processed < length && (msg[total_processed] == '\r' || msg[total_processed] == '\n')){
+			total_processed++;
+			continue;
+		}else{
+			//解析错误
+			const char *error_msg = "-ERROR Protocol error\r\n";
+			int error_len = strlen(error_msg);
+			if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE * 4) {
+                memcpy(total_response + total_response_len, error_msg, error_len);
+                total_response_len += error_len;
+            }
+
+			//跳过错误数据继续解析
+			total_processed++;
+
+			// 重置解析器
+            resp_parser_free(parser);
+            resp_parser_init(parser);
+		}
+	}
+
+	// 复制总响应到输出缓冲区
+    int copy_size = (total_response_len < KVS_MAX_RESPONSE_SIZE) ? total_response_len : KVS_MAX_RESPONSE_SIZE - 1;
+    memcpy(response, total_response, copy_size);
+    response[copy_size] = '\0';
+    
+    kvs_free(total_response);
+    return copy_size;
+
+}
+#endif
 
 
 int init_kvengine(void) {
@@ -935,7 +1015,8 @@ void dest_kvengine(void) {
 // 信号处理函数
 void handle_signal(int sig) {
     printf("\nReceived signal %d, saving data before shutdown...\n", sig);
-    kvs_save_all("kvstore.dat");
+    //kvs_save_all("kvstore.dat");
+	kvs_rdb_save("kvstore.rdb");
     exit(0);
 }
 
@@ -979,7 +1060,8 @@ int main(int argc, char *argv[]) {
 	init_kvengine();
 	
 	// 加载持久化数据
-    kvs_load_all("kvstore.dat");
+    //kvs_load_all("kvstore.dat");
+	kvs_rdb_load("kvstore.rdb");
 
 	//分布式初始化
 	if(is_slave){
@@ -1000,16 +1082,17 @@ int main(int argc, char *argv[]) {
 	}
 	
 #if (NETWORK_SELECT == NETWORK_REACTOR)
-	reactor_start(port, kvs_protocol);  
+	reactor_start(port, kvs_filter_protocol);  
 #elif (NETWORK_SELECT == NETWORK_NTYCO)
-	ntyco_start(port, kvs_protocol); 
+	ntyco_start(port, kvs_filter_protocol); 
 #elif (NETWORK_SELECT == NETWORK_PROACTOR)
-	proactor_start(port, kvs_protocol); 
+	proactor_start(port, kvs_filter_protocol); //kvs_protocol
 #endif
        
     // 保存数据并退出
     printf("Shutdown requested, saving data...\n");
-    kvs_save_all("kvstore.dat");
+    //kvs_save_all("kvstore.dat");
+	kvs_rdb_save("kvstore.rdb");
 	//差分存储 第一次 第二次
 	//保存cmd log 直接读命令 再次执行  
 		//rdb 文件快照

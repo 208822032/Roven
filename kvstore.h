@@ -16,6 +16,10 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <ctype.h>
+#include "server.h"
+#include <sys/time.h>
+#include <stdint.h>
 
 
 
@@ -23,7 +27,7 @@
 #define NETWORK_PROACTOR	1
 #define NETWORK_NTYCO		2
 
-#define NETWORK_SELECT		NETWORK_NTYCO
+#define NETWORK_SELECT		NETWORK_REACTOR
 
 
 
@@ -37,7 +41,10 @@
 #define ENABLE_SKIPTABLE    1
 
 
-typedef int (*msg_handler)(char *msg, int length, char *response);
+//typedef int (*msg_handler)(char *msg, int length, char *response);
+typedef int (*msg_handler)(char **tokens, int count, char *response);
+//添加连接状态 使用每个连接的专属解析器进行解析
+//typedef int (*msg_handler)(struct conn *c, char *msg, int length, char *response);
 
 
 extern int reactor_start(unsigned short port, msg_handler handler);
@@ -256,6 +263,7 @@ void mem_init();
 void* mem_alloc(size_t size);
 void mem_free(void* ptr);
 void mem_destroy();
+void* kvs_realloc(void *ptr, size_t new_size);
 
 #ifndef USE_MEMPOOL
 
@@ -282,3 +290,30 @@ int kvs_filter_protocol(char **tokens, int count, char *response);
 
 extern void set_sync_context(int context);
 extern int get_sync_context();
+
+
+//RDB
+#define RDB_MAGIC "KVSRDB"
+#define RDB_VERSION  1
+
+//RDB操作结果
+#define RDB_OK  0
+#define RDB_ERR 1
+
+//RDB操作类型
+#define RDB_TYPE_STRING  0
+#define RDB_TYPE_HASH    1
+#define RDB_TYPE_SET     2
+#define RDB_TYPE_ZSET    3
+#define RDB_TYPE_LIST    4
+
+int kvs_rdb_save(const char *filename);
+int kvs_rdb_load(const char *filename);
+void rdb_save_array(FILE *fp);
+void rdb_save_rbtree(FILE *fp);
+void rdb_save_hash(FILE *fp);
+void rdb_save_skiptable(FILE *fp);
+void rdb_load_array(FILE *fp);
+void rdb_load_rbtree(FILE *fp);
+void rdb_load_hash(FILE *fp);
+void rdb_load_skiptable(FILE *fp);
