@@ -21,7 +21,6 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
-
 mem_manager_t g_mem_manager;
 
 extern distributed_config_t global_dist_config;
@@ -35,67 +34,10 @@ int get_sync_context() {
 	return sync_context;
 }
 
-
-const char *command[] = {
-	"SET", "GET", "DEL", "MOD", "EXIST","RANGE","SORT",
-	"RSET", "RGET", "RDEL", "RMOD", "REXIST","RRANGE","RSORT",
-	"HSET", "HGET", "HDEL", "HMOD", "HEXIST","HRANGE","HSORT",
-	"SSET", "SGET", "SDEL", "SMOD", "SEXIST","SRANGE","SSORT",
-	"QUIT",
-};
-
-enum {
-	KVS_CMD_START = 0,
-	// array
-	KVS_CMD_SET = KVS_CMD_START,
-	KVS_CMD_GET,
-	KVS_CMD_DEL,
-	KVS_CMD_MOD,
-	KVS_CMD_EXIST,
-	KVS_CMD_RANGE,
-	KVS_CMD_SORT,
-	// rbtree
-	KVS_CMD_RSET,
-	KVS_CMD_RGET,
-	KVS_CMD_RDEL,
-	KVS_CMD_RMOD,
-	KVS_CMD_REXIST,
-	KVS_CMD_RRANGE,
-	KVS_CMD_RSORT,
-	// hash
-	KVS_CMD_HSET,
-	KVS_CMD_HGET,
-	KVS_CMD_HDEL,
-	KVS_CMD_HMOD,
-	KVS_CMD_HEXIST,
-	KVS_CMD_HRANGE,
-	KVS_CMD_HSORT,
-	//skiptable
-	KVS_CMD_SSET,
-    KVS_CMD_SGET,
-    KVS_CMD_SDEL,
-    KVS_CMD_SMOD,
-    KVS_CMD_SEXIST,
-	KVS_CMD_SRANGE,
-	KVS_CMD_SSORT,
-	
-	//退出命令
-	KVS_CMD_QUIT,
-
-	KVS_CMD_COUNT,
-};
-
-// 定义写操作命令集合
-static const int write_commands[] = {
-    KVS_CMD_SET, KVS_CMD_DEL, KVS_CMD_MOD,
-    KVS_CMD_RSET, KVS_CMD_RDEL, KVS_CMD_RMOD,
-    KVS_CMD_HSET, KVS_CMD_HDEL, KVS_CMD_HMOD,
-    KVS_CMD_SSET, KVS_CMD_SDEL, KVS_CMD_SMOD
-};
-
+#if 1
 //保存与加载文件
 //检查文件是否存在
-static int file_exists(const char *filename){
+int file_exists(const char *filename){
 
 	struct stat buffer;
 	return (stat(filename, &buffer) == 0);
@@ -216,32 +158,6 @@ void kvs_load_all(const char *filename){
 	fclose(fp);
 	printf("Data loaded from %s\n", filename);
 }
-
-#if 0
-int kvs_split_token(char *msg, char *tokens[]) {
-    if (msg == NULL || tokens == NULL) return -1;
-
-    int idx = 0;
-    char *msg_copy = kvs_malloc(strlen(msg) + 1);
-    if (!msg_copy) return -1;
-    strcpy(msg_copy, msg);
-
-    char *token = strtok(msg_copy, " ");
-    while (token != NULL && idx < KVS_MAX_TOKENS) {
-        tokens[idx] = strdup(token);
-        if (!tokens[idx]) {
-            // 分配失败时清理已分配的内存
-            for (int i = 0; i < idx; i++) kvs_free(tokens[i]);
-            kvs_free(msg_copy);
-            return -1;
-        }
-        idx++;
-        token = strtok(NULL, " ");
-    }
-
-    kvs_free(msg_copy);
-    return idx;
-}
 #endif
 
 /*
@@ -253,551 +169,36 @@ int kvs_split_token(char *msg, char *tokens[]) {
  5. 数组：以"*"开头，后面跟数组元素个数，然后是"\r\n"，然后每个元素按照自己的类型编码。
     例如：数组["SET", "key", "value"]编码为："*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
 */
+
 int kvs_filter_protocol(char **tokens, int count, char *response){
-	if(tokens[0] == NULL || count == 0 || response == NULL){
-		return resp_generate_error(response, "Invalid command");
-	}
+	if (tokens[0] == NULL || count == 0 || response == NULL) {
+        return resp_generate_error(response, "Invalid command");
+    }
 
-	int cmd = KVS_CMD_START;
-	for(cmd = KVS_CMD_START; cmd < KVS_CMD_COUNT; cmd++){
-		if(strcmp(tokens[0], command[cmd]) == 0)
-			break;
-	}
+	//查找命令
+	const command_info *cmd = lookup_command(tokens[0]);
+	if(cmd == NULL) return resp_generate_error(response, "Unknown command");
 
-	char *key = count > 1 ? tokens[1] : NULL;
-	char *value = count > 2 ? tokens[2] : NULL;
-	int ret = 0;
-	char *result = NULL;
-	int resp_len = 0;
-	int order = 0;//0升序 1降序
-	int limit = -1;//-1无限制
+	int cmd_index = get_command_index(tokens[0]);
+	if(cmd_index == -1) return resp_generate_error(response, "Unknown command");
 
-	int is_write_command = 0;
-	int i;
-	for(i = 0;i < sizeof(write_commands)/sizeof(write_commands[0]); i++){
-		if(cmd == write_commands[i]){
-			is_write_command = 1;
-			break;
-		}
-	}
-
+	//检查参数数量
+	if(!check_arity(cmd, count)) return resp_generate_error(response, "Wrong number of arguments");
 	
-
-	//如果是从节点 且为写操作 直接返回错误
-	//get_sync_context() == 0 说明当前是从节点角色 且当前命令不是用于同步
-	if(global_dist_config.role == ROLE_SLAVE && is_write_command && get_sync_context() == 0){
-		resp_len = resp_generate_error(response, "ERROR SLAVE READ ONLY");
-		return resp_len;
+	//检查从节点写操作权限
+	if (cmd->write_command && global_dist_config.role == ROLE_SLAVE && get_sync_context() == 0) return resp_generate_error(response, "ERROR SLAVE READ ONLY");
+    
+	//解析命令参数
+	command_context_t ctx;
+	if(parse_command_argument(cmd_index, tokens, count, &ctx) < 0){
+		return resp_generate_error(response, "Invalid arguments");
 	}
 
-	switch(cmd) {
-#if ENABLE_ARRAY
-	case KVS_CMD_SET:
-		ret = kvs_array_set(&global_array ,key, value);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
-		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "EXIST");
-		} 
-		break;
-	case KVS_CMD_GET: {
-		char *result = kvs_array_get(&global_array, key);
-		if (result == NULL) {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		} else {
-			resp_len = resp_generate_bulk_string(response, result);
-		}
-		break;
-	}
-	case KVS_CMD_DEL:
-		ret = kvs_array_del(&global_array ,key);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
- 		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_MOD:
-		ret = kvs_array_mod(&global_array ,key, value);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
- 		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_EXIST:
-		ret = kvs_array_exist(&global_array ,key);
-		if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "EXIST");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_SORT:
-		//SORT high
-		if (count >= 2) {
-			if (strcmp(tokens[1], "high") == 0) order = 1;
-			else if (strcmp(tokens[1], "low") == 0) order = 0;
-			if (count >= 3) limit = atoi(tokens[2]);
-    	}
+	//调用命令处理函数
+	int ret = cmd->handler(&ctx, response);
 
-		ret = kvs_array_sort(&global_array, order, limit, response, KVS_MAX_RESPONSE_SIZE);
-		if(ret <= 0){
-			resp_len = resp_generate_array_start(response, 0);
-		}else{
-			//将多行响应转换为RESP数组
-			char *response_copy = strdup(response);
-			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
-			int line_count = 0;
-			int pos = 0;
+	return ret;
 
-			char *line = strtok(response_copy, "\r\n");
-
-			//计算行数
-			while(line != NULL){
-				line_count++;
-				line = strtok(NULL, "\r\n");
-			}
-			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
-
-			int i;
-			line = strtok(response, "\r\n");
-			for(i = 0;i < line_count; i++){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
-			}
-
-			memcpy(response, temp, pos);
-			resp_len = pos;
-		}
-		break;
-	case KVS_CMD_RANGE:
-		if(count < 3){
-			resp_len = resp_generate_error(response, "Missing range parameters");
-			break;
-		}
-		ret = kvs_array_range(&global_array, tokens[1], tokens[2], response, KVS_MAX_RESPONSE_SIZE);
-		if(ret <= 0){
-			resp_len = resp_generate_array_start(response, 0);
-		}else{
-			//同理处理多行数据
-			//将多行响应转换为RESP数组
-			char *response_copy = strdup(response);
-			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
-			int line_count = 0;
-			int pos = 0;
-
-			char *line = strtok(response_copy, "\r\n");
-
-			//计算行数
-			while(line != NULL){
-				line_count++;
-				line = strtok(NULL, "\r\n");
-			}
-			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
-
-			int i;
-			line = strtok(response, "\r\n");
-			for(i = 0;i < line_count; i++){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
-			}
-
-			memcpy(response, temp, pos);
-			resp_len = pos;
-		}
-		break;
-#endif
-	// rbtree
-#if ENABLE_RBTREE
-	case KVS_CMD_RSET:
-		ret = kvs_rbtree_set(&global_rbtree ,key, value);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
-		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "EXIST");
-		} 	
-		break;
-	case KVS_CMD_RGET: {
-		char *result = kvs_rbtree_get(&global_rbtree, key);
-
-		if (result == NULL) {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		} else {
-			resp_len = resp_generate_bulk_string(response, result);
-		}
-		break;
-	}
-	case KVS_CMD_RDEL:
-		ret = kvs_rbtree_del(&global_rbtree ,key);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
- 		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_RMOD:
-		ret = kvs_rbtree_mod(&global_rbtree ,key, value);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
- 		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_REXIST:
-		ret = kvs_rbtree_exist(&global_rbtree ,key);
-		if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "EXIST");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_RSORT:
-		if (count >= 2) {
-			if (strcmp(tokens[1], "high") == 0) order = 1;
-			else if (strcmp(tokens[1], "low") == 0) order = 0;
-			if (count >= 3) limit = atoi(tokens[2]);
-    	}
-
-		ret = kvs_rbtree_sort(&global_rbtree, order, limit, response, KVS_MAX_RESPONSE_SIZE);
-		if(ret <= 0){
-			resp_len = resp_generate_array_start(response, 0);
-		}else{
-			//将多行响应转换为RESP数组
-			//将多行响应转换为RESP数组
-			char *response_copy = strdup(response);
-			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
-			int line_count = 0;
-			int pos = 0;
-
-			char *line = strtok(response_copy, "\r\n");
-
-			//计算行数
-			while(line != NULL){
-				line_count++;
-				line = strtok(NULL, "\r\n");
-			}
-			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
-
-			int i;
-			line = strtok(response, "\r\n");
-			for(i = 0;i < line_count; i++){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
-			}
-
-			memcpy(response, temp, pos);
-			resp_len = pos;
-		}
-		break;
-	case KVS_CMD_RRANGE:
-		if(count < 3){
-			resp_len = resp_generate_error(response, "Missing range parameters");
-            break;
-		}
-		ret = kvs_rbtree_range(&global_rbtree, tokens[1], tokens[2], response, KVS_MAX_RESPONSE_SIZE);
-		if (ret <= 0) {
-			resp_len = resp_generate_array_start(response, 0);
-		}else{
-			//同理处理多行数据
-			//将多行响应转换为RESP数组
-			char *response_copy = strdup(response);
-			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
-			int line_count = 0;
-			int pos = 0;
-
-			char *line = strtok(response_copy, "\r\n");
-
-			//计算行数
-			while(line != NULL){
-				line_count++;
-				line = strtok(NULL, "\r\n");
-			}
-			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
-
-			int i;
-			line = strtok(response, "\r\n");
-			for(i = 0;i < line_count; i++){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
-			}
-
-			memcpy(response, temp, pos);
-			resp_len = pos;
-		}
-		break;
-#endif
-#if ENABLE_HASH
-	case KVS_CMD_HSET:
-		ret = kvs_hash_set(&global_hash ,key, value);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
-		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "EXIST");
-		}  
-		break;
-	case KVS_CMD_HGET: {
-		char *result = kvs_hash_get(&global_hash, key);
-		if (result == NULL) {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		} else {
-			resp_len = resp_generate_bulk_string(response, result);
-		}
-		break;
-	}
-	case KVS_CMD_HDEL:
-		ret = kvs_hash_del(&global_hash ,key);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
- 		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_HMOD:
-		ret = kvs_hash_mod(&global_hash ,key, value);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
- 		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_HEXIST:
-		ret = kvs_hash_exist(&global_hash ,key);
-		if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "EXIST");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_HSORT:
-		if (count >= 2) {
-			if (strcmp(tokens[1], "high") == 0) order = 1;
-			else if (strcmp(tokens[1], "low") == 0) order = 0;
-			if (count >= 3) limit = atoi(tokens[2]);
-    	}
-		ret = kvs_hash_sort(&global_hash, order, limit, response, KVS_MAX_RESPONSE_SIZE);
-		if (ret <= 0) {
-			resp_len = resp_generate_array_start(response, 0);
-		}else{
-			//将多行响应转换为RESP数组
-			//将多行响应转换为RESP数组
-			char *response_copy = strdup(response);
-			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
-			int line_count = 0;
-			int pos = 0;
-
-			char *line = strtok(response_copy, "\r\n");
-
-			//计算行数
-			while(line != NULL){
-				line_count++;
-				line = strtok(NULL, "\r\n");
-			}
-			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
-
-			int i;
-			line = strtok(response, "\r\n");
-			for(i = 0;i < line_count; i++){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
-			}
-
-			memcpy(response, temp, pos);
-			resp_len = pos;
-		}
-		break;
-	case KVS_CMD_HRANGE:
-		if (count < 3) {
-			resp_len = resp_generate_error(response, "Missing range parameters");
-			break;
-		}
-		ret = kvs_hash_range(&global_hash, tokens[1], tokens[2], response, KVS_MAX_RESPONSE_SIZE);
-		if (ret <= 0) {
-			resp_len = resp_generate_array_start(response, 0);
-		}else{
-			//同理处理多行数据
-			//将多行响应转换为RESP数组
-			char *response_copy = strdup(response);
-			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
-			int line_count = 0;
-			int pos = 0;
-
-			char *line = strtok(response_copy, "\r\n");
-
-			//计算行数
-			while(line != NULL){
-				line_count++;
-				line = strtok(NULL, "\r\n");
-			}
-			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
-
-			int i;
-			line = strtok(response, "\r\n");
-			for(i = 0;i < line_count; i++){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
-			}
-
-			memcpy(response, temp, pos);
-			resp_len = pos;
-		}
-		break;
-#endif
-#if ENABLE_SKIPTABLE
-		//hash
-	case KVS_CMD_SSET:{
-		ret = kvs_skiptable_set(&global_skiptable, key, value);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
-		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "EXIST");
-		} 
-		break;
-	}
-	case KVS_CMD_SGET:
-		result = kvs_skiptable_get(&global_skiptable, key);
-		if (result == NULL) {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		} else {
-			resp_len = resp_generate_bulk_string(response, result);
-		}
-		break;
-	case KVS_CMD_SDEL:
-		ret = kvs_skiptable_del(&global_skiptable, key);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
- 		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_SMOD:
-		ret = kvs_skiptable_mod(&global_skiptable, key, value);
-		if (ret < 0) {
-			resp_len = resp_generate_error(response, "ERROR");
- 		} else if (ret == 0) {
-			resp_len = resp_generate_simple_string(response, "OK");
-		} 
-		break;
-	case KVS_CMD_SEXIST:
-		ret = kvs_skiptable_exist(&global_skiptable, key);
-		if (ret == 1) {
-			resp_len = resp_generate_simple_string(response, "EXIST");
-		} else {
-			resp_len = resp_generate_simple_string(response, "NO EXIST");
-		}
-		break;
-	case KVS_CMD_SSORT:
-		if (count >= 2) {
-			if (strcmp(tokens[1], "high") == 0) order = 1;
-			else if (strcmp(tokens[1], "low") == 0) order = 0;
-			if (count >= 3) limit = atoi(tokens[2]);
-    	}
-		ret = kvs_skiptable_sort(&global_skiptable, order, limit, response, KVS_MAX_RESPONSE_SIZE);
-		if (ret <= 0) {
-			resp_len = resp_generate_array_start(response, 0);
-		}else{
-			//将多行响应转换为RESP数组
-			//将多行响应转换为RESP数组
-			char *response_copy = strdup(response);
-			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
-			int line_count = 0;
-			int pos = 0;
-
-			char *line = strtok(response_copy, "\r\n");
-
-			//计算行数
-			while(line != NULL){
-				line_count++;
-				line = strtok(NULL, "\r\n");
-			}
-			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
-
-			int i;
-			line = strtok(response, "\r\n");
-			for(i = 0;i < line_count; i++){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
-			}
-
-			memcpy(response, temp, pos);
-			resp_len = pos;
-		}
-		break;
-	case KVS_CMD_SRANGE:
-		if (count < 3) {
-			resp_len = resp_generate_error(response, "Missing range parameters");
-			break;
-		}
-		ret = kvs_skiptable_range(&global_skiptable, tokens[1], tokens[2], response, KVS_MAX_RESPONSE_SIZE);
-		if (ret <= 0) {
-			resp_len = resp_generate_array_start(response, 0);
-		}else{
-			//同理处理多行数据
-			//将多行响应转换为RESP数组
-			char *response_copy = strdup(response);
-			char temp[KVS_MAX_RESPONSE_SIZE] = {0};
-			int line_count = 0;
-			int pos = 0;
-
-			char *line = strtok(response_copy, "\r\n");
-
-			//计算行数
-			while(line != NULL){
-				line_count++;
-				line = strtok(NULL, "\r\n");
-			}
-			//生成数组头部
-			pos += sprintf(temp + pos, "*%d\r\n", line_count);//表示有多少行
-
-			int i;
-			line = strtok(response, "\r\n");
-			for(i = 0;i < line_count; i++){
-				pos += sprintf(temp + pos, "$%zu\r\n%s\r\n", strlen(line), line);
-				line = strtok(NULL, "\r\n");
-			}
-
-			memcpy(response, temp, pos);
-			resp_len = pos;
-		}
-		break;
-#endif
-	case KVS_CMD_QUIT:
-            // 设置关闭标志
-            g_shutdown_flag = 1;
-			resp_len = resp_generate_simple_string(response, "Server shutting down...");
-            break;
-	default: 
-		assert(0 && "Unknown command received");
-	}
 }
 
 
@@ -811,162 +212,9 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 //问题2 考虑拓展之后的功能 key value1 value2 value3
 	//了解 kv协议重新设计 key/value如何传 JSON/redis 做法
 
-// 修改kvstore.c中的kvs_protocol函数，支持Pipeline功能
-#if 1
-int kvs_protocol(char *msg, int length, char *response) {
-    //动态缓冲区存储总响应
-	char *total_response = kvs_malloc(KVS_MAX_RESPONSE_SIZE * 4);
-	if(!total_response) return -1;
-	int total_response_len = 0;
-	int parsed = 0;//已解析字节数
-
-	while(parsed < length){
-		resp_parser_t parser;
-		resp_parser_init(&parser);
-
-		//解析当前命令
-		int ret = resp_parser(&parser, msg + parsed, length - parsed);
-		
-		if(ret > 0){
-			//成功解析一个命令
-			char cmd_response[KVS_MAX_RESPONSE_SIZE] = {0};
-			int resp_len = kvs_filter_protocol(parser.tokens, parser.arg_index, cmd_response);
-
-			//追加到总响应
-			if(total_response_len + resp_len < KVS_MAX_RESPONSE_SIZE * 4){
-				memcpy(total_response + total_response_len, cmd_response, resp_len);
-				total_response_len += resp_len;
-			}else{
-				//响应缓冲区不足
-				const char *error_msg = "-ERROR Response buffer full\r\n";
-				int error_len = strlen(error_msg);
-				if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE * 4) {
-                    memcpy(total_response + total_response_len, error_msg, error_len);
-                    total_response_len += error_len;
-                }
-				resp_parser_free(&parser);
-                break;
-			}
-
-			parsed += ret;//移动已解析位置
-			resp_parser_free(&parser);
-		}else if(ret == 0){
-			//需要更多数据 停止解析
-			resp_parser_free(&parser);
-			break;
-		}else if(ret < 0 && parsed < length && (msg[parsed] == '\r' || msg[parsed] == '\n') ){
-			parsed++;
-			continue;
-		}else{
-			//解析错误
-			const char *error_msg = "-ERROR Protocol error\r\n";
-            int error_len = strlen(error_msg);
-            if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE * 4) {
-                memcpy(total_response + total_response_len, error_msg, error_len);
-                total_response_len += error_len;
-            }
-            resp_parser_free(&parser);
-
-			//跳过错误数据继续解析
-            // parsed++;  // 跳过当前字节
-            // while (parsed < length && msg[parsed] != '*') {
-            //     parsed++;
-            // }
-            break;
-		}
-	}
-
-	//复制总响应到输出缓冲区
-	int copy_size = (total_response_len < KVS_MAX_RESPONSE_SIZE) ? total_response_len : KVS_MAX_RESPONSE_SIZE - 1;
-	memcpy(response, total_response, copy_size);
-	response[copy_size] = '\0';
-
-	kvs_free(total_response);
-	return copy_size;
-}
-#else
-int kvs_protocol(char *msg, int length, char *response){
-	if (!msg || length <= 0 || !response) {
-        return resp_generate_error(response, "Invalid parameters");
-    }
-
-	//使用连接专属的解析器
-	resp_parser_t *parser = &c->parser;
-
-	int total_processed = 0;
-	int total_response_len = 0;
-	char *total_response = kvs_malloc(KVS_MAX_RESPONSE_SIZE * 4);
-	if(!total_response) return resp_generate_error(response, "Memory allocation failed");
-
-	while(total_processed < length){
-		//解析下一个命令
-		int ret = resp_parser(parser, msg + total_processed, length - total_processed);
-
-		if(ret > 0){
-			//成功解析一个命令
-			char cmd_response[KVS_MAX_RESPONSE_SIZE] = {0};
-			int resp_len = kvs_filter_protocol(parser->tokens, parser->arg_index, cmd_response);
-
-			//添加到总响应
-			if(total_response_len + resp_len < KVS_MAX_RESPONSE_SIZE * 4){
-				memcpy(total_response + total_response_len, cmd_response, resp_len);
-                total_response_len += resp_len;
-			}else{
-				// 响应缓冲区不足
-                const char *error_msg = "-ERROR Response buffer full\r\n";
-                int error_len = strlen(error_msg);
-                if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE * 4) {
-                    memcpy(total_response + total_response_len, error_msg, error_len);
-                    total_response_len += error_len;
-                }
-                break;
-			}
-
-			total_processed += ret;
-
-			// 重置解析器以处理下一个命令
-            resp_parser_free(parser);
-            resp_parser_init(parser);
-		}else if (ret == 0) {
-            // 需要更多数据
-            break;
-        }else if(ret < 0 && total_processed < length && (msg[total_processed] == '\r' || msg[total_processed] == '\n')){
-			total_processed++;
-			continue;
-		}else{
-			//解析错误
-			const char *error_msg = "-ERROR Protocol error\r\n";
-			int error_len = strlen(error_msg);
-			if (total_response_len + error_len < KVS_MAX_RESPONSE_SIZE * 4) {
-                memcpy(total_response + total_response_len, error_msg, error_len);
-                total_response_len += error_len;
-            }
-
-			//跳过错误数据继续解析
-			total_processed++;
-
-			// 重置解析器
-            resp_parser_free(parser);
-            resp_parser_init(parser);
-		}
-	}
-
-	// 复制总响应到输出缓冲区
-    int copy_size = (total_response_len < KVS_MAX_RESPONSE_SIZE) ? total_response_len : KVS_MAX_RESPONSE_SIZE - 1;
-    memcpy(response, total_response, copy_size);
-    response[copy_size] = '\0';
-    
-    kvs_free(total_response);
-    return copy_size;
-
-}
-#endif
-
-
 int init_kvengine(void) {
 
 	mem_init();  // 初始化内存管理组件
-
 
 #if ENABLE_ARRAY
 	memset(&global_array, 0, sizeof(kvs_array_t));
@@ -993,7 +241,6 @@ int init_kvengine(void) {
 
 void dest_kvengine(void) {
 
-
 #if ENABLE_ARRAY
 	kvs_array_destory(&global_array);
 #endif
@@ -1015,8 +262,12 @@ void dest_kvengine(void) {
 // 信号处理函数
 void handle_signal(int sig) {
     printf("\nReceived signal %d, saving data before shutdown...\n", sig);
-    //kvs_save_all("kvstore.dat");
+#if ENABLE_RDB
 	kvs_rdb_save("kvstore.rdb");
+#else
+    kvs_save_all("kvstore.dat");
+#endif
+	
     exit(0);
 }
 
@@ -1058,10 +309,14 @@ int main(int argc, char *argv[]) {
     signal(SIGTERM, handle_signal);
 
 	init_kvengine();
+
 	
 	// 加载持久化数据
-    //kvs_load_all("kvstore.dat");
-	kvs_rdb_load("kvstore.rdb");
+#if ENABLE_RDB
+	kvs_rdb_load("kvstore.dat");
+#else
+    kvs_load_all("kvstore.dat");
+#endif
 
 	//分布式初始化
 	if(is_slave){
@@ -1091,8 +346,11 @@ int main(int argc, char *argv[]) {
        
     // 保存数据并退出
     printf("Shutdown requested, saving data...\n");
-    //kvs_save_all("kvstore.dat");
+#if ENABLE_RDB
 	kvs_rdb_save("kvstore.rdb");
+#else
+	kvs_save_all("kvstore.dat");
+#endif
 	//差分存储 第一次 第二次
 	//保存cmd log 直接读命令 再次执行  
 		//rdb 文件快照

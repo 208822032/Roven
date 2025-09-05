@@ -40,6 +40,60 @@
 #define ENABLE_HASH			1
 #define ENABLE_SKIPTABLE    1
 
+#define ENABLE_RDB          0
+
+extern const char *command[];
+
+enum {
+	KVS_CMD_START = 0,
+	// array
+	KVS_CMD_SET = KVS_CMD_START,
+	KVS_CMD_GET,
+	KVS_CMD_DEL,
+	KVS_CMD_MOD,
+	KVS_CMD_EXIST,
+	KVS_CMD_RANGE,
+	KVS_CMD_SORT,
+	// rbtree
+	KVS_CMD_RSET,
+	KVS_CMD_RGET,
+	KVS_CMD_RDEL,
+	KVS_CMD_RMOD,
+	KVS_CMD_REXIST,
+	KVS_CMD_RRANGE,
+	KVS_CMD_RSORT,
+	// hash
+	KVS_CMD_HSET,
+	KVS_CMD_HGET,
+	KVS_CMD_HDEL,
+	KVS_CMD_HMOD,
+	KVS_CMD_HEXIST,
+	KVS_CMD_HRANGE,
+	KVS_CMD_HSORT,
+	//skiptable
+	KVS_CMD_SSET,
+    KVS_CMD_SGET,
+    KVS_CMD_SDEL,
+    KVS_CMD_SMOD,
+    KVS_CMD_SEXIST,
+	KVS_CMD_SRANGE,
+	KVS_CMD_SSORT,
+	
+	//退出命令
+	KVS_CMD_QUIT,
+
+	KVS_CMD_COUNT,
+};
+
+// 定义写操作命令集合
+static const int write_commands[] = {
+    KVS_CMD_SET, KVS_CMD_DEL, KVS_CMD_MOD,
+    KVS_CMD_RSET, KVS_CMD_RDEL, KVS_CMD_RMOD,
+    KVS_CMD_HSET, KVS_CMD_HDEL, KVS_CMD_HMOD,
+    KVS_CMD_SSET, KVS_CMD_SDEL, KVS_CMD_SMOD
+};
+
+
 
 //typedef int (*msg_handler)(char *msg, int length, char *response);
 typedef int (*msg_handler)(char **tokens, int count, char *response);
@@ -216,6 +270,68 @@ int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, 
 
 #endif
 
+//优化函数接口
+typedef struct {
+	int (*set)(void*, char*, char*);
+	char* (*get)(void*, char*);
+	int (*del)(void*, char*);
+	int (*mod)(void*, char*, char*);
+	int (*exist)(void*, char*);
+	int (*sort)(void*, int, int, char*, int);
+	int (*range)(void*, char*, char*, char*, int);
+}kvs_operations;
+
+// 为每个数据结构初始化操作表
+#if ENABLE_ARRAY
+static kvs_operations array_ops = {
+    .set = (int (*)(void*, char*, char*))kvs_array_set,
+    .get = (char* (*)(void*, char*))kvs_array_get,
+    .del = (int (*)(void*, char*))kvs_array_del,
+    .mod = (int (*)(void*, char*, char*))kvs_array_mod,
+    .exist = (int (*)(void*, char*))kvs_array_exist,
+    .sort = (int (*)(void*, int, int, char*, int))kvs_array_sort,
+    .range = (int (*)(void*, char*, char*, char*, int))kvs_array_range
+};
+#endif
+
+#if ENABLE_RBTREE
+static kvs_operations rbtree_ops = {
+    .set = (int (*)(void*, char*, char*))kvs_rbtree_set,
+    .get = (char* (*)(void*, char*))kvs_rbtree_get,
+    .del = (int (*)(void*, char*))kvs_rbtree_del,
+    .mod = (int (*)(void*, char*, char*))kvs_rbtree_mod,
+    .exist = (int (*)(void*, char*))kvs_rbtree_exist,
+    .sort = (int (*)(void*, int, int, char*, int))kvs_rbtree_sort,
+    .range = (int (*)(void*, char*, char*, char*, int))kvs_rbtree_range
+};
+#endif
+
+#if ENABLE_HASH
+static kvs_operations hash_ops = {
+    .set = (int (*)(void*, char*, char*))kvs_hash_set,
+    .get = (char* (*)(void*, char*))kvs_hash_get,
+    .del = (int (*)(void*, char*))kvs_hash_del,
+    .mod = (int (*)(void*, char*, char*))kvs_hash_mod,
+    .exist = (int (*)(void*, char*))kvs_hash_exist,
+    .sort = (int (*)(void*, int, int, char*, int))kvs_hash_sort,
+    .range = (int (*)(void*, char*, char*, char*, int))kvs_hash_range
+};
+#endif
+
+#if ENABLE_SKIPTABLE
+static kvs_operations skiplist_ops = {
+    .set = (int (*)(void*, char*, char*))kvs_skiptable_set,
+    .get = (char* (*)(void*, char*))kvs_skiptable_get,
+    .del = (int (*)(void*, char*))kvs_skiptable_del,
+    .mod = (int (*)(void*, char*, char*))kvs_skiptable_mod,
+    .exist = (int (*)(void*, char*))kvs_skiptable_exist,
+    .sort = (int (*)(void*, int, int, char*, int))kvs_skiptable_sort,
+    .range = (int (*)(void*, char*, char*, char*, int))kvs_skiptable_range
+};
+#endif
+
+
+
 void kvs_save_all(const char *filename);
 void kvs_load_all(const char *filename);
 
@@ -317,3 +433,78 @@ void rdb_load_array(FILE *fp);
 void rdb_load_rbtree(FILE *fp);
 void rdb_load_hash(FILE *fp);
 void rdb_load_skiptable(FILE *fp);
+
+
+
+
+//业务逻辑优化
+
+#if ENABLE_ARRAY
+extern kvs_array_t global_array;
+#endif
+
+#if ENABLE_RBTREE
+extern kvs_rbtree_t global_rbtree;
+#endif
+
+#if ENABLE_HASH
+extern kvs_hash_t global_hash;
+#endif
+
+#if ENABLE_SKIPTABLE
+extern kvs_skiptable_t global_skiptable;
+#endif
+
+//命令处理函数类型定义
+
+//命令上下文结构
+typedef struct {
+	char *key;
+	char *value;
+	char *start_key;
+	char *end_key;
+	int order;
+	int limit;
+	int data_structure;
+} command_context_t;
+//typedef int (*command_handler)(char **args, int argc, char *response);
+typedef int (*command_handler)(command_context_t *ctx, char *response);
+
+//命令信息结构
+typedef struct {
+    char *name;
+    command_handler handler;
+    int arity; //命令需要的参数数量
+	int write_command;  //是否是写命令
+	int data_structure; //使用的数据结构类型
+} command_info;
+
+//数据结构类型定义
+enum {
+	DATA_STRUCTURE_ARRAY = 0,
+	DATA_STRUCTURE_RBTREE,
+	DATA_STRUCTURE_HASH,
+	DATA_STRUCTURE_SKIPTABLE
+};
+
+
+
+
+
+int get_command_index(const char *name);
+const command_info *lookup_command(const char *name);
+int check_arity(const command_info *cmd, int argc);
+int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx);
+
+// 声明所有命令处理函数
+int handle_set(command_context_t *ctx, char *response);
+int handle_get(command_context_t *ctx, char *response);
+int handle_del(command_context_t *ctx, char *response);
+int handle_mod(command_context_t *ctx, char *response);
+int handle_exist(command_context_t *ctx, char *response);
+int handle_range(command_context_t *ctx, char *response);
+int handle_sort(command_context_t *ctx, char *response);
+int handle_quit(command_context_t *ctx, char *response);
+
+//命令表
+extern const command_info command_table[];
