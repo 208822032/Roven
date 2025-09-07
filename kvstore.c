@@ -197,6 +197,13 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	//调用命令处理函数
 	int ret = cmd->handler(&ctx, response);
 
+	//命令执行成功后记录写命令
+	if(ret >= 0 && cmd->write_command){
+		#if ENABLE_AOF
+		aof_append(count, tokens);
+		#endif
+	}
+
 	return ret;
 
 }
@@ -215,6 +222,9 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 int init_kvengine(void) {
 
 	mem_init();  // 初始化内存管理组件
+
+	// 初始化AOF，使用每秒同步模式
+    //aof_init("kvstore.aof");
 
 #if ENABLE_ARRAY
 	memset(&global_array, 0, sizeof(kvs_array_t));
@@ -257,21 +267,27 @@ void dest_kvengine(void) {
 
 	mem_destroy();  // 清理内存管理组件
 
+	aof_free();
+
 }
 
 // 信号处理函数
 void handle_signal(int sig) {
     printf("\nReceived signal %d, saving data before shutdown...\n", sig);
-#if ENABLE_RDB
-	kvs_rdb_save("kvstore.rdb");
-#else
-    kvs_save_all("kvstore.dat");
-#endif
+	
+	aof_fsync(1);
+
+	#if ENABLE_RDB
+		kvs_rdb_save("kvstore.rdb");
+	#else
+		kvs_save_all("kvstore.dat");
+	#endif
+
 	
     exit(0);
 }
 
-#if 1
+#if 0
 int main(int argc, char *argv[]) {
 
 	//if (argc != 2) return -1;
@@ -282,6 +298,8 @@ int main(int argc, char *argv[]) {
 	char *master_ip = NULL;
 	int master_port = 0;
 	int sync_port = 0;
+	int aof_fsync_mod = AOF_FSYNC_EVERYSEC;
+	char *aof_filename = "kvstore.aof";
 
 	//int port = atoi(argv[1]);
 
@@ -302,8 +320,31 @@ int main(int argc, char *argv[]) {
 		}else if(i == 5 && is_slave && master_ip){//从节点端口
 			port = atoi(argv[i]);
 		}
+#if 0
+		else if(strcmp(argv[i], "--aof_fsync") == 0){
+			if(i + 1 < argc){
+				if(strcmp(argv[i+1], "no") == 0){
+					aof_fsync_mod = AOF_FSYNC_NO;
+				}else if(strcmp(argv[i+1], "always") == 0){
+					aof_fsync_mod = AOF_FSYNC_ALWAYS;
+				}else{
+					aof_fsync_mod = AOF_FSYNC_EVERYSEC;
+				}
+				i++;
+			}else{
+				fprintf(stderr, "Error, --aof-fsync requires mode [no|everysec|always]\n");
+				return 1;
+			}
+		}else if(strcmp(argv[i], "--aof_filename") == 0){
+			if(i + 1 < argc){
+				aof_filename = argv[++i];
+			}else{
+				fprintf(stderr, "Error, --aof-filename requires filename\n");
+                return 1;
+			}
+		}
+#endif
 	}
-
 	// 注册信号处理函数，使Ctrl+C也能保存数据
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
@@ -311,12 +352,25 @@ int main(int argc, char *argv[]) {
 	init_kvengine();
 
 	
-	// 加载持久化数据
-#if ENABLE_RDB
-	kvs_rdb_load("kvstore.dat");
-#else
-    kvs_load_all("kvstore.dat");
-#endif
+	// 加载持久化数据 优先加载AOF
+
+    // 初始化AOF，使用每秒同步模式
+    if(aof_init(aof_filename, aof_fsync_mod) != 0){
+		fprintf(stderr, "Failed to initialize AOF\n");
+		dest_kvengine();
+		return 1;
+	}
+
+	aof_load(aof_filename);
+
+	printf("aof初始化 filename: %s, fsync_mod: %d\n", aof_filename, aof_fsync_mod);
+
+    #if ENABLE_RDB
+		kvs_rdb_load("kvstore.dat");
+	#else
+		kvs_load_all("kvstore.dat");
+	#endif
+
 
 	//分布式初始化
 	if(is_slave){
@@ -334,6 +388,7 @@ int main(int argc, char *argv[]) {
 		sync_port = port + 1000;
 		distributed_init(ROLE_MASTER, NULL, 0, sync_port);
 		printf("Starting as MASTER on port %d, sync port %d\n", port, sync_port);
+		printf("AOF enabled: %s, fsync mode: %d\n", aof_filename, aof_fsync_mod);
 	}
 	
 #if (NETWORK_SELECT == NETWORK_REACTOR)
@@ -346,6 +401,9 @@ int main(int argc, char *argv[]) {
        
     // 保存数据并退出
     printf("Shutdown requested, saving data...\n");
+
+	aof_fsync(1);
+
 #if ENABLE_RDB
 	kvs_rdb_save("kvstore.rdb");
 #else
