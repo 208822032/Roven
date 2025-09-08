@@ -140,6 +140,7 @@ void aof_append(int argc, char **argv){
     写入时限制在缓冲区剩余空间内，并将实际写入的字符数保存到len变量中。
     后续通常会用len更新aof_state.buf_len（如aof_state.buf_len += len），确保下一次写入从新的末尾开始。
     */
+   
     int len = snprintf(aof_state.buf + aof_state.buf_len, aof_state.buf_size - aof_state.buf_len, "*%d\r\n", argc);
     for(int i = 0;i < argc;i++){
         len += snprintf(aof_state.buf + aof_state.buf_len + len, aof_state.buf_size - aof_state.buf_len - len, 
@@ -149,23 +150,35 @@ void aof_append(int argc, char **argv){
     aof_state.current_size += len;
 
     //检查是否需要立即刷新
+    int should_fsync = 0;
     if(aof_state.fsync_mode == AOF_FSYNC_ALWAYS){
-        aof_fsync(1);
+        //aof_fsync(1);  会导致死锁
+        should_fsync = 1;
     }else if(aof_state.buf_len >= aof_state.buf_size/2){
         //缓冲区过半 唤醒后台线程
         pthread_cond_signal(&aof_state.cond);
     }
 
     //检查是否需要重写AOF
+    int should_rewrite = 0;
     off_t growth = aof_state.current_size - aof_state.rewrite_base_size;
     if(aof_state.current_size >= AOF_REWRITE_MIN_SIZE &&
         growth >= AOF_REWRITE_MIN_GROWTH &&
         growth >= (aof_state.rewrite_base_size * AOF_REWRITE_PERCENTAGE/100)&&
         !aof_state.rewrite_in_progress){
-            aof_rewrite_background();//开始重写
+            //aof_rewrite_background();//开始重写
+            should_rewrite = 1;
         }
 
     pthread_mutex_unlock(&aof_state.mutex);
+
+    // 在锁外执行可能阻塞的操作
+    if (should_fsync) {
+        aof_fsync(1);
+    }
+    if (should_rewrite) {
+        aof_rewrite_background();
+    }
 }
 
 //同步函数
@@ -173,6 +186,11 @@ void aof_fsync(int force){
     if(!aof_state.fp || aof_state.buf_len == 0) return;
 
     pthread_mutex_lock(&aof_state.mutex);
+
+    if (aof_state.buf_len == 0) {
+        pthread_mutex_unlock(&aof_state.mutex);
+        return;
+    }
 
     size_t written = fwrite(aof_state.buf, 1, aof_state.buf_len, aof_state.fp);
     if(written != aof_state.buf_len){
@@ -401,6 +419,8 @@ int aof_rewrite_tmpfile(void){
     return fd;
 }
 
+
+
 //重写缓冲区写入
 int aof_rewrite_buffer_write(int fd){
     int total_commands = 0;
@@ -422,8 +442,27 @@ int aof_rewrite_buffer_write(int fd){
         }
     #endif
 
+    
     #if ENABLE_RBTREE
+        //中序遍历保存
+        void write_rbtree_node(rbtree_node *node, void *data){
+            int fd = *(int *)data;
+            char cmd[2048];
+            if (node == global_rbtree.nil) return;
+            write_rbtree_node(node->left, &fd);
+            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nRSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                            strlen(node->key), node->key,
+                            strlen((char*)node->value), (char*)node->value);
+            if (write(fd, cmd, len) != len) {
+                perror("Failed to write to AOF temp file");
+                exit(1); // 子进程中直接退出
+            }
+            write_rbtree_node(node->right, &fd);
+        }
+        write_rbtree_node(global_rbtree.root, &fd);
+
         // 中序遍历红黑树并写入SET命令
+        #if 0
         void write_rbtree_node(rbtree_node *node, void *data) {
             int fd = *(int *)data;
             char cmd[2048];
@@ -436,9 +475,10 @@ int aof_rewrite_buffer_write(int fd){
                 exit(1); // 子进程中直接退出
             }
         }
-        
         rbtree_traversal_with_callback(&global_rbtree, global_rbtree.root, write_rbtree_node, &fd);
+        #endif
     #endif
+    
 
     #if ENABLE_HASH
         for (int i = 0; i < global_hash.max_slots; i++) {
@@ -459,6 +499,7 @@ int aof_rewrite_buffer_write(int fd){
         }
     #endif
 
+    
     #if ENABLE_SKIPTABLE
         Node *current = global_skiptable.header->forward[0];
         while (current) {
@@ -466,7 +507,6 @@ int aof_rewrite_buffer_write(int fd){
             int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
                             strlen(current->key), current->key,
                             strlen(current->value), current->value);
-            
             if (write(fd, cmd, len) != len) {
                 perror("Failed to write to AOF temp file");
                 return -1;
@@ -474,6 +514,7 @@ int aof_rewrite_buffer_write(int fd){
             total_commands++;
             current = current->forward[0];
         }
+        
     #endif
 
     printf("AOF rewrite: wrote %d commands to temp file\n", total_commands);

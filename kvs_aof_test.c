@@ -149,23 +149,22 @@ void test_aof_rewrite(){
         return;
     }
 
-    // 初始化数据结构
+// 添加一些数据到所有数据结构
 #if ENABLE_ARRAY
-    kvs_array_create(&global_array);
-#endif
-
-// 添加一些数据
-#if ENABLE_ARRAY
-    kvs_array_set(&global_array, "user:1", "Alice");
-    kvs_array_set(&global_array, "user:2", "Bob");
-    kvs_array_set(&global_array, "user:3", "Charlie");
+    kvs_array_set(&global_array, "user1", "Alice");
+    kvs_array_set(&global_array, "user2", "Bob");
+    kvs_array_set(&global_array, "user3", "Charlie");
 #endif
 
     // 模拟一些命令操作
     char* set_cmd1[] = {"SET", "key1", "value1"};
+    kvs_array_set(&global_array, "key1", "value1");
     char* set_cmd2[] = {"SET", "key2", "value2"};
+    kvs_array_set(&global_array, "key2", "value2");
     char* del_cmd[] = {"DEL", "key1"};
+    kvs_array_del(&global_array, "key1");
     
+
     aof_append(3, set_cmd1);
     aof_append(3, set_cmd2);
     aof_append(2, del_cmd);
@@ -186,9 +185,9 @@ void test_aof_rewrite(){
     }
 
     //检查重写后的AOF文件
-    int has_user1 = (strstr(aof_content, "user:1") != NULL);
-    int has_user2 = (strstr(aof_content, "user:2") != NULL);
-    int has_user3 = (strstr(aof_content, "user:3") != NULL);
+    int has_user1 = (strstr(aof_content, "user1") != NULL);
+    int has_user2 = (strstr(aof_content, "user2") != NULL);
+    int has_user3 = (strstr(aof_content, "user3") != NULL);
     int has_key2 = (strstr(aof_content, "key2") != NULL);
     int has_key1 = (strstr(aof_content, "key1") != NULL);// 应该不存在，因为被删除了
 
@@ -208,11 +207,8 @@ void test_aof_rewrite(){
 
     // 清理
     aof_free();
-#if ENABLE_ARRAY
-    kvs_array_destory(&global_array);
-#endif
-    //remove("test_rewrite.aof");
-    //remove("test_rewrite.aof.tmp");
+    remove("test_rewrite.aof");
+    remove("test_rewrite.aof.tmp");
 }
 
 //测试AOF加载功能
@@ -236,11 +232,6 @@ void test_aof_load(){
     fwrite(del_cmd, 1, strlen(del_cmd), test_file);
     fclose(test_file);
 
-    // 初始化数据结构
-#if ENABLE_ARRAY
-    kvs_array_create(&global_array);
-#endif
-
     // 加载AOF文件
     int result = aof_load("test_load.aof");
 
@@ -251,7 +242,7 @@ void test_aof_load(){
         char* value = kvs_array_get(&global_array, "key02");
         int key01_exists = kvs_array_exist(&global_array, "key01");
         
-        if (value && strcmp(value, "value02") == 0 && !key01_exists) {
+        if (value && strcmp(value, "value02") == 0 && key01_exists != 0) {
             printf("PASS: AOF load test\n");
         } else {
             printf("FAIL: AOF load did not produce expected state\n");
@@ -265,10 +256,6 @@ void test_aof_load(){
         printf("FAIL: AOF load returned error\n");
     }
 
-    // 清理
-#if ENABLE_ARRAY
-    kvs_array_destory(&global_array);
-#endif
     remove("test_load.aof");
 }
 
@@ -297,14 +284,15 @@ void test_aof_sync_modes() {
     
     aof_free();
     remove("test_always.aof");
-    
-    // 测试AOF_FSYNC_NO模式
+
+    //测试AOF_FSYNC_NO模式
     printf("Testing AOF_FSYNC_NO mode...\n");
     if (aof_init("test_no.aof", AOF_FSYNC_NO) != 0) {
         printf("FAIL: AOF initialization with NO mode failed\n");
         return;
     }
     
+    kvs_array_set(&global_array, "test_key", "test_value");
     aof_append(3, set_cmd);
     
     // 检查是否没有同步（文件大小应该为0）
@@ -333,12 +321,47 @@ int main() {
     
     // 初始化内存管理
     mem_init();
+
+    #if ENABLE_ARRAY
+        memset(&global_array, 0, sizeof(kvs_array_t));
+        kvs_array_create(&global_array);
+    #endif
+
+    #if ENABLE_RBTREE
+        memset(&global_rbtree, 0, sizeof(kvs_rbtree_t));
+        kvs_rbtree_create(&global_rbtree);
+    #endif
+
+    #if ENABLE_HASH
+        memset(&global_hash, 0, sizeof(kvs_hash_t));
+        kvs_hash_create(&global_hash);
+    #endif
+
+    #if ENABLE_SKIPTABLE
+        memset(&global_skiptable, 0, sizeof(kvs_skiptable_t));
+        kvs_skiptable_create(&global_skiptable);
+    #endif
+
     
     // 运行测试
-    //test_aof_basic();
+    test_aof_basic();
     test_aof_rewrite();
-    //test_aof_load();
-    //test_aof_sync_modes();
+    test_aof_load();
+    test_aof_sync_modes();
+
+    #if ENABLE_ARRAY
+        kvs_array_destory(&global_array);
+    #endif
+    #if ENABLE_RBTREE
+        kvs_rbtree_destory(&global_rbtree);
+    #endif
+    #if ENABLE_HASH
+        kvs_hash_destory(&global_hash);
+    #endif
+
+    #if ENABLE_SKIPTABLE
+        kvs_skiptable_destroy(&global_skiptable);
+    #endif
     
     // 清理内存管理
     mem_destroy();
