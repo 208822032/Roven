@@ -517,6 +517,6 @@ int aof_rewrite_buffer_write(int fd){
         
     #endif
 
-    printf("AOF rewrite: wrote %d commands to temp file\n", total_commands);
+    //printf("AOF rewrite: wrote %d commands to temp file\n", total_commands);
     return 0;
 }

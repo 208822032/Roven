@@ -186,8 +186,10 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	if(!check_arity(cmd, count)) return resp_generate_error(response, "Wrong number of arguments");
 	
 	//检查从节点写操作权限
-	if (cmd->write_command && global_dist_config.role == ROLE_SLAVE && get_sync_context() == 0) return resp_generate_error(response, "ERROR SLAVE READ ONLY");
-    
+	if (cmd->write_command && global_dist_config.role == ROLE_SLAVE && get_sync_context() == 0){
+		return resp_generate_error(response, "ERROR SLAVE READ ONLY");
+	}
+	
 	//解析命令参数
 	command_context_t ctx;
 	if(parse_command_argument(cmd_index, tokens, count, &ctx) < 0){
@@ -287,7 +289,7 @@ void handle_signal(int sig) {
     exit(0);
 }
 
-#if 0
+#if 1
 int main(int argc, char *argv[]) {
 
 	//if (argc != 2) return -1;
@@ -320,7 +322,7 @@ int main(int argc, char *argv[]) {
 		}else if(i == 5 && is_slave && master_ip){//从节点端口
 			port = atoi(argv[i]);
 		}
-#if 0
+#if 1
 		else if(strcmp(argv[i], "--aof_fsync") == 0){
 			if(i + 1 < argc){
 				if(strcmp(argv[i+1], "no") == 0){
@@ -362,8 +364,6 @@ int main(int argc, char *argv[]) {
 	}
 
 	aof_load(aof_filename);
-
-	printf("aof初始化 filename: %s, fsync_mod: %d\n", aof_filename, aof_fsync_mod);
 
     #if ENABLE_RDB
 		kvs_rdb_load("kvstore.dat");
