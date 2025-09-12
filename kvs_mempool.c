@@ -153,3 +153,46 @@ void mem_destroy() {
     g_mem_manager.is_initialized = 0;
     
 }
+
+//重新分配
+void* kvs_realloc(void *ptr, size_t new_size){
+    if(!ptr){
+        //如果原指针为空 等同于分配新内存
+        return mem_alloc(new_size);
+    }
+
+    if(new_size == 0){
+        //等于释放内存
+        mem_free(ptr);
+        return NULL;
+    }
+
+    //获取内存块头部
+    mem_block_header_t *old_header = (mem_block_header_t *)((char *)ptr - sizeof(mem_block_header_t));
+
+    //对齐新大小
+    size_t aligend_new_size = ALIGN_SIZE(new_size);
+
+    //检查是否可以在原内存块中容纳新大小
+    if(aligend_new_size <= old_header->block_size){
+        //新大小小于或等于原块大小 无需重新分配
+        return ptr;
+    }
+
+    //若需要重新分配更大的内存块
+    void *new_ptr = mem_alloc(new_size);
+    if(!new_ptr){
+        return NULL;//分配失败
+    }
+
+    //计算需要复制的数据量 原块大小和新大小 的较小值
+    size_t copy_size = old_header->block_size < new_size ? old_header->block_size : new_size;
+
+    //复制数据
+    memcpy(new_ptr, ptr, copy_size);
+
+    //释放原内存
+    mem_free(ptr);
+
+    return new_ptr;
+}

@@ -17,6 +17,10 @@
 #define EVENT_WRITE		2
 
 extern int g_shutdown_flag; // 声明全局关闭标志
+//typedef int (*msg_handler)(char *msg, int length, char *response);
+//typedef int (*msg_handler)(char *msg, int length, char *response);
+typedef int (*msg_handler)(char **tokens, int count, char *response);
+static msg_handler kvs_handler;
 
 // 大缓冲区管理结构（与reactor.c保持一致）
 typedef struct {
@@ -194,7 +198,7 @@ static int p_process_received_data(conn_extension_t *ext) {
             // 成功解析一个完整命令
             if (ext->parser.state == RESP_PARSE_COMPLETE) {
                 char response_buf[KVS_MAX_RESPONSE_SIZE];
-                int resp_len = kvs_filter_protocol(ext->parser.tokens, 
+                int resp_len = kvs_handler(ext->parser.tokens, 
                                                   ext->parser.arg_index, 
                                                   response_buf);
                 
@@ -294,7 +298,7 @@ void proactor_wait(void) {
 }
 
 
-extern int kvs_protocol(char *msg, int length, char *response);
+//extern int kvs_protocol(char *msg, int length, char *response);
 
 
 int p_init_server(unsigned short port) {	
@@ -430,13 +434,6 @@ int set_event_accept(struct io_uring *ring, int sockfd, struct sockaddr *addr, s
 	return 0;
 
 }
-
-
-//typedef int (*msg_handler)(char *msg, int length, char *response);
-typedef int (*msg_handler)(char *msg, int length, char *response);
-static msg_handler kvs_handler;
-
-
 
 
 int proactor_start(unsigned short port, msg_handler handler) {

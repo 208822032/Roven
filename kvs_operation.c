@@ -1,5 +1,6 @@
 #include "kvstore.h"
 
+extern aof_state_t aof_state;
 
 const char *command[] = {
 	"SET", "GET", "DEL", "MOD", "EXIST","RANGE","SORT",

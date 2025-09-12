@@ -444,8 +444,8 @@ int main() {
 
 
 typedef struct _rbtree kvs_rbtree_t; 
-
 kvs_rbtree_t global_rbtree;
+
 
 // 5 + 2
 int kvs_rbtree_create(kvs_rbtree_t *inst) {
@@ -677,6 +677,17 @@ int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, char *r
     int len = 0;
     inorder_traversal(inst, inst->root, start_key, end_key, response, &len, max_len);
     return len;
+}
+
+// 中序遍历红黑树并调用回调函数处理每个节点
+void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node, 
+                                          void (*callback)(rbtree_node *, void *), 
+                                          void *userdata) {
+    if (node == T->nil) return;
+    
+    rbtree_traversal_with_callback(T, node->left, callback, userdata);
+    callback(node, userdata);
+    rbtree_traversal_with_callback(T, node->right, callback, userdata);
 }
 
 #if 0

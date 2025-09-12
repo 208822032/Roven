@@ -35,6 +35,7 @@ typedef struct {
 int distributed_init(node_role_t role, const char *master_ip, int master_port, int sync_port);
 
 //主节点同步数据到从节点
+//目前只支持一对 key value 
 void master_sync_command(const char *cmd, const char *key, const char *value);
 
 //从节点连接到主节点

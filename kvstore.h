@@ -40,7 +40,7 @@
 #define ENABLE_HASH			1
 #define ENABLE_SKIPTABLE    1
 
-#define ENABLE_RDB          0
+#define ENABLE_RDB          1
 
 extern const char *command[];
 
@@ -179,6 +179,9 @@ int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key);
 //int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len);
 int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, int max_len);
 int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, char *response, int max_len);
+void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node, 
+                                          void (*callback)(rbtree_node *, void *), 
+                                          void *userdata);
 
 
 #endif
@@ -487,10 +490,6 @@ enum {
 	DATA_STRUCTURE_SKIPTABLE
 };
 
-
-
-
-
 int get_command_index(const char *name);
 const command_info *lookup_command(const char *name);
 int check_arity(const command_info *cmd, int argc);
@@ -508,3 +507,49 @@ int handle_quit(command_context_t *ctx, char *response);
 
 //命令表
 extern const command_info command_table[];
+
+//AOF
+#define ENABLE_AOF 1
+#define AOF_BUFFER_SIZE (1024*16)  //16MB缓冲区
+#define AOF_REWRITE_MIN_SIZE (1024*64)  //64MB最小重写大小
+#define AOF_REWRITE_PERCENTAGE 50 //增长100%时触发重写
+#define AOF_REWRITE_MIN_GROWTH (1024*10) //10MB最小增长量
+
+//同步模式
+#define AOF_FSYNC_NO  0   //不主动同步
+#define AOF_FSYNC_EVERYSEC 1  //每秒同步
+#define AOF_FSYNC_ALWAYS   2  //每次写入后同步
+
+//AOF 状态
+typedef struct {
+	FILE *fp;                  // AOF文件指针
+    char *filename;            // AOF文件名
+    char *temp_filename;       // 临时文件名(用于重写)
+    char *buf;                 // AOF缓冲区
+    size_t buf_len;            // 缓冲区当前长度
+    size_t buf_size;           // 缓冲区总大小
+    int fsync_mode;            // 同步模式
+    off_t current_size;        // 当前AOF文件大小
+    off_t rewrite_base_size;   // 重写基准大小
+    time_t last_fsync;         // 上次同步时间
+    pthread_mutex_t mutex;     // 缓冲区互斥锁
+    pthread_cond_t cond;       // 条件变量(用于后台线程)
+    pthread_t bgthread;        // 后台线程ID
+    volatile int stop;         // 停止标志
+    int rewrite_in_progress;   // 重写进行中标志
+    pid_t rewrite_child_pid;   // 重写子进程ID
+} aof_state_t;
+
+int aof_init(const char *filename, int fsync_mode);
+void aof_append(int argc, char **argv);
+void aof_fsync(int force);
+void aof_rewrite(void);
+int aof_load(const char *filename);
+void aof_free(void);
+void aof_background_fsync(void *arg);
+void aof_rewrite_background(void);
+int aof_rewrite_tmpfile(void);
+int aof_rewrite_buffer_write(int fd);
+
+
+extern aof_state_t aof_state;

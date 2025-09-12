@@ -203,7 +203,8 @@ int kvs_skiptable_del(kvs_skiptable_t *table, char *key) {
 }
 
 int kvs_skiptable_exist(kvs_skiptable_t *table, char *key) {
-    return table && table->header && kvs_skiptable_get(table, key) != NULL;
+    //return table && table->header && kvs_skiptable_get(table, key) != NULL;
+    return table && table->header && kvs_skiptable_get(table, key) == NULL;
 }
 
 int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *response, int max_len) {

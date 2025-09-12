@@ -23,8 +23,11 @@ extern kvs_skiptable_t global_skiptable;
 //发送命令到指定socket
 void send_cmd(int sockfd, const char *cmd, const char *key, const char *value){
     char buffer[KVS_MAX_RESPONSE_SIZE];
-
-    int len = snprintf(buffer, sizeof(buffer), "%s|%s|%s\n", cmd, key, value ? value : "");
+    
+    int len = snprintf(buffer, sizeof(buffer), "*3\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n", 
+        strlen(cmd), cmd, 
+        strlen(key), key, 
+        strlen(value ? value : ""), value ? value : "");
     send(sockfd, buffer, len, 0);
 }
 
@@ -206,13 +209,21 @@ void slave_connect_master(){
 
     //接收同步数据
     char buffer[KVS_MAX_RESPONSE_SIZE] = {0};
+    size_t recv_len = 0;
     char *response = malloc(KVS_MAX_RESPONSE_SIZE);
-
+    //解析命令
+    resp_parser_t parser;
+    resp_parser_init(&parser);
 
     while(1){
+        //检查缓冲区是否已满
+        if(recv_len >= sizeof(buffer)){
+            fprintf(stderr, "Receive buffer overflow\n");
+            break;
+        }
         //处理接收到的数据
         size_t bytes_read;
-        bytes_read = recv(sock, buffer, sizeof(buffer)-1, 0);
+        bytes_read = recv(sock, buffer + recv_len, sizeof(buffer) - recv_len, 0);
         if (bytes_read <= 0) {
             if (bytes_read == 0) {
                 printf("Master disconnected\n");
@@ -221,44 +232,44 @@ void slave_connect_master(){
             }
             break;
         }
-        
+        recv_len += bytes_read;
 
-        buffer[bytes_read] = '\0';
+        //解析尽可能多的命令
+        size_t parsed_total = 0;
+        while(parsed_total < recv_len){
+            int parsed = resp_parser(&parser, buffer + parsed_total, recv_len - parsed_total);
+            if(parsed < 0){
+                perror("RESP parse error");
+                break;
+            }else if(parsed == 0){
+                break;//需要更多数据
+            }
 
-        //处理同步命令
-        //分割命令
-        char *line = strtok(buffer, "\n");
-        while(line){
-            char *cmd = strtok(line, "|");
-            char *key = strtok(NULL, "|");
-            char *value = strtok(NULL, "|");
+            parsed_total += parsed;
 
-            //检查是否为有效写命令
-            int is_valid_write_cmd = 0;
-            if(cmd){
-                //只处理写命令 SET DEL MOD
-                if (strcmp(cmd, "SET") == 0 || strcmp(cmd, "RSET") == 0 ||
-                    strcmp(cmd, "HSET") == 0 || strcmp(cmd, "SSET") == 0 ||
-                    strcmp(cmd, "DEL") == 0 || strcmp(cmd, "RDEL") == 0 ||
-                    strcmp(cmd, "HDEL") == 0 || strcmp(cmd, "SDEL") == 0 ||
-                    strcmp(cmd, "MOD") == 0 || strcmp(cmd, "RMOD") == 0 ||
-                    strcmp(cmd, "HMOD") == 0 || strcmp(cmd, "SMOD") == 0) {
-                    is_valid_write_cmd = 1;
+            if(parser.state == RESP_PARSE_COMPLETE){
+                //处理解析完成的命令
+                char *cmd = parser.tokens[0];
+                char *key = parser.tokens[1];
+                char *value = parser.tokens[2];
+                
+                if(cmd && key){
+                    set_sync_context(1);
+                    kvs_filter_protocol(parser.tokens, value ? 3 : 2, response);
+                    set_sync_context(0);
                 }
-            }
 
-            if(cmd && key && is_valid_write_cmd){
-                set_sync_context(1);
-                //在本地执行命令
-                char *tokens[3] = {cmd, key, value};
-                kvs_filter_protocol(tokens, value ? 3 : 2, response);
-                set_sync_context(0);
+                resp_parser_reset(&parser);
             }
-
-            line = strtok(NULL, "\n");
+        }
+        //移动未处理的数据到缓冲区开头
+        if(parsed_total > 0){
+            memmove(buffer, buffer + parsed_total, recv_len - parsed_total);
+            recv_len -= parsed_total;
         }
     }
 
+    resp_parser_free(&parser);
     free(response);
     close(sock);
     printf("Disconnected from master\n");
@@ -268,26 +279,25 @@ void slave_connect_master(){
 void master_sync_command(const char *cmd, const char *key, const char *value){
     if(global_dist_config.role != ROLE_MASTER) return;
 
-    //检查是否为有效写命令
-    int is_valid_write_cmd = (
-        strcmp(cmd, "SET") == 0 || strcmp(cmd, "RSET") == 0 ||
-        strcmp(cmd, "HSET") == 0 || strcmp(cmd, "SSET") == 0 ||
-        strcmp(cmd, "DEL") == 0 || strcmp(cmd, "RDEL") == 0 ||
-        strcmp(cmd, "HDEL") == 0 || strcmp(cmd, "SDEL") == 0 ||
-        strcmp(cmd, "MOD") == 0 || strcmp(cmd, "RMOD") == 0 ||
-        strcmp(cmd, "HMOD") == 0 || strcmp(cmd, "SMOD") == 0
-    );
-
-
-    if (!is_valid_write_cmd) return;
-
     pthread_mutex_lock(&global_dist_config.slave_mutex);
+
+    char resp_buffer[KVS_MAX_RESPONSE_SIZE];
+    int len = 0;
+    if(value){
+        len = snprintf(resp_buffer, sizeof(resp_buffer), "*3\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n", 
+        strlen(cmd), cmd, strlen(key), key, strlen(value), value);
+    }else{
+        len = snprintf(resp_buffer, sizeof(resp_buffer), "*2\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                      strlen(cmd), cmd, strlen(key), key);
+    }
     
-    int i;
-    for (i = 0; i < global_dist_config.slave_count; i++) {
+    for (int i = 0; i < global_dist_config.slave_count; i++) {
         slave_info_t *slave = &global_dist_config.slaves[i];
 
-        send_cmd(global_dist_config.slaves[i].sockfd, cmd, key, value);
+        //send_cmd(global_dist_config.slaves[i].sockfd, cmd, key, value);
+        if(send(slave->sockfd, resp_buffer, len, 0) < 0){
+            perror("Failed to send command to slave");
+        }
         
     }
 

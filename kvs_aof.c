@@ -4,6 +4,7 @@
 #include <time.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include "distributed.h"
 
 aof_state_t aof_state;
 
@@ -22,6 +23,8 @@ extern kvs_hash_t global_hash;
 #if ENABLE_SKIPTABLE
 extern kvs_skiptable_t global_skiptable;
 #endif
+
+extern distributed_config_t global_dist_config;
 
 //初始化函数
 int aof_init(const char *filename, int fsync_mode){
@@ -179,6 +182,11 @@ void aof_append(int argc, char **argv){
     if (should_rewrite) {
         aof_rewrite_background();
     }
+    
+    //主节点需要将命令分发给从节点
+    if(global_dist_config.role == ROLE_MASTER){
+        master_sync_command(argv[0], argv[1], (argc > 2) ? argv[2] : NULL);
+    }
 }
 
 //同步函数
@@ -253,6 +261,9 @@ int aof_load(const char *filename){
     size_t total_read = 0;
     int commands_processed = 0;
 
+    //设置sync_context为2 禁用AOF追加
+    set_sync_context(2);
+
     while(!feof(fp)){
         //文件流中读取数据到缓冲区
         size_t read = fread(buffer, 1, sizeof(buffer), fp);
@@ -290,6 +301,9 @@ int aof_load(const char *filename){
 
     fclose(fp);
     resp_parser_free(&parser);
+
+    //重置sync_context
+    set_sync_context(0);
 
     printf("AOF load completed: %ld bytes processed, %d commands executed\n", 
            total_read, commands_processed);

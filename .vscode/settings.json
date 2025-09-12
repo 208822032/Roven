@@ -3,6 +3,11 @@
         "stat.h": "c",
         "stddef.h": "c",
         "kvstore.h": "c",
-        "resp_protocol.h": "c"
+        "resp_protocol.h": "c",
+        "errno.h": "c",
+        "server.h": "c",
+        "distributed.h": "c",
+        "stdio.h": "c",
+        "fcntl.h": "c"
     }
 }

@@ -13,7 +13,8 @@ static nty_coroutine *co = NULL;
 
 
 //typedef int (*msg_handler)(char *msg, int length, char *response);
-typedef int (*msg_handler)(char *msg, int length, char *response);
+//typedef int (*msg_handler)(char *msg, int length, char *response);
+typedef int (*msg_handler)(char **tokens, int count, char *response);
 static msg_handler kvs_handler;
 extern int g_shutdown_flag;
 
@@ -137,7 +138,7 @@ int ntyco_process_received_data(int fd, conn_context_t *ctx) {
             // 成功解析一个完整命令
             if (ctx->parser.state == RESP_PARSE_COMPLETE) {
                 char response_buf[KVS_MAX_RESPONSE_SIZE];
-                int resp_len = kvs_filter_protocol(ctx->parser.tokens, 
+                int resp_len = kvs_handler(ctx->parser.tokens, 
                                           ctx->parser.arg_index, 
                                           response_buf);
                 
@@ -225,10 +226,10 @@ void server_reader(void *arg) {
     // 获取实际的缓冲区大小
     socklen_t len = sizeof(buf_size);
     if (getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, &len) == 0) {
-        printf("Socket %d send buffer size: %d\n", fd, buf_size);
+        //printf("Socket %d send buffer size: %d\n", fd, buf_size);
     }
     if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, &len) == 0) {
-        printf("Socket %d recv buffer size: %d\n", fd, buf_size);
+        //printf("Socket %d recv buffer size: %d\n", fd, buf_size);
     }
     
     // 设置接收超时（5秒）

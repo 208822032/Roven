@@ -47,139 +47,15 @@ void resp_parser_reset(resp_parser_t *parser) {
 
 
 //解析RESP协议
-//返回 1解析完成 0需要更多数据 -1表示错误
-#if 0
-int resp_parser(resp_parser_t *parser, const char *buffer, size_t length){
-
-    const char *ptr = buffer;
-    const char *end = buffer + length;
-    size_t parsed = 0;
-
-    while (ptr < end) {
-        switch (parser->state) {
-            case RESP_PARSE_INIT:
-                if (*ptr == '*') {
-                    parser->state = RESP_PARSE_ARRAY_LEN;
-                    parser->array_len = 0;
-                    ptr++;
-                    parsed++;
-                } else {
-                    // 不支持非数组格式
-                    return -1;
-                }
-                break;
-
-            case RESP_PARSE_ARRAY_LEN:
-                if (*ptr >= '0' && *ptr <= '9') {
-                    parser->array_len = parser->array_len * 10 + (*ptr - '0');
-                    ptr++;
-                    parsed++;
-                } else if (*ptr == '\r') {
-                    if (ptr + 1 >= end) {
-                        return 0; // 需要更多数据
-                    }
-                    if (*(ptr + 1) != '\n') {
-                        return -1;
-                    }
-                    parser->state = RESP_PARSE_BULK_LEN;
-                    
-                    // 分配tokens数组
-                    if (parser->array_len > 0) {
-                        parser->tokens = (char **)kvs_malloc(parser->array_len * sizeof(char *));
-                        if (!parser->tokens) {
-                            return -1;
-                        }
-                        memset(parser->tokens, 0, parser->array_len * sizeof(char *));
-                    }
-                    
-                    parser->arg_index = 0;
-                    ptr += 2; // 跳过 \r\n
-                    parsed += 2;
-                } else {
-                    return -1;
-                }
-                break;
-
-            case RESP_PARSE_BULK_LEN:
-                if (*ptr == '$') {
-                    ptr++;
-                    parsed++;
-                    parser->bulk_len = 0;
-                    
-                    // 读取长度数字
-                    while (ptr < end && *ptr >= '0' && *ptr <= '9') {
-                        parser->bulk_len = parser->bulk_len * 10 + (*ptr - '0');
-                        ptr++;
-                        parsed++;
-                    }
-                    
-                    // 添加最大长度限制
-                    if (parser->bulk_len > KVS_MAX_RESPONSE_SIZE) {
-                        return -1;
-                    }
-                    
-                    if (ptr >= end) return parsed;
-                    if (*ptr == '\r') {
-                        if (ptr + 1 >= end) return parsed; // 需要更多数据
-                        if (*(ptr + 1) != '\n') return -1;
-                        ptr += 2;
-                        parsed += 2;
-                        parser->state = RESP_PARSE_BULK_DATA;
-                    } else {
-                        return -1;
-                    }
-                } else {
-                    return -1;
-                }
-                break;
-
-            case RESP_PARSE_BULK_DATA:
-                // 检查是否有足够的数据
-                if ((end - ptr) < (parser->bulk_len + 2)) {
-                    return parsed; // 需要更多数据
-                }
-                
-                // 分配空间并复制数据
-                if (parser->arg_index < parser->array_len) {
-                    parser->tokens[parser->arg_index] = kvs_malloc(parser->bulk_len + 1);
-                    if (!parser->tokens[parser->arg_index]) {
-                        return -1;
-                    }
-                    memcpy(parser->tokens[parser->arg_index], ptr, parser->bulk_len);
-                    parser->tokens[parser->arg_index][parser->bulk_len] = '\0';
-                    parser->arg_index++;
-                }
-                
-                ptr += parser->bulk_len;
-                parsed += parser->bulk_len;
-                
-                // 检查结束符
-                if (*ptr == '\r' && *(ptr + 1) == '\n') {
-                    ptr += 2;
-                    parsed += 2;
-                    
-                    // 如果还有更多参数，继续解析
-                    if (parser->arg_index < parser->array_len) {
-                        parser->state = RESP_PARSE_BULK_LEN;
-                    } else {
-                        // 解析完成
-                        return parsed;
-                    }
-                } else {
-                    return -1;
-                }
-                break;
-        }
-    }
-    
-    return parsed; // 返回已解析的字节数
-
-}
-#else
 int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
     const char *ptr = buffer;
     const char *end = buffer + length;
     size_t parsed = 0;
+
+    // 如果解析器已经完成解析，重置状态
+    if (parser->state == RESP_PARSE_COMPLETE) {
+        resp_parser_reset(parser);
+    }
 
     while (ptr < end) {
         switch (parser->state) {
@@ -355,26 +231,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
     
     return parsed; // 返回已解析的字节数
 }
-#endif
 
 //释放解释器分配的内存
-#if 0
-void resp_parser_free(resp_parser_t *parser){
-    if(parser->tokens){
-        int i;
-        for(i = 0;i < parser->arg_index; i++){
-            if(parser->tokens[i]){
-                kvs_free(parser->tokens[i]);
-            }
-        }
-        kvs_free(parser->tokens);
-        parser->tokens = NULL;
-    }
-
-    parser->arg_index = 0;
-    parser->array_len = 0;
-}
-#else 
 void resp_parser_free(resp_parser_t *parser) {
     if (parser->tokens) {
         for (int i = 0; i < parser->array_len_allocated; i++) {
@@ -389,7 +247,6 @@ void resp_parser_free(resp_parser_t *parser) {
     parser->arg_index = 0;
     parser->array_len = 0;
 }
-#endif
 
 //生成RESP响应
 //简单字符串
@@ -422,4 +279,20 @@ int resp_generate_array_item(char *response, const char *str){
 int resp_process_command(char **tokens, int count, char *response){
     //调用原有的命令处理函数
     return kvs_filter_protocol(tokens, count, response);
+}
+
+//简单辅助函数
+int resp_parse_aof_command(const char *line, char ***tokens, int *count){
+    resp_parser_t parser;
+    resp_parser_init(&parser);
+
+    int parsed = resp_parser(&parser, line, strlen(line));
+    if (parsed > 0 && parser.state == RESP_PARSE_COMPLETE) {
+        *tokens = parser.tokens;
+        *count = parser.arg_index;
+        return 0;
+    }
+
+    resp_parser_free(&parser);
+    return -1;
 }

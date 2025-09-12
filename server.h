@@ -7,7 +7,7 @@
 
 #include "resp_protocol.h"
 
-#define BUFFER_LENGTH		1024
+#define BUFFER_LENGTH		4096
 
 #define ENABLE_HTTP			0
 #define ENABLE_WEBSOCKET	0
@@ -20,11 +20,24 @@ typedef int (*RCALLBACK)(int fd);
 struct conn {
 	int fd;
 
+#if 0
 	char rbuffer[BUFFER_LENGTH];
 	int rlength;
+#else
+	//动态接收缓冲区
+	char *rbuffer;
+	size_t rbuffer_size;
+	size_t rlength;
+#endif
 
+#if 0
 	char wbuffer[BUFFER_LENGTH];
 	int wlength;
+#else
+	char *wbuffer;
+	size_t wbuffer_size;
+	size_t wlength;
+#endif
 
 	RCALLBACK send_callback;
 
@@ -32,8 +45,9 @@ struct conn {
 		RCALLBACK recv_callback;
 		RCALLBACK accept_callback;
 	} r_action;
-	resp_parser_t parser;      // RESP解析器
-    int parser_initialized;  // 解析器是否已初始化
+
+	resp_parser_t parser;
+	int parser_initialized;
 
 	int status;
 #if 1 // websocket

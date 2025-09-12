@@ -37,7 +37,9 @@ typedef enum{
     RESP_PARSE_INIT,
     RESP_PARSE_ARRAY_LEN,
     RESP_PARSE_BULK_LEN,
-    RESP_PARSE_BULK_DATA
+    RESP_PARSE_BULK_LEN_NUM,
+    RESP_PARSE_BULK_DATA,
+    RESP_PARSE_COMPLETE
 } resp_parse_state;
 
 //RESP 解析器
@@ -48,6 +50,7 @@ typedef struct {
     int arg_count;   //已解析的参数个数
     int arg_index;   //当前解析的参数索引
     char **tokens;   //解析出来的tokens
+    int array_len_allocated;
 } resp_parser_t;
 
 
@@ -61,6 +64,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length);
 
 //释放解释器分配的内存
 void resp_parser_free(resp_parser_t *parser);
+// 重置解析器状态但不释放内存
+void resp_parser_reset(resp_parser_t *parser);
 
 //生成RESP响应
 int resp_generate_simple_string(char *response, const char *str);

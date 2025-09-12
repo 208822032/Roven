@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>  // 包含 fcntl() 函数的声明
+#include <hiredis/hiredis.h>
 
 #define MAX_MSG_LENGTH		1024
 #define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
@@ -48,11 +49,10 @@ int send_msg(int connfd, char *msg, int length) {
         total_sent += res;
         remaining -= res;
         
-        printf("本次发送: %d, 累计发送: %d, 剩余: %d\n", 
-               res, total_sent, remaining);
+        //printf("本次发送: %d, 累计发送: %d, 剩余: %d\n", res, total_sent, remaining);
     }
     
-    printf("数据发送完成: %d, 总长度: %d\n", total_sent, length);
+    //printf("数据发送完成: %d, 总长度: %d\n", total_sent, length);
     return total_sent;
 #endif
 }
@@ -479,6 +479,7 @@ void array_pipeline_testcase(int connfd) {
 }
 void array_pipeline_qps_testcase(int connfd){
 	int count = 100000;
+    int commands_per_test = 15; // 每次测试中的命令数量
     int i = 0;
 
     struct timeval tv_begin;
@@ -495,8 +496,12 @@ void array_pipeline_qps_testcase(int connfd){
 	gettimeofday(&tv_end, NULL);
 
 	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+    int total_commands = count * commands_per_test;
 
-    printf("array pipeline testcase --> time_used: %d, qps: %d\n", time_used, 1500000 * 1000 / time_used);
+    float commands_per_second = (total_commands  * 1000.0) / time_used;
+
+    printf("array pipeline testcase --> time_used: %d ms, commands: %d, qps: %.2f\n", 
+           time_used, total_commands, commands_per_second);
 }
 void rbtree_pipeline_testcase(int connfd) {
     //printf("Testing pipeline functionality...\n");
@@ -573,7 +578,8 @@ void rbtree_pipeline_testcase(int connfd) {
 
 }
 void rbtreee_pipeline_qps_testcase(int connfd){
-	int count = 10000;
+	int count = 100000;
+    int commands_per_test = 15; // 每次测试中的命令数量
     int i = 0;
 
     struct timeval tv_begin;
@@ -590,8 +596,13 @@ void rbtreee_pipeline_qps_testcase(int connfd){
 	gettimeofday(&tv_end, NULL);
 
 	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+    int total_commands = count * commands_per_test;
 
-    printf("rbtree pipeline testcase --> time_used: %d, qps: %d\n", time_used, 150000 * 1000 / time_used);
+    float commands_per_second = (total_commands  * 1000.0) / time_used;
+
+    printf("rbtree pipeline testcase --> time_used: %d ms, commands: %d, qps: %.2f\n", 
+           time_used, total_commands, commands_per_second);
+
 }
 void hash_pipeline_testcase(int connfd) {
     //printf("Testing pipeline functionality...\n");
@@ -669,7 +680,8 @@ void hash_pipeline_testcase(int connfd) {
 
 }
 void hash_pipeline_qps_testcase(int connfd){
-	int count = 10000;
+	int count = 100000;
+    int commands_per_test = 15; // 每次测试中的命令数量
     int i = 0;
 
     struct timeval tv_begin;
@@ -686,8 +698,12 @@ void hash_pipeline_qps_testcase(int connfd){
 	gettimeofday(&tv_end, NULL);
 
 	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+    int total_commands = count * commands_per_test;
 
-    printf("hash pipeline testcase --> time_used: %d, qps: %d\n", time_used, 150000 * 1000 / time_used);
+    float commands_per_second = (total_commands  * 1000.0) / time_used;
+
+    printf("hash pipeline testcase --> time_used: %d ms, commands: %d, qps: %.2f\n", 
+           time_used, total_commands, commands_per_second);
 }
 void skiptable_pipeline_testcase(int connfd) {
     //printf("Testing pipeline functionality...\n");
@@ -764,7 +780,8 @@ void skiptable_pipeline_testcase(int connfd) {
     }
 }
 void skiptable_pipeline_qps_testcase(int connfd){
-	int count = 10000;
+	int count = 100000;
+    int commands_per_test = 15; // 每次测试中的命令数量
     int i = 0;
 
     struct timeval tv_begin;
@@ -781,8 +798,12 @@ void skiptable_pipeline_qps_testcase(int connfd){
 	gettimeofday(&tv_end, NULL);
 
 	int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+    int total_commands = count * commands_per_test;
 
-    printf("skiptable pipeline testcase --> time_used: %d, qps: %d\n", time_used, 150000 * 1000 / time_used);
+    float commands_per_second = (total_commands  * 1000.0) / time_used;
+
+    printf("skiptable pipeline testcase --> time_used: %d ms, commands: %d, qps: %.2f\n", 
+           time_used, total_commands, commands_per_second);
 }
 
 
@@ -955,7 +976,7 @@ char* generate_custom_set_pipeline(int count, const char* key_format, const char
 
 void hugepacket_testcase(int connfd){
 
-    char *pipeline_cmd = generate_set_pipeline(900, "key", "value");
+    char *pipeline_cmd = generate_set_pipeline(1000, "key", "value");
     //pipeline_cmd = 
 
     //printf("send msg: %s\n", pipeline_cmd);
@@ -1050,11 +1071,11 @@ void hugepacket_testcase(int connfd){
         if (response_count >= expected_responses) break;
     }
     response[total_received] = '\0';
-    printf("response: %s\n", response);
+    //printf("response: %s\n", response);
     
     // 验证响应
-    char expected_response[1001] = {0};
-    for (int i = 0; i < 200; i++) {
+    char expected_response[65535] = {0};
+    for (int i = 0; i < 1000; i++) {
         strcat(expected_response, "+OK\r\n");
     }
     
@@ -1070,6 +1091,8 @@ void hugepacket_testcase(int connfd){
 #endif
 }
 
+
+
 // testcase 192.168.243.131  2000
 int main(int argc, char *argv[]) {
 
@@ -1083,6 +1106,7 @@ int main(int argc, char *argv[]) {
 	int mode = atoi(argv[3]);
 
 	int connfd = connect_tcpserver(ip, port);
+
 
 	if (mode == 0) {//正确
 		printf("  0: rbtree_testcase_1w\n");

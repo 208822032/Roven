@@ -200,8 +200,8 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	int ret = cmd->handler(&ctx, response);
 
 	//命令执行成功后记录写命令
-	if(ret >= 0 && cmd->write_command){
-		#if ENABLE_AOF
+	if(ret >= 0 && cmd->write_command && get_sync_context() != 2){
+		#if ENABLE_AOF// 添加日志打印命令
 		aof_append(count, tokens);
 		#endif
 	}
@@ -289,13 +289,13 @@ void handle_signal(int sig) {
     exit(0);
 }
 
-#if 1
+#if 0
 int main(int argc, char *argv[]) {
 
 	//if (argc != 2) return -1;
 
 	//默认配置
-	int port = 6380;
+	int port = 8080;
 	int is_slave = 0;
 	char *master_ip = NULL;
 	int master_port = 0;
@@ -306,6 +306,7 @@ int main(int argc, char *argv[]) {
 	//int port = atoi(argv[1]);
 
 	//解析命令行参数
+#if 1
 	int i;
 	for(i = 1;i < argc; i++){
 		if(strcmp(argv[i], "--slave") == 0){
@@ -314,12 +315,11 @@ int main(int argc, char *argv[]) {
 			if(i + 2 < argc){
 				master_ip = argv[++i];
 				master_port = atoi(argv[++i]);
+				port = atoi(argv[++i]);
 			}else{
 				fprintf(stderr, "Error, --master requires IP and PORT\n");
 			}
 		}else if(i == 1 && !is_slave){//都没有 说明是正常启动 master
-			port = atoi(argv[i]);
-		}else if(i == 5 && is_slave && master_ip){//从节点端口
 			port = atoi(argv[i]);
 		}
 #if 1
@@ -347,6 +347,52 @@ int main(int argc, char *argv[]) {
 		}
 #endif
 	}
+#else
+	for(int i = 1;i < argc;i++){
+		if(strcmp(argv[i], "--slave") == 0){
+			is_slave = 1;
+		}else if(strcmp(argv[i], "--master") == 0){
+			if(i + 3 >= argc){
+				fprintf(stderr, "Error: --master requires MASTER_IP MASTER_PORT PORT\n");
+                return 1;
+			}
+			master_ip = argv[++i];
+            master_port = atoi(argv[++i]);
+            port = atoi(argv[++i]);
+		}else if(strcmp(argv[i], "--aof_sync") == 0){
+			if(i + 1 >= argc){
+				fprintf(stderr, "Error: --aof_fsync requires [no|always|everysec]\n");
+                return 1;
+			}
+			i++;
+			if(strcmp(argv[i], "no") == 0){
+				aof_fsync_mod = AOF_FSYNC_NO;
+			}else if(strcmp(argv[i], "always") == 0){
+				aof_fsync_mod = AOF_FSYNC_ALWAYS;
+			}else{
+				aof_fsync_mod = AOF_FSYNC_EVERYSEC;
+			}
+		}else if(strcmp(argv[i], "--aof_filename") == 0){
+			if(i + 1 >= argc){
+				fprintf(stderr, "Error: --aof_filename requires FILENAME\n");
+                return 1;
+			}
+			aof_filename = argv[++i];
+		}else if(i == 1 && !is_slave){
+			//第一个参数未指定--slave时作为端口号
+			port = atoi(argv[i]);
+		}else{
+			fprintf(stderr, "Error: Unknown option or too many arguments '%s'\n", argv[i]);
+            return 1;
+		}
+	}
+
+	// 配置验证
+    if (is_slave && (master_ip == NULL)) {
+        fprintf(stderr, "Error: Slave mode requires master configuration\n");
+        return 1;
+    }
+#endif
 	// 注册信号处理函数，使Ctrl+C也能保存数据
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
