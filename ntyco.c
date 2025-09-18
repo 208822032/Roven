@@ -1,6 +1,3 @@
-
-
-
 #include "kvstore.h"
 #include "nty_coroutine.h"
 
@@ -111,7 +108,11 @@ void n_free_conn_context(conn_context_t *ctx) {
     // if (ctx->send_buf) kvs_free(ctx->send_buf);
 	n_free_large_buffer(&ctx->recv_buf);
     n_free_large_buffer(&ctx->send_buf);
-    resp_parser_free(&ctx->parser);
+    //resp_parser_free(&ctx->parser);
+    if (ctx->parser_initialized) {
+        resp_parser_free(&ctx->parser);
+        ctx->parser_initialized = 0;
+    }
     memset(ctx, 0, sizeof(conn_context_t));
 }
 

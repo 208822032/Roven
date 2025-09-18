@@ -45,6 +45,7 @@ void resp_parser_reset(resp_parser_t *parser) {
     }
 }
 
+//讲清楚 问题 原理 解决方案 测试完结果
 
 //解析RESP协议
 int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
@@ -79,6 +80,10 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
             case RESP_PARSE_ARRAY_LEN:
                 // 读取数组长度数字
                 while (ptr < end && isdigit(*ptr)) {
+                    // 防止整数溢出
+                    if (parser->array_len > (INT_MAX - (*ptr - '0')) / 10) {
+                        return -1; // 整数溢出
+                    }
                     parser->array_len = parser->array_len * 10 + (*ptr - '0');
                     ptr++;
                     parsed++;
@@ -86,6 +91,11 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
                 
                 if (ptr >= end) {
                     return parsed; // 需要更多数据
+                }
+
+                // 检查数组长度是否合理
+                if (parser->array_len < 0 || parser->array_len > MAX_ARRAY_LENGTH) {
+                    return -1; // 无效的数组长度
                 }
                 
                 // 检查CRLF
@@ -144,6 +154,16 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
             case RESP_PARSE_BULK_LEN_NUM:
                 // 读取批量字符串长度数字
                 while (ptr < end && isdigit(*ptr)) {
+                    // 处理负数情况（特殊值-1）
+                    if (parser->bulk_len == -1) {
+                        // 已经设置为-1，不能再有数字
+                        return -1;
+                    }
+
+                    // 防止整数溢出
+                    if (parser->bulk_len > (INT_MAX - (*ptr - '0')) / 10) {
+                        return -1;
+                    }
                     parser->bulk_len = parser->bulk_len * 10 + (*ptr - '0');
                     ptr++;
                     parsed++;
@@ -151,6 +171,27 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
                 
                 if (ptr >= end) {
                     return parsed; // 需要更多数据
+                }
+
+                // 检查是否为特殊值-1（空批量字符串）
+                if (ptr < end && *ptr == '-') {
+                    if (parser->bulk_len != 0) {
+                        return -1; // 格式错误：减号只能出现在开头
+                    }
+                    ptr++;
+                    parsed++;
+                    // 检查后面是否跟着'1'
+                    if (ptr >= end || *ptr != '1') {
+                        return -1;
+                    }
+                    ptr++;
+                    parsed++;
+                    parser->bulk_len = -1;
+                }
+
+                // 检查批量字符串长度是否合理
+                if (parser->bulk_len < -1 || parser->bulk_len > MAX_BULK_LENGTH) {
+                    return -1; // 无效的批量字符串长度
                 }
                 
                 // 检查CRLF
@@ -186,6 +227,11 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
                 // 检查是否有足够的数据
                 if ((end - ptr) < (parser->bulk_len + 2)) {
                     return parsed; // 需要更多数据
+                }
+
+                // 验证CRLF结束符
+                if (ptr[parser->bulk_len] != '\r' || ptr[parser->bulk_len + 1] != '\n') {
+                    return -1; // 格式错误
                 }
                 
                 // 分配空间并复制数据

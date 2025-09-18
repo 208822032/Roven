@@ -177,81 +177,6 @@ int set_tcp_buffer_size(int fd, int recv_size, int send_size) {
     return 0;
 }
 
-
-
-
-
-
-
-
-
-
-#if 0
-//初始化动态缓冲区
-int init_dynamic_buffer(struct conn *c){
-    c->rbuffer = kvs_malloc(BUFFER_LENGTH);
-    if(!c->rbuffer) return -1;
-    c->rbuffer_size = BUFFER_LENGTH;
-    c->rlength = 0;
-
-    c->wbuffer = kvs_malloc(BUFFER_LENGTH);
-    if(!c->wbuffer){
-        kvs_free(c->rbuffer);
-        return -1;
-    }
-    c->wbuffer_size = BUFFER_LENGTH;
-    c->wlength = 0;
-
-    return 0;
-}
-
-//扩展接收缓冲区
-int expand_receive_buffer(struct conn *c, size_t min_size){
-    size_t new_size = c->rbuffer_size * 2;
-    while(new_size < min_size){
-        new_size *= 2;
-    }
-
-    char *new_buf = kvs_realloc(c->rbuffer, new_size);
-    if(!new_buf) return -1;
-
-    c->rbuffer = new_buf;
-    c->rbuffer_size = new_size;
-    return 0;
-}
-
-//扩展发送缓冲区
-int expand_send_buffer(struct conn *c, size_t min_size){
-    size_t new_size = c->wbuffer_size * 2;
-    while(new_size < min_size){
-        new_size *= 2;
-    }
-
-    char *new_buf = kvs_realloc(c->wbuffer, new_size);
-    if(!new_buf) return -1;
-
-    c->wbuffer = new_buf;
-    c->wbuffer_size = new_size;
-    return 0;
-}
-
-//释放动态缓冲区
-void free_dynamic_buffer(struct conn *c){
-    if(c->rbuffer){
-        kvs_free(c->rbuffer);
-        c->rbuffer = NULL;
-    }
-
-    if(c->wbuffer){
-        c->wbuffer = NULL;
-    }
-    c->rbuffer_size = 0;
-    c->wbuffer_size = 0;
-    c->rlength = 0;
-    c->wlength = 0;
-}
-#endif
-
 int set_event(int fd, int event, int flag) {
 
 	struct epoll_event ev;
@@ -308,18 +233,25 @@ int event_register(int fd, int event) {
 }
 
 void event_unregister(int fd) {
-    if (fd >= 0 && fd < CONNECTION_SIZE) {
-        if (conn_list[fd].parser_initialized) {
-            resp_parser_free(&conn_list[fd].parser);
-            conn_list[fd].parser_initialized = 0;
-        }
-#if 0
-        free_dynamic_buffer(&conn_list[fd]);
-#else
-        free_conn_extension(fd);
-#endif
-        close(fd);
+    if (fd < 0 || fd >= CONNECTION_SIZE) return;
+
+    if (conn_list[fd].parser_initialized) {
+        resp_parser_free(&conn_list[fd].parser);
+        conn_list[fd].parser_initialized = 0;
     }
+
+    free_conn_extension(fd);
+    //close(fd);
+
+    //关闭文件描述符
+    if(conn_list[fd].fd > 0){
+        close(conn_list[fd].fd);
+        conn_list[fd].fd = -1;
+    }
+
+    //重置连接结构
+    memset(&conn_list[fd], 0, sizeof(struct conn));
+    
 }
 
 

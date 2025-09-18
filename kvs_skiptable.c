@@ -12,7 +12,9 @@ Node* create_node(int level, const char* key, const char* value) {
     if (!node) return NULL;
     // 初始化节点数据
     strncpy(node->key, key, KEY_SIZE);
+    node->key[KEY_SIZE-1] = '\0';
     strncpy(node->value, value, VALUE_SIZE);
+    node->value[VALUE_SIZE-1] = '\0';
     node->level = level;
     
     // 初始化所有指针为NULL
@@ -90,6 +92,7 @@ int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     // 如果键已存在，更新值
     if (current && strcmp(current->key, key) == 0) {
         strncpy(current->value, value, VALUE_SIZE);
+        current->value[VALUE_SIZE-1] = '\0';
         return 1;  // 表示更新
     }
     

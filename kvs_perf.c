@@ -212,7 +212,7 @@ void run_varied_size_test(int use_mempool) {
     printf("Memory Delta: %ld KB\n", final_memory - initial_memory);
     
     // 销毁引擎
-    dest_kvengine();
+    // dest_kvengine();
 }
 
 // 长时间运行稳定性测试
@@ -290,7 +290,7 @@ void run_long_term_test(int use_mempool) {
     printf("  Memory Leak: %ld KB\n", final_memory - initial_memory);
     
     // 销毁引擎
-    dest_kvengine();
+    // dest_kvengine();
 }
 
 // 综合性能测试

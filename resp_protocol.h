@@ -22,6 +22,11 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <limits.h>
+
+#define MAX_BULK_LENGTH (512 * 1024 * 1024) // 512MB 最大批量字符串长度
+#define MAX_ARRAY_LENGTH 1024 * 1024        // 最大数组元素数量
+
 
 //RESP 类型定义
 typedef enum{

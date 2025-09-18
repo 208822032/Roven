@@ -6,6 +6,8 @@
 
 #define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
+//gcc -o redis_pipeline_test redis_pipeline_test.c -lhiredis
+
 //redis pipeline测试用例
 void redis_pipeline_testcase(redisContext *conn){
     redisReply *reply;

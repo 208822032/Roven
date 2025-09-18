@@ -26,6 +26,89 @@ extern kvs_skiptable_t global_skiptable;
 
 extern distributed_config_t global_dist_config;
 
+//创建管道
+static int aof_create_pipe(void){
+    if(pipe(aof_state.pipe_fd) == -1){
+        perror("Failed to create pipe");
+        return -1;
+    }
+
+    //设置非阻塞管道
+    int flags = fcntl(aof_state.pipe_fd[0], F_GETFL, 0);
+    fcntl(aof_state.pipe_fd[0], F_SETFL, flags | O_NONBLOCK);
+
+    flags = fcntl(aof_state.pipe_fd[1], F_GETFL, 0);
+    fcntl(aof_state.pipe_fd[1], F_SETFL, flags | O_NONBLOCK);
+
+    return 0;
+}
+
+//关闭管道
+static void aof_close_pipe(void){
+    close(aof_state.pipe_fd[0]);
+    close(aof_state.pipe_fd[1]);
+}
+
+//管道通信线程函数
+static void *aof_pipe_thread_func(void *arg){
+    int pipe_fd = aof_state.pipe_fd[1]; //写端
+    char buffer[4096];
+    ssize_t bytes_read;
+
+    while(!aof_state.pipe_stop){
+        pthread_mutex_lock(&aof_state.rewrite_mutex);
+
+        //检查写缓冲区是否有数据
+        if(aof_state.rewrite_buf_len > 0){
+            //计算要发送的数据量
+            size_t to_send = aof_state.rewrite_buf_len;
+            if(to_send > sizeof(buffer)){
+                to_send = sizeof(buffer);//是否需要优化
+            }
+
+            //复制数据到临时缓冲区
+            memcpy(buffer, aof_state.rewrite_buf, to_send);
+
+            //尝试通过管道发送数据
+            ssize_t bytes_written = write(pipe_fd, buffer, to_send);
+
+            if(bytes_written > 0){
+                //成功发送数据 更新重写缓冲区
+                memmove(aof_state.rewrite_buf, aof_state.rewrite_buf + bytes_written, aof_state.rewrite_buf_len - bytes_written);
+                aof_state.rewrite_buf_len -= bytes_written;
+            }else if(bytes_written == -1 && errno != EAGAIN && errno != EWOULDBLOCK){
+                perror("Failed to write to pipe");
+                break;
+            }
+        }
+
+        pthread_mutex_unlock(&aof_state.rewrite_mutex);
+
+        //休眠 避免cpu占用率过高
+        usleep(10000);
+    }
+
+    return NULL;
+}
+
+//启动管道通信线程
+static int aof_start_pipe_thread(void){
+    aof_state.pipe_stop = 0;
+    
+    if(pthread_create(&aof_state.pipe_thread, NULL, aof_pipe_thread_func, NULL) != 0){
+        perror("Failed to create pipe thread");
+        return -1;
+    }
+
+    return 0;
+}
+
+//停止管道通信线程
+static void aof_stop_pipe_thread(void){
+    aof_state.pipe_stop = 1;
+    pthread_join(aof_state.pipe_thread, NULL);
+}
+
 //初始化函数
 int aof_init(const char *filename, int fsync_mode){
 
@@ -104,6 +187,19 @@ int aof_init(const char *filename, int fsync_mode){
         return -1;
     }
 
+    //初始化重写缓冲区互斥锁
+    if(pthread_mutex_init(&aof_state.rewrite_mutex, NULL) != 0){
+        perror("Failed to initialize AOF rewrite mutex");
+        // 清理已分配资源
+        pthread_mutex_destroy(&aof_state.mutex);
+        pthread_cond_destroy(&aof_state.cond);
+        fclose(aof_state.fp);
+        free(aof_state.filename);
+        kvs_free(aof_state.temp_filename);
+        kvs_free(aof_state.buf);
+        return -1;
+    }
+
     //创建后台同步线程
     aof_state.stop = 0;
     if(pthread_create(&aof_state.bgthread, NULL, (void*(*)(void *))aof_background_fsync, NULL) != 0){
@@ -124,6 +220,9 @@ int aof_init(const char *filename, int fsync_mode){
         case AOF_FSYNC_ALWAYS: sync_mode_str = "always"; break;
         default: sync_mode_str = "unknown"; break;
     }
+
+    //初始化管道停止标识
+    aof_state.pipe_stop = 0;
     
     printf("AOF initialized: %s (%ld bytes), sync mode: %s\n", 
            filename, aof_state.current_size, sync_mode_str);
@@ -152,6 +251,37 @@ void aof_append(int argc, char **argv){
     aof_state.buf_len += len;
     aof_state.current_size += len;
 
+    //如果重写正在进行 同时将命令追加到重写缓冲区
+    if(aof_state.rewrite_in_progress){
+        pthread_mutex_lock(&aof_state.rewrite_mutex);
+
+        //检查重写缓冲区是否需要扩容
+        if(aof_state.rewrite_buf_len + len > aof_state.rewrite_buf_size){
+            size_t new_size = aof_state.rewrite_buf_size * 2;
+            if(new_size < aof_state.rewrite_buf_len + len){
+                new_size = aof_state.rewrite_buf_size + len + AOF_BUFFER_SIZE;
+            }
+
+            char *new_buf = kvs_realloc(aof_state.rewrite_buf, new_size);
+            if(new_size){
+                aof_state.rewrite_buf = new_buf;
+                aof_state.rewrite_buf_size = new_size;
+            }else{
+                perror("Failed to expand rewrite buffer");
+                // 继续执行，但不追加到重写缓冲区
+                pthread_mutex_unlock(&aof_state.rewrite_mutex);
+                pthread_mutex_unlock(&aof_state.mutex);
+                return;
+            }
+        }
+
+        //将命令追加到重写缓冲区
+        memcpy(aof_state.rewrite_buf + aof_state.rewrite_buf_len, aof_state.rewrite_buf + (aof_state.buf_len - len), len);
+        aof_state.rewrite_buf_len += len;
+
+        pthread_mutex_unlock(&aof_state.rewrite_mutex);
+    }
+
     //检查是否需要立即刷新
     int should_fsync = 0;
     if(aof_state.fsync_mode == AOF_FSYNC_ALWAYS){
@@ -163,6 +293,7 @@ void aof_append(int argc, char **argv){
     }
 
     //检查是否需要重写AOF
+    //有无重写 对加载的时间
     int should_rewrite = 0;
     off_t growth = aof_state.current_size - aof_state.rewrite_base_size;
     if(aof_state.current_size >= AOF_REWRITE_MIN_SIZE &&
@@ -319,6 +450,23 @@ void aof_free(void){
     pthread_cond_signal(&aof_state.cond);
     pthread_join(aof_state.bgthread, NULL);
 
+    //如果重写正在进行 停止管道线程 并等待子进程结束
+    if(aof_state.rewrite_in_progress){
+        //停止管道通信线程
+        aof_state.pipe_stop = 1;
+        pthread_join(aof_state.pipe_thread, NULL);
+        
+        //关闭管道
+        aof_close_pipe();
+
+        // 等待子进程结束
+        if(aof_state.rewrite_child_pid > 0) {
+            printf("Waiting for AOF rewrite to finish...\n");
+            int status;
+            waitpid(aof_state.rewrite_child_pid, &status, 0);
+        }
+    }
+
     //最后进行一次同步
     aof_fsync(1);
 
@@ -342,8 +490,19 @@ void aof_free(void){
         aof_state.buf = NULL;
     }
 
+    // 释放重写缓冲区
+    pthread_mutex_lock(&aof_state.rewrite_mutex);
+    if (aof_state.rewrite_buf) {
+        kvs_free(aof_state.rewrite_buf);
+        aof_state.rewrite_buf = NULL;
+        aof_state.rewrite_buf_size = 0;
+        aof_state.rewrite_buf_len = 0;
+    }
+    pthread_mutex_unlock(&aof_state.rewrite_mutex);
+
     pthread_mutex_destroy(&aof_state.mutex);
     pthread_cond_destroy(&aof_state.cond);
+    pthread_mutex_destroy(&aof_state.rewrite_mutex);
     
     memset(&aof_state, 0, sizeof(aof_state_t));
 }
@@ -377,6 +536,7 @@ void aof_background_fsync(void *arg){
 }
 
 //后台重写函数
+#if 0
 void aof_rewrite_background(void){
     pid_t childpid;
 
@@ -421,6 +581,106 @@ void aof_rewrite_background(void){
         perror("Failed to fork for AOF rewrite");
     }
 }
+#else
+void aof_rewrite_background(void){
+    if(aof_state.rewrite_in_progress){
+        fprintf(stderr, "AOF rewrite already in progress\n");
+        return;
+    }
+
+    //初始化重写缓冲区
+    pthread_mutex_lock(&aof_state.rewrite_mutex);
+    aof_state.rewrite_buf_size = AOF_BUFFER_SIZE;
+    aof_state.rewrite_buf = kvs_malloc(aof_state.rewrite_buf_size);
+    if(!aof_state.rewrite_buf){
+        perror("Failed to allocate rewrite buffer");
+        pthread_mutex_unlock(&aof_state.rewrite_mutex);
+        return;
+    }
+    aof_state.rewrite_buf_len = 0;
+    pthread_mutex_unlock(&aof_state.rewrite_mutex);
+
+    //创建管道
+    if(aof_create_pipe() == -1){
+        //清理重写缓冲区
+        pthread_mutex_lock(&aof_state.rewrite_mutex);
+        kvs_free(aof_state.rewrite_buf);
+        aof_state.rewrite_buf = NULL;
+        aof_state.rewrite_buf_size = 0;
+        aof_state.rewrite_buf_len = 0;
+        pthread_mutex_unlock(&aof_state.rewrite_mutex);
+        return;
+    }
+
+    pid_t childpid = fork();
+    if(childpid == 0){
+        //子进程 执行重写
+        //关闭管道写端
+        close(aof_state.pipe_fd[1]);
+
+        int fd = aof_rewrite_tmpfile();
+        if(fd == -1) exit(1);
+
+        //重写当前数据快照
+        if(aof_rewrite_buffer_write(fd) == -1){
+            close(fd);
+            exit(1);
+        }
+
+        //从管道读取增量命令 并写入文件
+        char buffer[4096];
+        ssize_t bytes_read;
+
+        while((bytes_read = read(aof_state.pipe_fd[0], buffer, sizeof(buffer))) > 0){
+            if(write(fd, buffer, bytes_read) != bytes_read){
+                perror("Failed to write to AOF temp file from pipe");
+                close(fd);
+                exit(1);
+            }
+        }
+
+        //关闭管道端和文件
+        close(aof_state.pipe_fd[0]);
+        close(fd);
+        exit(0);
+    }else if(childpid > 0){
+        //父进程
+        //关闭管道的读端
+        close(aof_state.pipe_fd[0]);
+
+        aof_state.rewrite_child_pid = childpid;
+        aof_state.rewrite_in_progress = 1;
+
+        //启动管道通信线程
+        if(aof_start_pipe_thread() == -1){
+            //清理资源
+            aof_close_pipe();
+            aof_state.rewrite_in_progress = 0;
+            aof_state.rewrite_child_pid = 0;
+            
+            pthread_mutex_lock(&aof_state.rewrite_mutex);
+            kvs_free(aof_state.rewrite_buf);
+            aof_state.rewrite_buf = NULL;
+            aof_state.rewrite_buf_size = 0;
+            aof_state.rewrite_buf_len = 0;
+            pthread_mutex_unlock(&aof_state.rewrite_mutex);
+
+            return;
+        }
+
+        //printf("AOF rewrite started with pid %d\n", childpid);
+    }else{
+        perror("Failed to fork for AOF rewrite");
+        // 清理重写缓冲区
+        pthread_mutex_lock(&aof_state.rewrite_mutex);
+        kvs_free(aof_state.rewrite_buf);
+        aof_state.rewrite_buf = NULL;
+        aof_state.rewrite_buf_size = 0;
+        aof_state.rewrite_buf_len = 0;
+        pthread_mutex_unlock(&aof_state.rewrite_mutex);
+    }
+}
+#endif
 
 //创建临时重写文件
 int aof_rewrite_tmpfile(void){
@@ -433,9 +693,8 @@ int aof_rewrite_tmpfile(void){
     return fd;
 }
 
-
-
 //重写缓冲区写入
+#if 0
 int aof_rewrite_buffer_write(int fd){
     int total_commands = 0;
 
@@ -533,4 +792,142 @@ int aof_rewrite_buffer_write(int fd){
 
     //printf("AOF rewrite: wrote %d commands to temp file\n", total_commands);
     return 0;
+}
+#else
+int aof_rewrite_buffer_write(int fd){
+    int total_commands = 0;
+
+    //保存当前时间 用于记录重写开始的时间点
+
+    //使用写时复制机制遍历数据结构
+    //在避免阻塞父进程的基础上 同时保持数据一致性
+    #if ENABLE_ARRAY
+    //创建数组副本进行遍历
+    kvs_array_t array_copy;
+    memcpy(&array_copy, &global_array, sizeof(kvs_array_t));
+
+    for(int i = 0;i < array_copy.total;i++){
+        if(array_copy.table[i].key && array_copy.table[i].value){
+            char cmd[2048];
+            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                strlen(array_copy.table[i].key), array_copy.table[i].key,
+                strlen(array_copy.table[i].value), array_copy.table[i].value);
+            if(write(fd, cmd, len) != len){
+                perror("Failed to write to AOF temp file");
+                return -1;
+            }
+            total_commands++;
+        }
+    }
+    #endif
+
+    //rbtree
+    #if ENABLE_RBTREE
+    //中序遍历保存
+        void write_rbtree_node(rbtree_node *node, void *data){
+            int fd = *(int *)data;
+            char cmd[2048];
+            if (node == global_rbtree.nil) return;
+            write_rbtree_node(node->left, &fd);
+            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nRSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                    strlen(node->key), node->key,
+                    strlen((char*)node->value), (char*)node->value);
+            if (write(fd, cmd, len) != len) {
+                perror("Failed to write to AOF temp file");
+                exit(1); // 子进程中直接退出
+            }
+            write_rbtree_node(node->right, &fd);
+        }
+        write_rbtree_node(global_rbtree.root, &fd);
+    #endif
+
+    //hash
+    #if ENABLE_HASH
+    //遍历哈希表
+    for(int i = 0;i < global_hash.max_slots;i++){
+        hashnode_t *node = global_hash.nodes[i];
+        while(node){
+            char cmd[2048];
+            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nHSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                strlen(node->key), node->key,
+                strlen(node->value), node->value);
+            if(write(fd, cmd, len) != len){
+                perror("Failed to write to AOF temp file");
+                return -1;
+            }
+
+            total_commands++;
+            node = node->next;
+        }
+    }
+    #endif
+
+    #if ENABLE_SKIPTABLE
+    //遍历跳表
+    Node *current = global_skiptable.header->forward[0];
+    while(current){
+        char cmd[2048];
+        int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+            strlen(current->key), current->key,
+            strlen(current->value), current->value);
+        if(write(fd, cmd, len) != len){
+            perror("Failed to write to AOF temp file");
+            return -1;
+        }
+        total_commands++;
+        current = current->forward[0];
+    }
+    #endif
+    //printf("AOF rewrite: wrote %d commands to temp file\n", total_commands);
+    return 0;
+}
+#endif
+
+//重写完成处理函数
+void aof_rewrite_done_handler(int sig){
+    int status;
+    pid_t pid;
+
+    //等待子进程退出
+    while((pid = waitpid(-1, &status, WNOHANG)) > 0){
+        if(pid == aof_state.rewrite_child_pid){
+            pthread_mutex_lock(&aof_state.mutex);
+
+            //停止管道通信线程
+            aof_stop_pipe_thread();
+
+            //关闭管道
+            aof_close_pipe();
+
+            if(WIFEXITED(status) && WEXITSTATUS(status) == 0){
+                //重写成功 替换原文件
+                if(rename(aof_state.temp_filename, aof_state.filename) != 0){
+                    perror("Failed to rename AOF file");
+                }else{
+                    // 更新基准大小
+                    aof_state.rewrite_base_size = aof_state.current_size;
+                    printf("AOF rewrite completed successfully\n");
+                }
+            }else{
+                fprintf(stderr, "AOF rewrite failed\n");
+            }
+
+            pthread_mutex_unlock(&aof_state.mutex);
+        }
+
+        //清理重写缓冲区
+        pthread_mutex_lock(&aof_state.rewrite_mutex);
+        if(aof_state.rewrite_buf){
+            kvs_free(aof_state.rewrite_buf);
+            aof_state.rewrite_buf = NULL;
+            aof_state.rewrite_buf_size = 0;
+            aof_state.rewrite_buf_len = 0;
+        }
+        pthread_mutex_unlock(&aof_state.rewrite_mutex);
+
+        aof_state.rewrite_in_progress = 0;
+        aof_state.rewrite_child_pid = 0;
+
+        pthread_mutex_unlock(&aof_state.mutex);
+    }
 }

@@ -170,6 +170,7 @@ static void p_free_conn_extension(conn_extension_t *ext) {
     
     if (ext->parser_initialized) {
         resp_parser_free(&ext->parser);
+        ext->parser_initialized = 0;
     }
     
     kvs_free(ext);
@@ -532,6 +533,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
 			if(ret <= 0){
 				// 连接关闭或错误
                 p_free_conn_extension(ctx);
+                kvs_free(ctx);
 			}else{
 				//info->resp_len = kvs_handler(info->buffer, ret, info->response);
 				// set_event_send(&ring, info->fd, info->response, info->resp_len, 0);

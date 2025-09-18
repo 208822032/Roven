@@ -27,7 +27,7 @@
 #define NETWORK_PROACTOR	1
 #define NETWORK_NTYCO		2
 
-#define NETWORK_SELECT		NETWORK_REACTOR
+#define NETWORK_SELECT		NETWORK_PROACTOR
 
 
 
@@ -347,11 +347,18 @@ typedef struct mem_block {
     struct mem_block* next;
 } mem_block_t;
 
+typedef struct mem_chunk{
+	void *chunk;
+	struct mem_chunk *next;
+} mem_chunk_t;
+
 typedef struct mem_pool {
     size_t block_size;
     int free_count;
     mem_block_t* free_list;
     struct mem_pool* next;
+	pthread_mutex_t lock;	//每个内存池单独的锁
+	mem_chunk_t *chunks;	//记录所有分配的大块内存
 } mem_pool_t;
 
 // 大内存块记录结构
@@ -359,14 +366,17 @@ typedef struct large_block_record {
     void *block;
     size_t size;
     struct large_block_record *next;
+	struct large_block_record *prev;  //前向指针 支持双向链表
 } large_block_record_t;
+
 
 
 typedef struct mem_block_header {
     mem_pool_t *pool;       // 所属内存池
     size_t block_size;      // 实际块大小
     unsigned char is_large; // 是否为大内存
-	struct mem_block_header *next_large; // 大内存块链表指针
+	// struct mem_block_header *next_large; // 大内存块链表指针
+	large_block_record_t *large_record; //指向大内存记录
 } mem_block_header_t;
 
 
@@ -376,6 +386,7 @@ typedef struct {
     size_t pool_sizes[13];   // 预定义的内存块大小
     size_t large_threshold; // 大内存阈值
 	int is_initialized;           // 内存池是否已初始化
+	pthread_mutex_t large_blocks_lock;  //大内存块链表的锁
 } mem_manager_t;
 
 void mem_init();
@@ -510,10 +521,10 @@ extern const command_info command_table[];
 
 //AOF
 #define ENABLE_AOF 1
-#define AOF_BUFFER_SIZE (1024*16)  //16MB缓冲区
-#define AOF_REWRITE_MIN_SIZE (1024*64)  //64MB最小重写大小
+#define AOF_BUFFER_SIZE (1024 * 1024 * 16)  //16MB缓冲区
+#define AOF_REWRITE_MIN_SIZE (1024 * 1024 * 64)  //64MB最小重写大小
 #define AOF_REWRITE_PERCENTAGE 50 //增长100%时触发重写
-#define AOF_REWRITE_MIN_GROWTH (1024*10) //10MB最小增长量
+#define AOF_REWRITE_MIN_GROWTH (1024 * 1024 * 10) //10MB最小增长量
 
 //同步模式
 #define AOF_FSYNC_NO  0   //不主动同步
@@ -538,6 +549,17 @@ typedef struct {
     volatile int stop;         // 停止标志
     int rewrite_in_progress;   // 重写进行中标志
     pid_t rewrite_child_pid;   // 重写子进程ID
+
+	//重写缓冲区相关字段
+	char *rewrite_buf;		   // 重写缓冲区
+	size_t rewrite_buf_len;    // 重写缓冲区长度
+	size_t rewrite_buf_size;   // 重写缓冲区总大小
+	pthread_mutex_t rewrite_mutex; //重写缓冲区互斥锁
+
+	//管道通信字段
+	int pipe_fd[2];				//管道文件描述符
+	pthread_t pipe_thread;		//管道通信线程
+	volatile int pipe_stop;		//管道线程停止标识
 } aof_state_t;
 
 int aof_init(const char *filename, int fsync_mode);
@@ -550,6 +572,6 @@ void aof_background_fsync(void *arg);
 void aof_rewrite_background(void);
 int aof_rewrite_tmpfile(void);
 int aof_rewrite_buffer_write(int fd);
-
+void aof_rewrite_done_handler(int sig);
 
 extern aof_state_t aof_state;

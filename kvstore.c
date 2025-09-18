@@ -210,8 +210,6 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 
 }
 
-
-
 // 性能问题 异步处理 GET/SET性能 是否开启区别不大
 // aof 转发命令 主从同步mysql
 
@@ -224,9 +222,6 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 int init_kvengine(void) {
 
 	mem_init();  // 初始化内存管理组件
-
-	// 初始化AOF，使用每秒同步模式
-    //aof_init("kvstore.aof");
 
 #if ENABLE_ARRAY
 	memset(&global_array, 0, sizeof(kvs_array_t));
@@ -269,9 +264,15 @@ void dest_kvengine(void) {
 
 	mem_destroy();  // 清理内存管理组件
 
+	#if ENABLE_AOF
 	aof_free();
+	#endif
 
 }
+//ebpf 主从同步 探测主节点 实现同步功能
+//存入论文 标题key 内容value 图片链接 /博客
+
+//3.1 3.2
 
 // 信号处理函数
 void handle_signal(int sig) {
@@ -289,7 +290,7 @@ void handle_signal(int sig) {
     exit(0);
 }
 
-#if 0
+#if 1
 int main(int argc, char *argv[]) {
 
 	//if (argc != 2) return -1;
@@ -347,51 +348,6 @@ int main(int argc, char *argv[]) {
 		}
 #endif
 	}
-#else
-	for(int i = 1;i < argc;i++){
-		if(strcmp(argv[i], "--slave") == 0){
-			is_slave = 1;
-		}else if(strcmp(argv[i], "--master") == 0){
-			if(i + 3 >= argc){
-				fprintf(stderr, "Error: --master requires MASTER_IP MASTER_PORT PORT\n");
-                return 1;
-			}
-			master_ip = argv[++i];
-            master_port = atoi(argv[++i]);
-            port = atoi(argv[++i]);
-		}else if(strcmp(argv[i], "--aof_sync") == 0){
-			if(i + 1 >= argc){
-				fprintf(stderr, "Error: --aof_fsync requires [no|always|everysec]\n");
-                return 1;
-			}
-			i++;
-			if(strcmp(argv[i], "no") == 0){
-				aof_fsync_mod = AOF_FSYNC_NO;
-			}else if(strcmp(argv[i], "always") == 0){
-				aof_fsync_mod = AOF_FSYNC_ALWAYS;
-			}else{
-				aof_fsync_mod = AOF_FSYNC_EVERYSEC;
-			}
-		}else if(strcmp(argv[i], "--aof_filename") == 0){
-			if(i + 1 >= argc){
-				fprintf(stderr, "Error: --aof_filename requires FILENAME\n");
-                return 1;
-			}
-			aof_filename = argv[++i];
-		}else if(i == 1 && !is_slave){
-			//第一个参数未指定--slave时作为端口号
-			port = atoi(argv[i]);
-		}else{
-			fprintf(stderr, "Error: Unknown option or too many arguments '%s'\n", argv[i]);
-            return 1;
-		}
-	}
-
-	// 配置验证
-    if (is_slave && (master_ip == NULL)) {
-        fprintf(stderr, "Error: Slave mode requires master configuration\n");
-        return 1;
-    }
 #endif
 	// 注册信号处理函数，使Ctrl+C也能保存数据
     signal(SIGINT, handle_signal);
@@ -407,6 +363,16 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "Failed to initialize AOF\n");
 		dest_kvengine();
 		return 1;
+	}
+	// 设置信号处理函数
+	struct sigaction sa;
+	sa.sa_handler = aof_rewrite_done_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+
+	if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+		perror("Failed to set signal handler");
+		return -1;
 	}
 
 	aof_load(aof_filename);
