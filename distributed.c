@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 
 distributed_config_t global_dist_config;
+
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
 #endif
@@ -44,6 +45,7 @@ void *slave_connection_thread(void *arg){
             send_cmd(slave->sockfd, "SET", global_array.table[i].key, global_array.table[i].value);
         }
     }
+    
     #endif
 
     #if ENABLE_RBTREE
@@ -172,7 +174,7 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
         global_dist_config.master_port = master_port;
 
         printf("Running ad SLAVE, connecting to master %s:%d\n", master_ip, master_port);
-        
+
         // 启动连接线程
         pthread_t connect_thread;
         pthread_create(&connect_thread, NULL, slave_connect_thread, NULL);
@@ -183,6 +185,7 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
 
 //从节点连接主节点
 void slave_connect_master(){
+
     int sock = 0;
     struct sockaddr_in serv_addr;
 
@@ -278,7 +281,9 @@ void slave_connect_master(){
 
 //主节点同步写操作到所有从节点
 void master_sync_command(const char *cmd, const char *key, const char *value){
+    
     if(global_dist_config.role != ROLE_MASTER) return;
+
 
     pthread_mutex_lock(&global_dist_config.slave_mutex);
 

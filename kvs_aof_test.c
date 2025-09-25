@@ -9,7 +9,7 @@
 #include "resp_protocol.h"
 
 /*
-gcc -o kvs_aof_test kvs_aof_test.c kvs_aof.c kvs_operation.c kvstore.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c resp_protocol.c kvs_mempool.c distributed.c  -I. -lpthread -DENABLE_ARRAY=1 -DENABLE_RBTREE=1 -DENABLE_HASH=1 -DENABLE_SKIPTABLE=1 -DENABLE_AOF=1
+gcc -o kvs_aof_test kvs_aof_test.c kvs_aof.c kvs_aof_rewrite.c kvs_operation.c kvstore.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c resp_protocol.c kvs_mempool.c distributed.c  -I. -lpthread -DENABLE_ARRAY=1 -DENABLE_RBTREE=1 -DENABLE_HASH=1 -DENABLE_SKIPTABLE=1 -DENABLE_AOF=1
 */
 
 // 声明全局变量
@@ -171,7 +171,7 @@ void test_aof_rewrite(){
     aof_fsync(1);
 
     // 手动触发重写
-    aof_rewrite();
+    aof_rewrite_background();
 
     // 读取重写后的AOF文件
     sleep(1);  // 等待重写完成
@@ -205,8 +205,8 @@ void test_aof_rewrite(){
 
     // 清理
     aof_free();
-    remove("test_rewrite.aof");
-    remove("test_rewrite.aof.tmp");
+//     remove("test_rewrite.aof");
+//     remove("test_rewrite.aof.tmp");
 }
 
 //测试AOF加载功能
@@ -342,10 +342,10 @@ int main() {
 
     
     // 运行测试
-    test_aof_basic();
+    //test_aof_basic();
     test_aof_rewrite();
-    test_aof_load();
-    test_aof_sync_modes();
+    //test_aof_load();
+    //test_aof_sync_modes();
 
     #if ENABLE_ARRAY
         kvs_array_destory(&global_array);

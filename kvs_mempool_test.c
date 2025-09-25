@@ -289,3 +289,7 @@ int main() {
     printf("所有测试完成!\n");
     return 0;
 }
+
+/*
+gcc -o kvs_mempool_test kvs_mempool_test.c kvs_aof.c kvs_operation.c kvstore.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c resp_protocol.c kvs_mempool.c distributed.c  -I. -lpthread 
+*/

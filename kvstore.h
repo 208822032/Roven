@@ -27,7 +27,7 @@
 #define NETWORK_PROACTOR	1
 #define NETWORK_NTYCO		2
 
-#define NETWORK_SELECT		NETWORK_PROACTOR
+#define NETWORK_SELECT		NETWORK_NTYCO
 
 
 
@@ -519,12 +519,22 @@ int handle_quit(command_context_t *ctx, char *response);
 //命令表
 extern const command_info command_table[];
 
+/*
+正常命令处理通过单线程模型避免了并发问题
+AOF重写功能缺失关键的安全机制
+ 直接实现AOF重写会导致数据竞争和内存安全问题
+以redis实现aof机制的思路为准 尽可能模仿redis的实现逻辑
+参考redis的fork+COW机制以及redis记录重写期间新命令的缓冲区和子进程完成后的命令追加逻辑
+重新实现aof所有功能 可以考虑删改kvstore.h中有关aof的结构 
+处理kvstore在AOF重写时的数据不一致和内存管理风险
+*/
+
 //AOF
 #define ENABLE_AOF 1
-#define AOF_BUFFER_SIZE (1024 * 1024 * 16)  //16MB缓冲区
-#define AOF_REWRITE_MIN_SIZE (1024 * 1024 * 64)  //64MB最小重写大小
+#define AOF_BUFFER_SIZE (1024  * 16)  //16MB缓冲区
+#define AOF_REWRITE_MIN_SIZE (1024  * 64)  //64MB最小重写大小
 #define AOF_REWRITE_PERCENTAGE 50 //增长100%时触发重写
-#define AOF_REWRITE_MIN_GROWTH (1024 * 1024 * 10) //10MB最小增长量
+#define AOF_REWRITE_MIN_GROWTH (1024  * 10) //10MB最小增长量
 
 //同步模式
 #define AOF_FSYNC_NO  0   //不主动同步
@@ -547,19 +557,16 @@ typedef struct {
     pthread_cond_t cond;       // 条件变量(用于后台线程)
     pthread_t bgthread;        // 后台线程ID
     volatile int stop;         // 停止标志
+
+	//重写相关字段
     int rewrite_in_progress;   // 重写进行中标志
     pid_t rewrite_child_pid;   // 重写子进程ID
+	char *rewrite_buf;        // 重写缓冲区
+	size_t rewrite_buf_len;   // 重写缓冲区当前长度
+	size_t rewrite_buf_size;  // 重写缓冲区总大小
+	pthread_mutex_t rewrite_mutex; // 重写缓冲区互斥锁
+	int aof_fd;			   // AOF文件描述符用于同步
 
-	//重写缓冲区相关字段
-	char *rewrite_buf;		   // 重写缓冲区
-	size_t rewrite_buf_len;    // 重写缓冲区长度
-	size_t rewrite_buf_size;   // 重写缓冲区总大小
-	pthread_mutex_t rewrite_mutex; //重写缓冲区互斥锁
-
-	//管道通信字段
-	int pipe_fd[2];				//管道文件描述符
-	pthread_t pipe_thread;		//管道通信线程
-	volatile int pipe_stop;		//管道线程停止标识
 } aof_state_t;
 
 int aof_init(const char *filename, int fsync_mode);
@@ -572,6 +579,9 @@ void aof_background_fsync(void *arg);
 void aof_rewrite_background(void);
 int aof_rewrite_tmpfile(void);
 int aof_rewrite_buffer_write(int fd);
-void aof_rewrite_done_handler(int sig);
+
+// 在AOF相关声明部分添加
+void aof_rewrite_append_command(int argc, char **argv);
+void aof_stop_rewrite(void);
 
 extern aof_state_t aof_state;

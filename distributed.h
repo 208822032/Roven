@@ -29,7 +29,10 @@ typedef struct {
     int slave_count;
     int max_slaves;
     pthread_mutex_t slave_mutex;
+
 } distributed_config_t;
+
+extern distributed_config_t global_dist_config;
 
 //初始化分布式系统
 int distributed_init(node_role_t role, const char *master_ip, int master_port, int sync_port);
@@ -40,7 +43,7 @@ void master_sync_command(const char *cmd, const char *key, const char *value);
 
 //从节点连接到主节点
 void slave_connect_master();
-
 void* slave_connect_thread(void *arg);
+
 
 #endif

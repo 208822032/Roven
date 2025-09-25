@@ -9,6 +9,8 @@
         "distributed.h": "c",
         "stdio.h": "c",
         "fcntl.h": "c",
-        "limits.h": "c"
+        "limits.h": "c",
+        "ebpf_kern.h": "c",
+        "string.h": "c"
     }
 }

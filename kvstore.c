@@ -63,7 +63,6 @@ void kvs_save_all(const char *filename){
 			fprintf(fp, "%s:%s\n", global_array.table[i].key, global_array.table[i].value);
 		}
 	}
-	
 #endif
 
 	//保存红黑树数据
@@ -159,16 +158,6 @@ void kvs_load_all(const char *filename){
 	printf("Data loaded from %s\n", filename);
 }
 #endif
-
-/*
- 1. 简单字符串：以"+"开头，以"\r\n"结尾。例如："+OK\r\n"
- 2. 错误：以"-"开头，以"\r\n"结尾。例如："-Error message\r\n"
- 3. 整数：以":"开头，以"\r\n"结尾。例如：":1000\r\n"
- 4. 批量字符串：以"$"开头，后面跟字符串长度，然后是"\r\n"，然后是字符串，
-    最后是"\r\n"。如果字符串为空，则为"$-1\r\n"。例如："$5\r\nhello\r\n"
- 5. 数组：以"*"开头，后面跟数组元素个数，然后是"\r\n"，然后每个元素按照自己的类型编码。
-    例如：数组["SET", "key", "value"]编码为："*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
-*/
 
 int kvs_filter_protocol(char **tokens, int count, char *response){
 	if (tokens[0] == NULL || count == 0 || response == NULL) {
@@ -364,16 +353,6 @@ int main(int argc, char *argv[]) {
 		dest_kvengine();
 		return 1;
 	}
-	// 设置信号处理函数
-	struct sigaction sa;
-	sa.sa_handler = aof_rewrite_done_handler;
-	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-
-	if (sigaction(SIGCHLD, &sa, NULL) == -1) {
-		perror("Failed to set signal handler");
-		return -1;
-	}
 
 	aof_load(aof_filename);
 
@@ -415,6 +394,7 @@ int main(int argc, char *argv[]) {
     printf("Shutdown requested, saving data...\n");
 
 	aof_fsync(1);
+
 
 #if ENABLE_RDB
 	kvs_rdb_save("kvstore.rdb");

@@ -10,7 +10,7 @@ DEBUG_CFLAGS = -g -O0 -I ./NtyCo/core/
 DEBUG_LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl
 
 
-SRCS = kvstore.c ntyco.c proactor.c reactor.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c  kvs_mempool.c distributed.c resp_protocol.c kvs_rdb.c kvs_operation.c kvs_aof.c
+SRCS = kvstore.c ntyco.c proactor.c reactor.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c  kvs_mempool.c distributed.c resp_protocol.c kvs_rdb.c kvs_operation.c kvs_aof.c kvs_aof_rewrite.c
 TESTCASE_SRCS = testcase.c
 
 # 默认目标名称

@@ -31,9 +31,12 @@ void free_node(Node* node) {
 }
 
 int kvs_skiptable_create(kvs_skiptable_t *table) {
+    if (!table) return -1;
+
     // 初始化跳表结构
     table->level = 0;
     table->count = 0;
+
 
     // 创建头节点（使用最大层数）
     table->header = create_node(MAX_LEVEL, "", "");
@@ -62,6 +65,7 @@ void kvs_skiptable_destroy(kvs_skiptable_t *table) {
     free_node(table->header);
     table->header = NULL;
     table->level = 0;
+    table->count = 0;
 }
 
 // 随机生成节点层数
@@ -73,7 +77,7 @@ int random_level() {
 }
 
 int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
-    if (!table || !key || !value) return -1;
+    if (!table || !table->header  || !key || !value) return -1;
     
     Node* update[MAX_LEVEL + 1];
     Node* current = table->header;
@@ -165,7 +169,7 @@ int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value) {
 }
 
 int kvs_skiptable_del(kvs_skiptable_t *table, char *key) {
-    if (!table || !key) return -1;
+    if (!table || !table->header  || !key) return -1;
     
     Node* update[MAX_LEVEL + 1];
     Node* current = table->header;
