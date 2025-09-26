@@ -31,6 +31,26 @@ extern distributed_config_t global_dist_config;
 //初始化函数
 int aof_init(const char *filename, int fsync_mode){
 
+    //初始化重写相关字段
+    aof_state.rewrite_in_progress = 0;
+    aof_state.rewrite_child_pid = 0;
+    aof_state.rewrite_buf = NULL;
+    aof_state.rewrite_buf_len = 0;
+    aof_state.rewrite_buf_size = 0;
+
+    //初始化重写互斥锁
+    if(pthread_mutex_init(&aof_state.rewrite_mutex, NULL) != 0){
+        perror("Failed to initialize AOF rewrite mutex");
+        // 清理其他资源
+        pthread_mutex_destroy(&aof_state.mutex);
+        pthread_cond_destroy(&aof_state.cond);
+        fclose(aof_state.fp);
+        free(aof_state.filename);
+        kvs_free(aof_state.temp_filename);
+        kvs_free(aof_state.buf);
+        return -1;
+    }
+
     // 验证同步模式参数
     if (fsync_mode != AOF_FSYNC_NO && 
         fsync_mode != AOF_FSYNC_EVERYSEC && 
@@ -119,6 +139,22 @@ int aof_init(const char *filename, int fsync_mode){
         return -1;
     }
 
+    // 初始化 COW 机制
+    if (pthread_rwlock_init(&aof_state.data_rwlock, NULL) != 0) {
+        perror("Failed to initialize data RW lock");
+        pthread_mutex_destroy(&aof_state.mutex);
+        pthread_cond_destroy(&aof_state.cond);
+        fclose(aof_state.fp);
+        free(aof_state.filename);
+        kvs_free(aof_state.temp_filename);
+        kvs_free(aof_state.buf);
+        return -1;
+    }
+    
+    aof_state.cow_enabled = 1;
+    aof_state.cow_snapshot_ready = 0;
+    aof_state.snapshot_timestamp = 0;
+
     const char *sync_mode_str;
     switch (fsync_mode) {
         case AOF_FSYNC_NO: sync_mode_str = "no"; break;
@@ -137,12 +173,39 @@ int aof_init(const char *filename, int fsync_mode){
 void aof_append(int argc, char **argv){
     if(!aof_state.fp || aof_state.rewrite_in_progress) return;
 
+    //COW保护 如果正在重写 添加COW保护
+    if(aof_state.rewrite_in_progress && aof_state.cow_snapshot_ready){
+        if(pthread_rwlock_rdlock(&aof_state.data_rwlock) == 0){
+            pthread_mutex_lock(&aof_state.mutex);
+
+            int len = snprintf(aof_state.buf + aof_state.buf_len, aof_state.buf_size - aof_state.buf_len, "*%d\r\n", argc);
+            for(int i = 0;i < argc;i++){
+                len += snprintf(aof_state.buf + aof_state.buf_len + len, aof_state.buf_size - aof_state.buf_len - len, 
+                    "$%zu\r\n%s\r\n", strlen(argv[i]), argv[i]);
+            }
+            aof_state.buf_len += len;
+            aof_state.current_size += len;
+
+            pthread_mutex_unlock(&aof_state.mutex);
+            
+            //添加到重写缓冲区
+            aof_rewrite_append_command(argc, argv);
+
+            pthread_rwlock_unlock(&aof_state.data_rwlock);
+        }
+        return; //COW模式下提前返回
+    }
+
+    //非COW模式的正常处理 
     pthread_mutex_lock(&aof_state.mutex);
 
-    int len = snprintf(aof_state.buf + aof_state.buf_len, aof_state.buf_size - aof_state.buf_len, "*%d\r\n", argc);
-    for(int i = 0;i < argc;i++){
-        len += snprintf(aof_state.buf + aof_state.buf_len + len, aof_state.buf_size - aof_state.buf_len - len, 
-            "$%zu\r\n%s\r\n", strlen(argv[i]), argv[i]);
+    int len = snprintf(aof_state.buf + aof_state.buf_len, 
+                      aof_state.buf_size - aof_state.buf_len, 
+                      "*%d\r\n", argc);
+    for (int i = 0; i < argc; i++) {
+        len += snprintf(aof_state.buf + aof_state.buf_len + len, 
+                       aof_state.buf_size - aof_state.buf_len - len, 
+                       "$%zu\r\n%s\r\n", strlen(argv[i]), argv[i]);
     }
     aof_state.buf_len += len;
     aof_state.current_size += len;
@@ -171,7 +234,7 @@ void aof_append(int argc, char **argv){
 
     pthread_mutex_unlock(&aof_state.mutex);
 
-    // 在aof_append函数中添加
+    // 在非COW模式下 如果正在重写 也需要将命令添加到重写缓冲区
     if (aof_state.rewrite_in_progress) {
         aof_rewrite_append_command(argc, argv);
     }
@@ -184,10 +247,6 @@ void aof_append(int argc, char **argv){
         aof_rewrite_background();
     }
     
-    //主节点需要将命令分发给从节点
-    if(global_dist_config.role == ROLE_MASTER){
-        master_sync_command(argv[0], argv[1], (argc > 2) ? argv[2] : NULL);
-    }
 }
 
 //同步函数
@@ -305,6 +364,10 @@ int aof_load(const char *filename){
 void aof_free(void){
     if(aof_state.stop) return;
 
+    // 停止重写（如果正在进行）
+    aof_stop_rewrite();
+
+
     //停止后台线程
     aof_state.stop = 1;
     pthread_cond_signal(&aof_state.cond);
@@ -332,6 +395,16 @@ void aof_free(void){
         kvs_free(aof_state.buf);
         aof_state.buf = NULL;
     }
+
+    // 清理重写缓冲区
+    pthread_mutex_lock(&aof_state.rewrite_mutex);
+    if(aof_state.rewrite_buf){
+        kvs_free(aof_state.rewrite_buf);
+        aof_state.rewrite_buf = NULL;
+    }
+    pthread_mutex_unlock(&aof_state.rewrite_mutex);
+
+    pthread_mutex_destroy(&aof_state.rewrite_mutex);
 
     pthread_mutex_destroy(&aof_state.mutex);
     pthread_cond_destroy(&aof_state.cond);

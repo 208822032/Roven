@@ -185,14 +185,19 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		return resp_generate_error(response, "Invalid arguments");
 	}
 
-	//调用命令处理函数
-	int ret = cmd->handler(&ctx, response);
+
+    int ret = cmd->handler(&ctx, response);
 
 	//命令执行成功后记录写命令
 	if(ret >= 0 && cmd->write_command && get_sync_context() != 2){
 		#if ENABLE_AOF// 添加日志打印命令
 		aof_append(count, tokens);
 		#endif
+
+		//主节点需要将命令分发给从节点
+		if(global_dist_config.role == ROLE_MASTER){
+			master_sync_command(tokens[0], tokens[1], (count > 2) ? tokens[2] : NULL);
+		}
 	}
 
 	return ret;

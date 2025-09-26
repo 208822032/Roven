@@ -33,6 +33,41 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
+//COW快照保护 在fork前调用
+static int acquire_cow_snapshot(void){
+    if(!aof_state.rewrite_in_progress) return -1;
+
+    //获取写锁阻塞新的写操作
+    if(pthread_rwlock_wrlock(&aof_state.data_rwlock) != 0){
+        perror("Failed to acquire data write lock for COW snapshot");
+        return -1;
+    }
+
+    //刷新所有待处理操作
+    aof_fsync(1);
+
+    //设置快照就绪标志
+    aof_state.cow_snapshot_ready = 1;
+    aof_state.snapshot_timestamp = time(NULL);
+
+    printf("COW snapshot acquired at timestamp: %ld\n", 
+           aof_state.snapshot_timestamp);
+    
+    return 0;
+}
+
+//释放COW快照保护 在子进程fork后调用
+static void release_cow_snapshot(void){
+    aof_state.cow_snapshot_ready = 0;
+    pthread_rwlock_unlock(&aof_state.data_rwlock);
+    printf("COW snapshot released\n");
+}
+
+// 检查写操作是否应该进入重写缓冲区
+int should_buffer_rewrite_command(void) {
+    return aof_state.rewrite_in_progress && aof_state.cow_snapshot_ready;
+}
+
 //创建临时重写文件
 static int create_rewrite_tempfile(void){
     char tmp_filename[256];
@@ -72,6 +107,7 @@ static int safe_write(int fd, const char *buf, size_t count){
 }
 
 //写入数据结构到文件 子进程专用
+#if 0
 static int write_data_to_tempfile(int fd){
     //设置子进程信号处理
     struct sigaction sa;
@@ -82,18 +118,24 @@ static int write_data_to_tempfile(int fd){
     sigaction(SIGINT, &sa, NULL);
 
     int total_commands = 0;
+    time_t start_time = time(NULL);
+
+    printf("Child process: Starting data snapshot write...\n");
 
     #if ENABLE_ARRAY
+    // 创建数组的本地副本以避免 COW 失效
+    kvs_array_t array_snapshot;
+    memcpy(&array_snapshot, &global_array, sizeof(kvs_array_t));
     //使用内存映射来安全访问数组
-    for(int i = 0;i < global_array.total; i++){
+    for(int i = 0;i < array_snapshot.total; i++){
         //检查是否收到终止信号
         if(aof_state.stop) break;
 
-        if(global_array.table[i].key && global_array.table[i].value){
+        if(array_snapshot.table[i].key && array_snapshot.table[i].value){
             char cmd[2048];
             int len = snprintf(cmd, sizeof(cmd), "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                            strlen(global_array.table[i].key), global_array.table[i].key,
-                            strlen(global_array.table[i].value), global_array.table[i].value);
+                            strlen(array_snapshot.table[i].key), array_snapshot.table[i].key,
+                            strlen(array_snapshot.table[i].value), array_snapshot.table[i].value);
             if (safe_write(fd, cmd, len) == -1) {
                 perror("Failed to write array data to temp file");
                 return -1;
@@ -175,6 +217,235 @@ static int write_data_to_tempfile(int fd){
     printf("AOF rewrite: wrote %d commands from data structures\n", total_commands);
     return total_commands;
 }
+#else
+static int write_data_to_tempfile(int fd) {
+    // 设置子进程信号处理
+    struct sigaction sa;
+    sa.sa_handler = child_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+
+    int total_commands = 0;
+    time_t start_time = time(NULL);
+
+    // 检查文件描述符有效性
+    if (fd < 0) {
+        fprintf(stderr, "Invalid file descriptor in child process\n");
+        return -1;
+    }
+
+#if ENABLE_ARRAY
+    // 创建数组的安全快照
+    
+    // 使用原子方式读取数组大小，避免在遍历过程中数组被修改
+    int array_size = __sync_fetch_and_add(&global_array.total, 0); // 原子读取
+    
+    // 分配临时空间存储键值对指针，避免在写入过程中数据结构变化
+    struct array_item_snapshot {
+        char *key;
+        char *value;
+    } *array_snapshot = NULL;
+    
+    int valid_count = 0;
+    
+    // 第一步：收集所有有效的键值对指针
+    if (array_size > 0) {
+        array_snapshot = kvs_malloc(array_size * sizeof(struct array_item_snapshot));
+        if (array_snapshot) {
+            for (int i = 0; i < array_size; i++) {
+                if (global_array.table[i].key && global_array.table[i].value) {
+                    // 原子读取指针（避免编译器重排序）
+                    char *key_ptr = __atomic_load_n(&global_array.table[i].key, __ATOMIC_ACQUIRE);
+                    char *value_ptr = __atomic_load_n(&global_array.table[i].value, __ATOMIC_ACQUIRE);
+                    
+                    if (key_ptr && value_ptr) {
+                        array_snapshot[valid_count].key = key_ptr;
+                        array_snapshot[valid_count].value = value_ptr;
+                        valid_count++;
+                    }
+                }
+                
+                // 超时检查
+                if (time(NULL) - start_time > 290) {
+                    fprintf(stderr, "Child process: Rewrite timeout approaching during array snapshot\n");
+                    break;
+                }
+            }
+        }
+    }
+    
+    // 第二步：写入收集到的数据
+    for (int i = 0; i < valid_count; i++) {
+        if (time(NULL) - start_time > 290) {
+            fprintf(stderr, "Child process: Rewrite timeout approaching during array write\n");
+            break;
+        }
+        
+        size_t key_len = strlen(array_snapshot[i].key);
+        size_t value_len = strlen(array_snapshot[i].value);
+        
+        char cmd[2048];
+        int len = snprintf(cmd, sizeof(cmd), "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                          key_len, array_snapshot[i].key,
+                          value_len, array_snapshot[i].value);
+        
+        if (safe_write(fd, cmd, len) == -1) {
+            perror("Failed to write array data to temp file");
+            if (array_snapshot) kvs_free(array_snapshot);
+            return -1;
+        }
+        total_commands++;
+    }
+    
+    if (array_snapshot) kvs_free(array_snapshot);
+    //printf("Child process: Wrote %d array commands\n", valid_count);
+#endif
+
+#if ENABLE_RBTREE
+    // 红黑树快照处理（使用非递归遍历避免栈溢出）
+    //printf("Child process: Processing rbtree snapshot...\n");
+    
+    if (global_rbtree.root != global_rbtree.nil) {
+        // 使用栈进行非递归中序遍历
+        rbtree_node *stack[1024];
+        int stack_ptr = 0;
+        rbtree_node *current = global_rbtree.root;
+        int tree_commands = 0;
+
+        while (current != global_rbtree.nil || stack_ptr > 0) {
+            // 超时检查
+            if (time(NULL) - start_time > 290) {
+                fprintf(stderr, "Child process: Rewrite timeout approaching during rbtree processing\n");
+                break;
+            }
+            
+            while (current != global_rbtree.nil) {
+                if (stack_ptr >= 1024) {
+                    fprintf(stderr, "Stack overflow in rbtree traversal\n");
+                    break;
+                }
+                stack[stack_ptr++] = current;
+                current = current->left;
+            }
+            
+            if (stack_ptr > 0) {
+                current = stack[--stack_ptr];
+                
+                // 原子读取键值
+                char *key_ptr = __atomic_load_n(&current->key, __ATOMIC_ACQUIRE);
+                char *value_ptr = __atomic_load_n(&current->value, __ATOMIC_ACQUIRE);
+                
+                if (key_ptr && value_ptr) {
+                    char cmd[2048];
+                    int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nRSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                                      strlen(key_ptr), key_ptr,
+                                      strlen(value_ptr), value_ptr);
+                    
+                    if (safe_write(fd, cmd, len) == -1) {
+                        perror("Failed to write rbtree data to temp file");
+                        return -1;
+                    }
+                    tree_commands++;
+                    total_commands++;
+                }
+                
+                current = current->right;
+            }
+        }
+        //printf("Child process: Wrote %d rbtree commands\n", tree_commands);
+    }
+#endif
+
+#if ENABLE_HASH
+    //printf("Child process: Processing hash table snapshot...\n");
+    int hash_commands = 0;
+    
+    for (int i = 0; i < global_hash.max_slots; i++) {
+        // 超时检查
+        if (time(NULL) - start_time > 290) {
+            fprintf(stderr, "Child process: Rewrite timeout approaching during hash processing\n");
+            break;
+        }
+        
+        // 原子读取链表头指针
+        hashnode_t *node = __atomic_load_n(&global_hash.nodes[i], __ATOMIC_ACQUIRE);
+        
+        while (node) {
+            // 原子读取当前节点的键值
+            char *key_ptr = __atomic_load_n(&node->key, __ATOMIC_ACQUIRE);
+            char *value_ptr = __atomic_load_n(&node->value, __ATOMIC_ACQUIRE);
+            
+            if (key_ptr && value_ptr) {
+                char cmd[2048];
+                int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nHSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                                  strlen(key_ptr), key_ptr,
+                                  strlen(value_ptr), value_ptr);
+                
+                if (safe_write(fd, cmd, len) == -1) {
+                    perror("Failed to write hash data to temp file");
+                    return -1;
+                }
+                hash_commands++;
+                total_commands++;
+            }
+            
+            // 原子读取下一个节点
+            node = __atomic_load_n(&node->next, __ATOMIC_ACQUIRE);
+        }
+    }
+    //printf("Child process: Wrote %d hash commands\n", hash_commands);
+#endif
+
+#if ENABLE_SKIPTABLE
+    //printf("Child process: Processing skiplist snapshot...\n");
+    int skiplist_commands = 0;
+    
+    if (global_skiptable.header) {
+        // 原子读取头节点的第一层指针
+        Node *current = __atomic_load_n(&global_skiptable.header->forward[0], __ATOMIC_ACQUIRE);
+        
+        while (current) {
+            // 超时检查
+            if (time(NULL) - start_time > 290) {
+                fprintf(stderr, "Child process: Rewrite timeout approaching during skiplist processing\n");
+                break;
+            }
+            
+            // 直接访问节点的键值（数组，不需要原子操作）
+            if (current->key[0] != '\0' && current->value[0] != '\0') {
+                char cmd[2048];
+                int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                                  strlen(current->key), current->key,
+                                  strlen(current->value), current->value);
+                
+                if (safe_write(fd, cmd, len) == -1) {
+                    perror("Failed to write skiplist data to temp file");
+                    return -1;
+                }
+                skiplist_commands++;
+                total_commands++;
+            }
+            
+            // 原子读取下一个节点
+            current = __atomic_load_n(&current->forward[0], __ATOMIC_ACQUIRE);
+        }
+    }
+    //printf("Child process: Wrote %d skiplist commands\n", skiplist_commands);
+#endif
+
+    //printf("Child process: Completed writing %d total commands from data snapshot\n", total_commands);
+    
+    // 最终同步到磁盘
+    // if (fsync(fd) == -1) {
+    //     perror("Final fsync failed in child process");
+    //     return -1;
+    // }
+    
+    return total_commands;
+}
+#endif
 
 //等待子进程完成 包含超时机制
 static int wait_for_child_with_timeout(pid_t pid, int timeout_secondes){
@@ -256,6 +527,9 @@ static int atomic_replace_file(const char *temp_file, const char *final_file){
 
 //重写缓冲区管理
 static int rewrite_buffer_append(int argc, char **argv){
+    if(!aof_state.rewrite_in_progress || !aof_state.rewrite_buf) {
+        return -1;  // 重写未进行或缓冲区未初始化
+    }
     pthread_mutex_lock(&aof_state.rewrite_mutex);
 
     //计算需要的空间
@@ -324,8 +598,24 @@ void aof_rewrite_background(void){
     aof_state.rewrite_buf_len = 0;
     pthread_mutex_unlock(&aof_state.rewrite_mutex);
 
+    // 设置重写进行中标志
+    aof_state.rewrite_in_progress = 1;
+
+    // 获取 COW 快照保护
+    if (acquire_cow_snapshot() != 0) {
+        aof_state.rewrite_in_progress = 0;
+        fprintf(stderr, "Failed to acquire COW snapshot\n");
+        return;
+    }
+
     pid_t childpid = fork();
     if(childpid == 0){
+        // 子进程 - 拥有父进程数据的 COW 副本
+        printf("AOF rewrite child process started (PID: %d)\n", getpid());
+
+        // 解除 COW 保护（子进程有自己的锁副本）
+        pthread_rwlock_unlock(&aof_state.data_rwlock);
+
         //子进程
         int fd = create_rewrite_tempfile();
         if (fd == -1) {
@@ -346,8 +636,12 @@ void aof_rewrite_background(void){
         }
 
         close(fd);
+        printf("AOF rewrite child process completed\n");
         _exit(0);
     }else if(childpid > 0){
+        // 父进程 - 释放 COW 保护，允许继续处理写操作
+        release_cow_snapshot();
+
         //父进程
         aof_state.rewrite_child_pid = childpid;
         aof_state.rewrite_in_progress = 1;
@@ -408,6 +702,7 @@ void aof_rewrite_background(void){
 
         aof_state.rewrite_in_progress = 0;
         aof_state.rewrite_child_pid = 0;
+        aof_state.cow_snapshot_ready = 0; // 重置 COW 快照标志
 
     }else{
         //错误

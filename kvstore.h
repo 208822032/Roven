@@ -531,10 +531,10 @@ AOF重写功能缺失关键的安全机制
 
 //AOF
 #define ENABLE_AOF 1
-#define AOF_BUFFER_SIZE (1024  * 16)  //16MB缓冲区
-#define AOF_REWRITE_MIN_SIZE (1024  * 64)  //64MB最小重写大小
+#define AOF_BUFFER_SIZE (1024 * 1024 * 16)  //16MB缓冲区
+#define AOF_REWRITE_MIN_SIZE (1024 * 1024 * 64)  //64MB最小重写大小
 #define AOF_REWRITE_PERCENTAGE 50 //增长100%时触发重写
-#define AOF_REWRITE_MIN_GROWTH (1024  * 10) //10MB最小增长量
+#define AOF_REWRITE_MIN_GROWTH (1024 * 1024 * 10) //10MB最小增长量
 
 //同步模式
 #define AOF_FSYNC_NO  0   //不主动同步
@@ -567,6 +567,12 @@ typedef struct {
 	pthread_mutex_t rewrite_mutex; // 重写缓冲区互斥锁
 	int aof_fd;			   // AOF文件描述符用于同步
 
+	//COW相关字段
+	int cow_enabled;      // 是否启用COW
+	pthread_rwlock_t data_rwlock; // 数据读写锁
+	volatile int cow_snapshot_ready; // COW快照准备就绪标志
+	time_t snapshot_timestamp; // 快照时间戳
+
 } aof_state_t;
 
 int aof_init(const char *filename, int fsync_mode);
@@ -583,5 +589,7 @@ int aof_rewrite_buffer_write(int fd);
 // 在AOF相关声明部分添加
 void aof_rewrite_append_command(int argc, char **argv);
 void aof_stop_rewrite(void);
+
+int should_buffer_rewrite_command(void);
 
 extern aof_state_t aof_state;
