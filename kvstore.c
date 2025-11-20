@@ -1,6 +1,8 @@
 #include "kvstore.h"
-#include "distributed.h"
-#include "resp_protocol.h"
+#include "include/distributed.h"
+#include "include/resp_protocol.h"
+#include "include/kvs_memory.h"
+#include "include/sync_mode.h"
 
 
 int g_shutdown_flag = 0;
@@ -21,7 +23,7 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
-mem_manager_t g_mem_manager;
+
 
 extern distributed_config_t global_dist_config;
 
@@ -196,8 +198,14 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 
 		//主节点需要将命令分发给从节点
 		if(global_dist_config.role == ROLE_MASTER){
-			master_sync_command(tokens[0], tokens[1], (count > 2) ? tokens[2] : NULL);
-		}
+#if (SYNC_MODE == SYNC_MODE_TCP)
+            // TCP 模式: 直接同步
+            master_sync_command(tokens[0], tokens[1], (count > 2) ? tokens[2] : NULL);
+#elif (SYNC_MODE == SYNC_MODE_EBPF)
+            // eBPF 模式: 发送事件到 ringbuf
+            ebpf_emit_sync_event(tokens, count);
+#endif
+        }
 	}
 
 	return ret;
@@ -256,6 +264,12 @@ void dest_kvengine(void) {
 	kvs_skiptable_destroy(&global_skiptable);
 #endif
 
+#if (SYNC_MODE == SYNC_MODE_EBPF)
+    if (global_dist_config.role == ROLE_MASTER) {
+        ebpf_sync_cleanup();
+    }
+#endif
+
 	mem_destroy();  // 清理内存管理组件
 
 	#if ENABLE_AOF
@@ -272,13 +286,17 @@ void dest_kvengine(void) {
 void handle_signal(int sig) {
     printf("\nReceived signal %d, saving data before shutdown...\n", sig);
 	
+	#if ENABLE_AOF
 	aof_fsync(1);
+	#endif
 
 	#if ENABLE_RDB
 		kvs_rdb_save("kvstore.rdb");
 	#else
 		kvs_save_all("kvstore.dat");
 	#endif
+
+	dest_kvengine();
 
 	
     exit(0);
@@ -398,18 +416,16 @@ int main(int argc, char *argv[]) {
     // 保存数据并退出
     printf("Shutdown requested, saving data...\n");
 
+	#if ENABLE_AOF
 	aof_fsync(1);
-
+	#endif
 
 #if ENABLE_RDB
 	kvs_rdb_save("kvstore.rdb");
 #else
 	kvs_save_all("kvstore.dat");
 #endif
-	//差分存储 第一次 第二次
-	//保存cmd log 直接读命令 再次执行  
-		//rdb 文件快照
-		//aof 差分存储
+	printf("Data saved. Exiting.\n");
     dest_kvengine();
 
     return 0;    

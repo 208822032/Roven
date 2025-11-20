@@ -1,75 +1,63 @@
-
 CC = gcc
+SYNC_MODE ?= 0
 
-# 正常编译标志
-NORMAL_CFLAGS = -I ./NtyCo/core/ #-O2 
-NORMAL_LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl
+BASE_SRCS = kvstore.c ntyco.c proactor.c reactor.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kvs_mempool.c distributed.c resp_protocol.c kvs_rdb.c kvs_operation.c kvs_aof.c kvs_aof_rewrite.c kvs_globals.c
 
-# 调试编译标志
-DEBUG_CFLAGS = -g -O0 -I ./NtyCo/core/
-DEBUG_LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl
+ifeq ($(SYNC_MODE),1)
+SRCS = $(BASE_SRCS) ebpf_sync.c
+BPF_SRC = ebpf_sync.bpf.c
+BPF_OBJ = ebpf_sync.bpf.o
+EXTRA_LIBS = -lbpf -lelf -lz
+else
+SRCS = $(BASE_SRCS)
+BPF_OBJ =
+EXTRA_LIBS =
+endif
 
+CFLAGS = -I ./NtyCo/core/ -I ./include -DSYNC_MODE=$(SYNC_MODE) -g -no-pie
+LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl $(EXTRA_LIBS)
 
-SRCS = kvstore.c ntyco.c proactor.c reactor.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c  kvs_mempool.c distributed.c resp_protocol.c kvs_rdb.c kvs_operation.c kvs_aof.c kvs_aof_rewrite.c
-TESTCASE_SRCS = testcase.c
-
-# 默认目标名称
 TARGET = kvstore
-DEBUG_TARGET = kvstore_debug
-
-SUBDIR = ./NtyCo/
-
-# 测试程序名称
-TESTCASE = testcase
-DEBUG_TESTCASE = testcase_debug
-
 OBJS = $(SRCS:.c=.o)
-DEBUG_OBJS = $(SRCS:.c=.debug.o)
 
-# 默认编译目标 - 正常编译
-all: $(SUBDIR) $(TARGET) $(TESTCASE)
+#测试
+TEST_TARGET = testbpf
+TEST_SRCS = testbpf.c ebpf_sync.c distributed.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kvs_mempool.c kvs_globals.c resp_protocol.c kvs_operation.c
+TEST_OBJS = $(TEST_SRCS:.c=.o)
 
-# 调试编译目标
-debug: $(SUBDIR) $(DEBUG_TARGET) $(DEBUG_TESTCASE)
+all: $(TARGET)
 
-$(SUBDIR): ECHO
-	make -C $@
+$(TARGET): $(OBJS) $(BPF_OBJ)
+	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
-ECHO:
-	@echo $(SUBDIR)
+$(TEST_TARGET): $(TEST_OBJS) $(BPF_OBJ)
+	$(CC) -o $@ $(TEST_OBJS) $(LDFLAGS)
 
-# 正常编译目标
-$(TARGET): $(OBJS) 
-	$(CC) -o $@ $^ $(NORMAL_LDFLAGS)
-
-$(TESTCASE): $(TESTCASE_SRCS)
-	$(CC) -o $@ $^
-
-# 调试编译目标
-$(DEBUG_TARGET): $(DEBUG_OBJS) 
-	$(CC) -o $@ $^ $(DEBUG_LDFLAGS)
-
-$(DEBUG_TESTCASE): $(TESTCASE_SRCS)
-	$(CC) $(DEBUG_CFLAGS) -o $@ $^ $(DEBUG_LDFLAGS)
-
-# 正常编译对象文件规则
 %.o: %.c
-	$(CC) $(NORMAL_CFLAGS) -c $^ -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# 调试编译对象文件规则
-%.debug.o: %.c
-	$(CC) $(DEBUG_CFLAGS) -c $^ -o $@
+# 自动架构宏
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+BPF_ARCH_MACRO = __TARGET_ARCH_x86
+else ifeq ($(UNAME_M),aarch64)
+BPF_ARCH_MACRO = __TARGET_ARCH_arm64
+else
+BPF_ARCH_MACRO = __TARGET_ARCH_x86
+endif
 
-# 清理所有编译文件
-clean: 
-	rm -rf $(OBJS) $(DEBUG_OBJS) $(TARGET) $(DEBUG_TARGET) $(TESTCASE) $(DEBUG_TESTCASE)
+$(BPF_OBJ): $(BPF_SRC) vmlinux.h
+	clang -O2 -g -target bpf -D$(BPF_ARCH_MACRO) \
+        -I/usr/include -I/usr/include/bpf -I. \
+        -c $< -o $@
 
-# 只清理调试编译文件
-clean-debug:
-	rm -rf $(DEBUG_OBJS) $(DEBUG_TARGET)
+vmlinux.h:
+	@if [ ! -f vmlinux.h ]; then \
+        echo "Generate vmlinux.h"; \
+        bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h; \
+	fi
 
-#调试目标
-#debug: $(TARGET)
-	#gdb ./$(TARGET)
+clean:
+	rm -f $(OBJS) $(TARGET) $(BPF_OBJ) $(BPF_OBJ) $(TEST_OBJS) $(TEST_TARGET)
 
-
+.PHONY: all clean

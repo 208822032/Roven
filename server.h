@@ -54,6 +54,9 @@ struct conn {
 	char *payload;
 	char mask[4];
 #endif
+
+	//是否做过首次对齐检查
+	int first_packet_checked;
 };
 
 #if ENABLE_HTTP

@@ -5,8 +5,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <time.h>
-#include "kvstore.h"
-#include "resp_protocol.h"
+#include "include/kvs_api.h"
+#include "include/resp_protocol.h"
 
 /*
 gcc -o kvs_aof_test kvs_aof_test.c kvs_aof.c kvs_aof_rewrite.c kvs_operation.c kvstore.c kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c resp_protocol.c kvs_mempool.c distributed.c  -I. -lpthread -DENABLE_ARRAY=1 -DENABLE_RBTREE=1 -DENABLE_HASH=1 -DENABLE_SKIPTABLE=1 -DENABLE_AOF=1

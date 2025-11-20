@@ -1,5 +1,8 @@
 
-#include "kvstore.h"  // 包含内存池函数声明
+#include "include/kvs_api.h"  // 聚合公共头（含内存池声明）
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 
 kvs_skiptable_t global_skiptable;

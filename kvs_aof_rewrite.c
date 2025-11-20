@@ -1,12 +1,15 @@
 
 
 //处理AOF重写功能
-#include "kvstore.h"
+#include "include/kvs_api.h"
+#include "include/kvs_aof_internal.h"
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <time.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 /*
@@ -37,6 +40,13 @@ extern kvs_skiptable_t global_skiptable;
 static int acquire_cow_snapshot(void){
     if(!aof_state.rewrite_in_progress) return -1;
 
+    // Proactor 模式下不使用 COW 机制，直接返回成功
+    #if (NETWORK_SELECT == NETWORK_PROACTOR)
+    aof_state.cow_snapshot_ready = 0;
+    printf("Proactor mode: COW snapshot disabled\n");
+    return 0;
+    #endif
+
     //获取写锁阻塞新的写操作
     if(pthread_rwlock_wrlock(&aof_state.data_rwlock) != 0){
         perror("Failed to acquire data write lock for COW snapshot");
@@ -58,6 +68,11 @@ static int acquire_cow_snapshot(void){
 
 //释放COW快照保护 在子进程fork后调用
 static void release_cow_snapshot(void){
+    #if (NETWORK_SELECT == NETWORK_PROACTOR)
+    aof_state.cow_snapshot_ready = 0;
+    return;
+    #endif
+    
     aof_state.cow_snapshot_ready = 0;
     pthread_rwlock_unlock(&aof_state.data_rwlock);
     printf("COW snapshot released\n");
@@ -80,8 +95,12 @@ static int create_rewrite_tempfile(void){
 
     //更新临时文件名
     pthread_mutex_lock(&aof_state.mutex);
-    kvs_free(aof_state.temp_filename);
-    aof_state.temp_filename = strdup(tmp_filename);
+    // 不再混用 strdup/free，统一内存管理
+    if(aof_state.temp_filename){
+        kvs_free(aof_state.temp_filename);
+        aof_state.temp_filename = NULL;
+    }
+    aof_state.temp_filename = kvs_strdup(tmp_filename);
     pthread_mutex_unlock(&aof_state.mutex);
 
     return fd;
@@ -577,6 +596,64 @@ void aof_rewrite_append_command(int argc, char **argv){
     }
 }
 
+//检测是否使用 proactor 模式
+static int is_proactor_mode(void) {
+#if (NETWORK_SELECT == NETWORK_PROACTOR)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+//线程方式的 AOF 重写（用于 Proactor 模式）
+static void* aof_rewrite_thread(void *arg) {
+    printf("AOF rewrite thread started (TID: %ld)\n", (long)pthread_self());
+    
+    // 创建临时文件
+    int fd = create_rewrite_tempfile();
+    if (fd == -1) {
+        aof_state.rewrite_in_progress = 0;
+        pthread_exit(NULL);
+    }
+
+#if (NETWORK_SELECT == NETWORK_PROACTOR)
+    // 读锁保护遍历，避免并发释放导致段错误
+    if (pthread_rwlock_rdlock(&aof_state.data_rwlock) != 0) {
+        perror("rewrite thread: rdlock failed");
+        close(fd);
+        aof_state.rewrite_in_progress = 0;
+        pthread_exit(NULL);
+    }
+#endif
+
+    // 写入数据到临时文件
+    if (write_data_to_tempfile(fd) == -1) {
+#if (NETWORK_SELECT == NETWORK_PROACTOR)
+        pthread_rwlock_unlock(&aof_state.data_rwlock);
+#endif
+        close(fd);
+        aof_state.rewrite_in_progress = 0;
+        pthread_exit(NULL);
+    }
+
+#if (NETWORK_SELECT == NETWORK_PROACTOR)
+    // 遍历完成后释放读锁
+    pthread_rwlock_unlock(&aof_state.data_rwlock);
+#endif   
+
+    // 确保数据刷到磁盘
+    if (fsync(fd) == -1) {
+        perror("fsync failed in rewrite thread");
+        close(fd);
+        aof_state.rewrite_in_progress = 0;
+        pthread_exit(NULL);
+    }
+
+    close(fd);
+    printf("AOF rewrite thread completed\n");
+    pthread_exit(NULL);
+}
+
 //后台重写函数
 void aof_rewrite_background(void){
     if (aof_state.rewrite_in_progress) {
@@ -601,6 +678,67 @@ void aof_rewrite_background(void){
     // 设置重写进行中标志
     aof_state.rewrite_in_progress = 1;
 
+    // Proactor 模式使用线程而不是 fork，避免 io_uring 冲突
+    if (is_proactor_mode()) {
+        printf("Using thread-based AOF rewrite for Proactor mode\n");
+
+        // 允许写命令进入重写缓冲区
+        aof_state.cow_snapshot_ready = 1;
+        
+        pthread_t rewrite_tid;
+        if (pthread_create(&rewrite_tid, NULL, aof_rewrite_thread, NULL) != 0) {
+            perror("Failed to create rewrite thread");
+            aof_state.rewrite_in_progress = 0;
+            return;
+        }
+        
+        // 等待线程完成
+        void *thread_result;
+        if (pthread_join(rewrite_tid, &thread_result) != 0) {
+            perror("Failed to join rewrite thread");
+            aof_state.rewrite_in_progress = 0;
+            return;
+        }
+        
+        // 追加重写期间的新命令
+        int temp_fd = open(aof_state.temp_filename, O_WRONLY | O_APPEND);
+        if (temp_fd == -1) {
+            perror("Failed to open temp file for appending");
+            aof_state.rewrite_in_progress = 0;
+            return;
+        }
+
+        if (finish_rewrite(temp_fd) == -1) {
+            close(temp_fd);
+            aof_state.rewrite_in_progress = 0;
+            return;
+        }
+
+        if (fsync(temp_fd) == -1) {
+            perror("Failed to fsync temp file");
+            close(temp_fd);
+            aof_state.rewrite_in_progress = 0;
+            return;
+        }
+
+        close(temp_fd);
+
+        // 原子替换文件
+        if (atomic_replace_file(aof_state.temp_filename, aof_state.filename) == 0) {
+            pthread_mutex_lock(&aof_state.mutex);
+            aof_state.rewrite_base_size = aof_state.current_size;
+            pthread_mutex_unlock(&aof_state.mutex);
+            printf("AOF rewrite completed successfully (thread mode)\n");
+        } else {
+            fprintf(stderr, "AOF rewrite failed during file replacement\n");
+        }
+
+        aof_state.cow_snapshot_ready = 0;
+        aof_state.rewrite_in_progress = 0;
+        return;
+    }
+
+    // Reactor/NtyCo 模式使用 fork + COW 机制
     // 获取 COW 快照保护
     if (acquire_cow_snapshot() != 0) {
         aof_state.rewrite_in_progress = 0;

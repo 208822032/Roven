@@ -1,10 +1,12 @@
-#include "kvstore.h"
+#include "include/kvs_api.h"
 #include "nty_coroutine.h"
 
 #include <arpa/inet.h>
-#include "resp_protocol.h"
+#include "include/resp_protocol.h"
 #include <fcntl.h>
 #include <arpa/inet.h>
+
+
 
 static nty_coroutine *co = NULL;
 
@@ -35,6 +37,8 @@ typedef struct {
 	large_buffer_t recv_buf; //接收缓冲区
 	large_buffer_t send_buf; //发送缓冲区
 	int processing;          //是否正在处理中
+
+    int first_packet_checked;//是否做过对齐检查
 } conn_context_t;
 
 // 初始化大缓冲区
@@ -76,19 +80,6 @@ void n_free_large_buffer(large_buffer_t *buf) {
 int n_init_conn_context(conn_context_t *ctx) {
     memset(ctx, 0, sizeof(conn_context_t));
     resp_parser_init(&ctx->parser);
-    
-    // 初始化接收缓冲区（初始16KB）
-    // ctx->recv_capacity = 16 * 1024;
-    // ctx->recv_buf = kvs_malloc(ctx->recv_capacity);
-    // if (!ctx->recv_buf) return -1;
-    
-    // // 初始化发送缓冲区（初始16KB）
-    // ctx->send_capacity = 16 * 1024;
-    // ctx->send_buf = kvs_malloc(ctx->send_capacity);
-    // if (!ctx->send_buf) {
-    //     kvs_free(ctx->recv_buf);
-    //     return -1;
-    // }
 
 	// 初始化接收缓冲区（初始1MB）
     if (n_init_large_buffer(&ctx->recv_buf, 1024 * 1024) < 0) return -1;
@@ -98,6 +89,9 @@ int n_init_conn_context(conn_context_t *ctx) {
         n_free_large_buffer(&ctx->recv_buf);
         return -1;
     }
+
+    ctx->first_packet_checked = 0;   // 新增初始化
+    ctx->processing = 0;
     
     return 0;
 }
@@ -116,6 +110,7 @@ void n_free_conn_context(conn_context_t *ctx) {
     memset(ctx, 0, sizeof(conn_context_t));
 }
 
+#if 0
 // 处理接收到的数据
 int ntyco_process_received_data(int fd, conn_context_t *ctx) {
 	if (ctx->processing) {
@@ -196,197 +191,314 @@ int ntyco_process_received_data(int fd, conn_context_t *ctx) {
 	ctx->processing = 0;
     return command_count;
 }
+#else
+int ntyco_process_received_data(int fd, conn_context_t *ctx) {
+    if (!ctx) return 0;
 
-void server_reader(void *arg) {
-	int fd = *(int *)arg;
-	//int ret = 0;
-	conn_context_t ctx;
+    if (ctx->processing) {
+        return 0; // 已经在处理中，避免重入
+    }
+    ctx->processing = 1;
 
-	//char buffer[4096] = {0};//改变缓冲区大小
-	//初始化连接上下文
-	if(n_init_conn_context(&ctx) < 0){
-		close(fd);
-		return;
-	}
+    resp_parser_t *parser = &ctx->parser;
 
-	// 设置TCP优化选项
-    int yes = 1;
-    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) < 0) {
-        perror("setsockopt TCP_NODELAY");
-    }
-    
-    // 设置TCP缓冲区大小（发送和接收）
-    int buf_size = 1024 * 1024; // 1MB
-    if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size)) < 0) {
-        perror("setsockopt SO_SNDBUF");
-    }
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size)) < 0) {
-        perror("setsockopt SO_RCVBUF");
-    }
-    
-    // 获取实际的缓冲区大小
-    socklen_t len = sizeof(buf_size);
-    if (getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, &len) == 0) {
-        //printf("Socket %d send buffer size: %d\n", fd, buf_size);
-    }
-    if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, &len) == 0) {
-        //printf("Socket %d recv buffer size: %d\n", fd, buf_size);
-    }
-    
-    // 设置接收超时（5秒）
-    struct timeval tv;
-    tv.tv_sec = 5;
-    tv.tv_usec = 0;
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv)) < 0) {
-        perror("setsockopt SO_RCVTIMEO");
+    // 如果上次刚好停在 COMPLETE 状态，说明上一条命令已处理完，重置状态
+    if (parser->state == RESP_PARSE_COMPLETE) {
+        resp_parser_reset(parser);
     }
 
-	while (1) {
+    // 只在第一次做简单对齐检查：保证命令从 '*' 开始
+    if (!ctx->first_packet_checked &&
+        ctx->recv_buf.size > 0 &&
+        parser->state == RESP_PARSE_INIT) {
 
-		// 检查关闭标志
-        if (g_shutdown_flag) {
+        size_t i = 0;
+        while (i < ctx->recv_buf.size &&
+               (ctx->recv_buf.data[i] == '\r' ||
+                ctx->recv_buf.data[i] == '\n' ||
+                ctx->recv_buf.data[i] == ' '  ||
+                ctx->recv_buf.data[i] == '\t')) {
+            i++;
+        }
+
+        if (i >= ctx->recv_buf.size) {
+            // 全是空白，等更多数据
+            ctx->processing = 0;
+            return 0;
+        }
+
+        if (ctx->recv_buf.data[i] != '*') {
+            printf("ntyco protocol alignment error: first non-space char is '%c' (0x%02X), fd=%d\n",
+                   ctx->recv_buf.data[i],
+                   (unsigned char)ctx->recv_buf.data[i],
+                   fd);
+            ctx->processing = 0;
+            return -1;
+        }
+
+        if (i > 0) {
+            memmove(ctx->recv_buf.data,
+                    ctx->recv_buf.data + i,
+                    ctx->recv_buf.size - i);
+            ctx->recv_buf.size -= i;
+        }
+        ctx->first_packet_checked = 1;
+    }
+
+    size_t parsed_total  = 0;  // 本轮共消费的字节数
+    int    command_count = 0;  // 本轮解析出的命令数
+
+    while (parsed_total < ctx->recv_buf.size) {
+        size_t      cur_len = ctx->recv_buf.size - parsed_total;
+        const char *cur_buf = ctx->recv_buf.data + parsed_total;
+
+        // 调试日志（可按需关闭）
+        static long long g_call_id = 0;
+        g_call_id++;
+        printf("ntyco fd %d: parser call #%lld, start_offset=%zu, cur_len=%zu, first bytes: ",
+               fd, g_call_id, parsed_total, cur_len);
+        int dump = cur_len < 64 ? cur_len : 64;
+        for (int i = 0; i < dump; ++i) {
+            unsigned char c = (unsigned char)cur_buf[i];
+            if (c >= 32 && c <= 126) putchar(c);
+            else if (c == '\r') printf("\\r");
+            else if (c == '\n') printf("\\n");
+            else printf("\\x%02X", c);
+        }
+        putchar('\n');
+
+        // 1. 用无状态 reader 探测：当前 offset 是否有完整命令
+        int cmd_len = resp_peek_command(ctx->recv_buf.data,
+                                        ctx->recv_buf.size,
+                                        parsed_total);
+        if (cmd_len < 0) {
+            printf("ntyco resp_peek_command error for fd %d\n", fd);
+            ctx->processing = 0;
+            return -1;
+        } else if (cmd_len == 0) {
+            // 半包：当前 offset 这条命令还不完整，等待更多数据
             break;
         }
 
-		//检查是否需要扩展接收缓冲区
-		// if(ctx.recv_size + 4096 > ctx.recv_capacity){
-		// 	if(expand_buffer(&ctx.recv_buf, &ctx.recv_capacity, ctx.recv_size + 4096) < 0) break;
-		// }
-		if (ctx.recv_buf.size + 4096 > ctx.recv_buf.capacity) {
-            if (n_expand_large_buffer(&ctx.recv_buf, ctx.recv_buf.size + 4096) < 0) {
-                break;
+        // 2. 确认 [parsed_total, parsed_total+cmd_len) 是一整条命令
+        if (parser->state != RESP_PARSE_INIT &&
+            parser->state != RESP_PARSE_COMPLETE) {
+            // 理论上不该发生，保险起见 reset 一下
+            resp_parser_reset(parser);
+        }
+
+        int parsed = resp_parser(parser,
+                                 ctx->recv_buf.data + parsed_total,
+                                 (size_t)cmd_len);
+        if (parsed < 0) {
+            printf("ntyco protocol parse error for fd %d\n", fd);
+            printf("ntyco protocol parse error for fd %d, state=%d\n",
+                   fd, parser->state);
+            ctx->processing = 0;
+            return -1;
+        }
+
+        if (parsed != cmd_len || parser->state != RESP_PARSE_COMPLETE) {
+            printf("ntyco resp_parser mismatch: cmd_len=%d, parsed=%d, state=%d\n",
+                   cmd_len, parsed, parser->state);
+            ctx->processing = 0;
+            return -1;
+        }
+
+        // 3. 一条完整命令解析成功，调用 kvs_handler 生成响应
+        char response_buf[KVS_MAX_RESPONSE_SIZE];
+        int  resp_len = kvs_handler(parser->tokens,
+                                    parser->arg_index,
+                                    response_buf);
+
+        // 4. 把响应 append 到 send_buf
+        if (ctx->send_buf.size + (size_t)resp_len > ctx->send_buf.capacity) {
+            size_t needed       = ctx->send_buf.size + (size_t)resp_len;
+            size_t new_capacity = ctx->send_buf.capacity;
+            while (new_capacity < needed) {
+                new_capacity *= 2;
+            }
+            if (new_capacity > 512 * 1024 * 1024) {
+                printf("ntyco send buffer too large for fd %d\n", fd);
+                ctx->processing = 0;
+                return -1;
+            }
+            if (n_expand_large_buffer(&ctx->send_buf, new_capacity) < 0) {
+                ctx->processing = 0;
+                return -1;
             }
         }
 
-		// 计算剩余空间
-        size_t remaining = ctx.recv_buf.capacity - ctx.recv_buf.size;
-        if (remaining <= 0) {
-            break;
+        memcpy(ctx->send_buf.data + ctx->send_buf.size,
+               response_buf, (size_t)resp_len);
+        ctx->send_buf.size += (size_t)resp_len;
+        command_count++;
+
+        // 5. 准备解析下一条命令
+        parsed_total += (size_t)cmd_len;
+        resp_parser_reset(parser);
+
+        // 如果担心单次处理太多饿死别的协程，可以加个批次上限：
+        // const int max_per_batch = 1000;
+        // if (command_count >= max_per_batch) break;
+    }
+
+    // 6. 将完全解析的数据裁剪掉，只剩下未处理的半包
+    if (parsed_total > 0) {
+        size_t remaining = ctx->recv_buf.size - parsed_total;
+        if (remaining > 0) {
+            memmove(ctx->recv_buf.data,
+                    ctx->recv_buf.data + parsed_total,
+                    remaining);
         }
-		
-		//读取数据
-		//ret = recv(fd, buffer, sizeof(buffer) - 1, 0);
-		int ret = recv(fd, ctx.recv_buf.data + ctx.recv_buf.size, remaining, 0);
+        ctx->recv_buf.size = remaining;
 
-		if (ret > 0) {
-            ctx.recv_buf.size += ret;
-            
-            // 处理接收到的数据
-            ntyco_process_received_data(fd, &ctx);
-            
-            // 发送响应数据
-            if (ctx.send_buf.size > 0) {
-					size_t sent_total = 0;
-					
-					while (sent_total < ctx.send_buf.size) {
-						ret = send(fd, ctx.send_buf.data + sent_total, ctx.send_buf.size - sent_total, 0);
-						
-						if (ret <= 0) {
-							if (errno == EAGAIN) {
-								// 非阻塞模式下重试
-								nty_coroutine_yield(co);
-								continue;
-							}
-							break;
-						}
-						
-						sent_total += ret;
-					}
-					
-					// 移动未发送的数据
-					if (sent_total > 0) {
-						if (sent_total < ctx.send_buf.size) {
-							memmove(ctx.send_buf.data, 
-									ctx.send_buf.data + sent_total, 
-									ctx.send_buf.size - sent_total);
-						}
-						ctx.send_buf.size -= sent_total;
-					}
-				}
-		} else if (ret == 0) {
-			// 连接关闭
-			break;
-		} else if (errno != EAGAIN) {
-			// 错误
-			break;
-		}
+        // printf("ntyco fd %d: moved %zu unprocessed bytes to buffer start, parser state=%d\n",
+        //        fd, remaining, parser->state);
+    }
 
-			// 让出协程，避免长时间占用
-			//nty_coroutine_yield(co);
-		}
-	
-	// 清理资源
+    ctx->processing = 0;
+    return command_count;
+}
+
+#endif
+
+void server_reader(void *arg) {
+    int fd = (int)(intptr_t)arg;
+    conn_context_t ctx;
+
+    if (n_init_conn_context(&ctx) < 0) {
+        close(fd);
+        return;
+    }
+
+    // TCP 优化
+    int yes = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+    int buf_size = 1024 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+
+    while (!g_shutdown_flag) {
+
+        // 1) 确保接收缓冲区有空间
+        if (ctx.recv_buf.size + 4096 > ctx.recv_buf.capacity) {
+            if (n_expand_large_buffer(&ctx.recv_buf,
+                                      ctx.recv_buf.size + 4096) < 0) {
+                goto out;
+            }
+        }
+
+        size_t remaining = ctx.recv_buf.capacity - ctx.recv_buf.size;
+        if (remaining == 0) {
+            goto out; // 理论上不会
+        }
+
+        // 2) 阻塞 recv（不再是非阻塞 + EAGAIN 循环）
+        ssize_t n = recv(fd,
+                         ctx.recv_buf.data + ctx.recv_buf.size,
+                         remaining,
+                         0);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue; // 重试
+            }
+            perror("recv");
+            goto out;
+        } else if (n == 0) {
+            // 对端关闭
+            goto out;
+        }
+        ctx.recv_buf.size += (size_t)n;
+
+        // 3) 解析 + 生成响应
+        int cmd_cnt = ntyco_process_received_data(fd, &ctx);
+        if (cmd_cnt < 0) {
+            goto out;
+        }
+
+        // 4) 一次性发送当前所有响应
+        size_t sent_total = 0;
+        while (sent_total < ctx.send_buf.size) {
+            ssize_t wn = send(fd,
+                              ctx.send_buf.data + sent_total,
+                              ctx.send_buf.size - sent_total,
+                              0);
+            if (wn < 0) {
+                if (errno == EINTR) continue;
+                perror("send");
+                goto out;
+            } else if (wn == 0) {
+                goto out;
+            }
+            sent_total += (size_t)wn;
+        }
+
+        if (sent_total > 0) {
+            ctx.send_buf.size = 0;
+        }
+
+        // 不显式 yield，让 NtyCo 的调度在其他协程阻塞时自动切换
+        // 如果你希望每轮主动让出一次 CPU，可以取消下面的注释：
+        // nty_coroutine_yield(NULL);
+    }
+
+out:
     n_free_conn_context(&ctx);
     close(fd);
-
 }
 
 
 
 void server(void *arg) {
+    unsigned short port = *(unsigned short *)arg;
 
-	unsigned short port = *(unsigned short *)arg;
-	int fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd < 0) return;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return;
 
-	// 设置socket为非阻塞
-    int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-
-	//设置SO_REUSEADDR和SO_REUSEPORT选项
     int reuse = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-    #ifdef SO_REUSEPORT
+#ifdef SO_REUSEPORT
     setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse));
-    #endif
+#endif
 
-	struct sockaddr_in local, remote;
-	local.sin_family = AF_INET;
-	local.sin_port = htons(port);
-	local.sin_addr.s_addr = INADDR_ANY;
-	
-	if (bind(fd, (struct sockaddr*)&local, sizeof(struct sockaddr_in)) < 0) {
+    struct sockaddr_in local, remote;
+    memset(&local, 0, sizeof(local));
+    local.sin_family      = AF_INET;
+    local.sin_port        = htons(port);
+    local.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(fd, (struct sockaddr*)&local, sizeof(local)) < 0) {
+        perror("bind");
         close(fd);
         return;
     }
 
-	listen(fd, 20);
-	printf("listen port : %d\n", port);
-
-#if 0
-	while (1) {
-		socklen_t len = sizeof(struct sockaddr_in);
-		int cli_fd = accept(fd, (struct sockaddr*)&remote, &len);
-
-		nty_coroutine *read_co;
-		nty_coroutine_create(&read_co, server_reader, &cli_fd);
-	}
-#else
-	while (!g_shutdown_flag) {  // 添加关闭标志检查
-        socklen_t len = sizeof(struct sockaddr_in);
-        int cli_fd = accept(fd, (struct sockaddr*)&remote, &len);
-        
-		if (g_shutdown_flag) break;
-
-        if (cli_fd > 0) {
-			// 设置客户端socket为非阻塞
-            flags = fcntl(cli_fd, F_GETFL, 0);
-            fcntl(cli_fd, F_SETFL, flags | O_NONBLOCK);
-
-			// 设置TCP优化选项
-            int yes = 1;
-            setsockopt(cli_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-            nty_coroutine *read_co;
-            nty_coroutine_create(&read_co, server_reader, &cli_fd);
-        } else {
-            // 没有新连接时短暂休眠
-            usleep(10000);  // 10ms
-        }
+    if (listen(fd, 1024) < 0) {
+        perror("listen");
+        close(fd);
+        return;
     }
-#endif
-	close(fd);
-	
+
+    printf("ntyco listen port : %d\n", port);
+
+    while (!g_shutdown_flag) {
+        socklen_t len = sizeof(remote);
+        int cli_fd = accept(fd, (struct sockaddr*)&remote, &len);
+        if (cli_fd < 0) {
+            if (errno == EINTR) continue;
+            perror("accept");
+            continue;
+        }
+
+        // 把每个连接交给一个协程处理
+        nty_coroutine *read_co;
+        nty_coroutine_create(&read_co,
+                             server_reader,
+                             (void*)(intptr_t)cli_fd);
+    }
+
+    close(fd);
 }
 
 

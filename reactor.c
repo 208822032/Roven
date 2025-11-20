@@ -17,9 +17,9 @@
 #include <fcntl.h>   // 用于fcntl
 #include <netinet/tcp.h>
 
-#include "kvstore.h"
+#include "include/kvs_api.h"
 #include "server.h"
-#include "resp_protocol.h"
+#include "include/resp_protocol.h"
 
 
 #define CONNECTION_SIZE			1024 // 1024 * 1024
@@ -115,11 +115,11 @@ int init_conn_extension(int fd) {
     conn_extension_t *ext = &conn_extensions[fd];
     memset(ext, 0, sizeof(conn_extension_t));
     
-    // 初始化接收缓冲区 (初始1MB)
-    if (init_large_buffer(&ext->recv_buf, 1024 * 1024) < 0) return -1;
+    // 初始化接收缓冲区 (初始16MB)
+    if (init_large_buffer(&ext->recv_buf, 16 * 1024 * 1024) < 0) return -1;
     
-    // 初始化发送缓冲区 (初始1MB)
-    if (init_large_buffer(&ext->send_buf, 1024 * 1024) < 0) {
+    // 初始化发送缓冲区 (初始16MB)
+    if (init_large_buffer(&ext->send_buf, 16 * 1024 * 1024) < 0) {
         free_large_buffer(&ext->recv_buf);
         return -1;
     }
@@ -221,7 +221,7 @@ int event_register(int fd, int event) {
     // 设置非阻塞和TCP优化
     set_nonblocking(fd);
     set_tcp_nodelay(fd);
-    set_tcp_buffer_size(fd, 1024 * 1024, 1024 * 1024); // 1MB缓冲区
+    set_tcp_buffer_size(fd, 8 * 1024 * 1024, 8 * 1024 * 1024); // 1MB缓冲区
 
 #endif
 
@@ -230,6 +230,7 @@ int event_register(int fd, int event) {
     conn_list[fd].parser_initialized = 1;
 
 	return set_event(fd, event | EPOLLET, 1);
+
 }
 
 void event_unregister(int fd) {
@@ -273,6 +274,9 @@ int accept_cb(int fd) {
 	return 0;
 }
 
+static long long g_total_cmd[CONNECTION_SIZE];
+
+#if 0
 // 处理接收到的数据块
 int process_received_data(int fd) {
     struct conn *c = &conn_list[fd];
@@ -283,13 +287,73 @@ int process_received_data(int fd) {
     }
     
     ext->processing = 1;
+
+    //对齐检查 保证命令从*开始
+    if (ext->recv_buf.size > 0 && !c->first_packet_checked && c->parser.state == RESP_PARSE_INIT) {
+        size_t i = 0;
+        // 跳过前导空白（如果你允许），这里我们只容忍 \r\n 空白
+        while (i < ext->recv_buf.size &&
+               (ext->recv_buf.data[i] == '\r' ||
+                ext->recv_buf.data[i] == '\n' ||
+                ext->recv_buf.data[i] == ' '  ||
+                ext->recv_buf.data[i] == '\t')) {
+            i++;
+        }
+
+        if (i >= ext->recv_buf.size) {
+            // 全是空白，等更多数据
+            ext->processing = 0;
+            return 0;
+        }
+
+        if (ext->recv_buf.data[i] != '*') {
+            // 不是合法 RESP 数组起始，认为协议错误，直接断开
+            printf("Protocol alignment error: first non-space char is '%c' (0x%02X), fd=%d\n",
+                   ext->recv_buf.data[i],
+                   (unsigned char)ext->recv_buf.data[i],
+                   fd);
+            ext->processing = 0;
+            event_unregister(fd);
+            return -1;
+        }
+
+        // 如果前面有被跳过的空白，把它们裁掉，保证 buffer[0]=='*'
+        if (i > 0) {
+            memmove(ext->recv_buf.data,
+                    ext->recv_buf.data + i,
+                    ext->recv_buf.size - i);
+            ext->recv_buf.size -= i;
+        }
+
+        c->first_packet_checked = 1;//只做一次对齐
+    }
     
     int parsed_total = 0;
     int parsed = 0;
     int command_count = 0;
-    const int max_commands_per_batch = 10000; // 每批处理最多1000个命令
-    
-    while (parsed_total < ext->recv_buf.size && command_count < max_commands_per_batch) {
+    // const int max_commands_per_batch = 10000; // 每批处理最多1000个命令
+
+    // printf("fd %d: starting to process %zu bytes\n", fd, ext->recv_buf.size);
+    //&& command_count < max_commands_per_batch
+    while (parsed_total < ext->recv_buf.size ) {
+        int cur_len = ext->recv_buf.size - parsed_total;
+        const char *cur_buf = ext->recv_buf.data + parsed_total;
+
+        // 调试：打印当前起始位置的前 64 字节
+        static long long g_call_id[CONNECTION_SIZE];
+        g_call_id[fd]++;
+        printf("fd %d: parser call #%lld, start_offset=%d, cur_len=%d, first bytes: ",
+            fd, g_call_id[fd], parsed_total, cur_len);
+        int dump = cur_len < 64 ? cur_len : 64;
+        for (int i = 0; i < dump; ++i) {
+            unsigned char c = (unsigned char)cur_buf[i];
+            if (c >= 32 && c <= 126) putchar(c);
+            else if (c == '\r') printf("\\r");
+            else if (c == '\n') printf("\\n");
+            else printf("\\x%02X", c);
+        }
+        printf("\n");
+
         // 解析RESP协议
         parsed = resp_parser(&c->parser, 
                             ext->recv_buf.data + parsed_total, 
@@ -298,13 +362,36 @@ int process_received_data(int fd) {
         if (parsed > 0) {
             // 成功解析一个完整命令
             if (c->parser.state == RESP_PARSE_COMPLETE) {
+
+                g_total_cmd[fd]++;
+                printf("fd %d: parsed one command (global #%lld), parsed_total=%d, recv_buf.size=%zu\n",
+                    fd, g_total_cmd[fd], parsed_total + parsed, ext->recv_buf.size);
+
+
                 char response_buf[KVS_MAX_RESPONSE_SIZE];
                 int resp_len = kvs_handler(c->parser.tokens, c->parser.arg_index, response_buf);
 
                 // 检查发送缓冲区是否有足够空间
                 if (ext->send_buf.size + resp_len > ext->send_buf.capacity) {
-                    if (expand_large_buffer(&ext->send_buf, ext->send_buf.size + resp_len) < 0) {
-                        // 发送缓冲区扩展失败
+                    // if (expand_large_buffer(&ext->send_buf, ext->send_buf.size + resp_len) < 0) {
+                    //     // 发送缓冲区扩展失败
+                    //     ext->processing = 0;
+                    //     return -1;
+                    // }
+                    // 计算需要的容量
+                    size_t needed = ext->send_buf.size + resp_len;
+                    size_t new_capacity = ext->send_buf.capacity;
+                    while (new_capacity < needed) {
+                        new_capacity *= 2;
+                    }
+                    
+                    if (new_capacity > 512 * 1024 * 1024) {
+                        printf("Send buffer too large for fd %d\n", fd);
+                        ext->processing = 0;
+                        return -1;
+                    }
+                    
+                    if (expand_large_buffer(&ext->send_buf, new_capacity) < 0) {
                         ext->processing = 0;
                         return -1;
                     }
@@ -314,39 +401,64 @@ int process_received_data(int fd) {
                 memcpy(ext->send_buf.data + ext->send_buf.size, response_buf, resp_len);
                 ext->send_buf.size += resp_len;
                 command_count++;
+
+                if (command_count == 1) { // 只看第一条
+                    printf("first response_buf: ");
+                    for (int i = 0; i < resp_len && i < 16; ++i) {
+                        unsigned char c = (unsigned char)response_buf[i];
+                        if (c >= 32 && c <= 126) putchar(c);
+                        else if (c == '\r') printf("\\r");
+                        else if (c == '\n') printf("\\n");
+                        else printf("\\x%02X", c);
+                    }
+                    printf("\n");
+                }
+        
                 
                 // 重置解析器状态，准备解析下一个命令
                 resp_parser_reset(&c->parser);
             }
+
+
             
             parsed_total += parsed;
         } else if (parsed == 0) {
             // 需要更多数据
+            // printf("fd %d: need more data (parsed %d/%zu bytes, %d commands)\n", 
+            //        fd, parsed_total, ext->recv_buf.size, command_count);
             break;
         } else {
             // 解析错误
             printf("Protocol parse error for fd %d\n", fd);
-
-            // 尝试从错误中恢复：查找下一个RESP起始符
-            const char *next_start = memchr(ext->recv_buf.data + parsed_total + 1, '*', 
-                                          ext->recv_buf.size - parsed_total - 1);
-            if (next_start) {
-                // 找到下一个RESP起始符，跳过错误数据
-                parsed_total = next_start - ext->recv_buf.data;
-                resp_parser_reset(&c->parser);
-            } else {
-                // 没有找到更多RESP数据，清空缓冲区
-                parsed_total = ext->recv_buf.size;
-                resp_parser_reset(&c->parser);
-                break;
-            }
+            printf("Protocol parse error for fd %d, state=%d\n", fd, c->parser.state);
+            // // 尝试从错误中恢复：查找下一个RESP起始符
+            // const char *next_start = memchr(ext->recv_buf.data + parsed_total + 1, '*', 
+            //                               ext->recv_buf.size - parsed_total - 1);
+            // if (next_start) {
+            //     // 找到下一个RESP起始符，跳过错误数据
+            //     parsed_total = next_start - ext->recv_buf.data;
+            //     resp_parser_reset(&c->parser);
+            // } else {
+            //     // 没有找到更多RESP数据，清空缓冲区
+            //     parsed_total = ext->recv_buf.size;
+            //     resp_parser_reset(&c->parser);
+            //     break;
+            // }
+            ext->processing = 0;
+            event_unregister(fd);
+            return -1;
         }
     }
+
+    // printf("fd %d: finished processing, parsed %d/%zu bytes, %d commands\n", 
+    //        fd, parsed_total, ext->recv_buf.size, command_count);
     
     // 移动未处理的数据到缓冲区开头
     if (parsed_total > 0) {
         size_t remaining_data = ext->recv_buf.size - parsed_total;
         if (remaining_data > 0) {
+            // printf("fd %d: moving %zu unprocessed bytes to buffer start\n", 
+            //        fd, remaining_data);
             memmove(ext->recv_buf.data, 
                     ext->recv_buf.data + parsed_total, 
                     remaining_data);
@@ -357,6 +469,8 @@ int process_received_data(int fd) {
     ext->processing = 0;
     
     // 如果有数据要发送，注册写事件
+    // 🔥 关键修改：不要立即发送，只注册EPOLLOUT事件
+    // 让epoll在合适的时机触发发送
     if (ext->send_buf.size > 0) {
         set_event(fd, EPOLLOUT | EPOLLIN, 0);
     } else {
@@ -365,18 +479,310 @@ int process_received_data(int fd) {
     
     return command_count;
 }
+#else
+int process_received_data(int fd) {
+    struct conn* c = &conn_list[fd];
+    conn_extension_t* ext = &conn_extensions[fd];
+
+    if (ext->processing) {
+        return 0; // 已经在处理中，避免重入
+    }
+
+    ext->processing = 1;
+
+    //如果上次刚好停在COMPLETE状态 说明上一条命令已经处理完
+    if(c->parser.state == RESP_PARSE_COMPLETE){
+        resp_parser_reset(&c->parser);
+    }
+
+    //只在第一次进行简单的对齐检查
+    if(!c->first_packet_checked &&
+        ext->recv_buf.size > 0 &&
+        c->parser.state == RESP_PARSE_INIT) {
+        size_t i = 0;
+        while(i < ext->recv_buf.size &&
+              (ext->recv_buf.data[i] == '\r' ||
+               ext->recv_buf.data[i] == '\n' ||
+               ext->recv_buf.data[i] == ' '  ||
+               ext->recv_buf.data[i] == '\t')) {
+            i++;
+        }
+
+        if(i >= ext->recv_buf.size) {
+            // 全是空白，等更多数据
+            ext->processing = 0;
+            return 0;
+        }
+
+        if(ext->recv_buf.data[i] != '*') {
+            // 不是合法 RESP 数组起始，认为协议错误，直接断开
+            printf("Protocol alignment error: first non-space char is '%c' (0x%02X), fd=%d\n",
+                   ext->recv_buf.data[i],
+                   (unsigned char)ext->recv_buf.data[i],
+                   fd);
+            ext->processing = 0;
+            event_unregister(fd);
+            return -1;
+        }
+
+        if(i > 0){
+            memmove(ext->recv_buf.data,
+                    ext->recv_buf.data + i,
+                    ext->recv_buf.size - i);
+            ext->recv_buf.size -= i;
+        }
+        c->first_packet_checked = 1;
+    }
+
+    //主解析循环 从recv_buf中解析命令
+    size_t parsed_total = 0;//本轮共消费的字节数
+    int    command_count = 0;//本轮解析出的字节数
+
+    while(parsed_total < ext->recv_buf.size){
+        size_t      cur_len = ext->recv_buf.size - parsed_total;
+        const char* cur_buf = ext->recv_buf.data + parsed_total;
+
+        static long long g_call_id[CONNECTION_SIZE];
+        g_call_id[fd]++;
+        printf("fd %d: parser call #%lld, start_offset=%zu, cur_len=%zu, first bytes: ",
+            fd, g_call_id[fd], parsed_total, cur_len);
+        int dump = cur_len < 64 ? cur_len : 64;
+        for(int i = 0; i < dump; ++i){
+            unsigned char c = (unsigned char)cur_buf[i];
+            if(c >= 32 && c <= 126) putchar(c);
+            else if(c == '\r') printf("\\r");
+            else if(c == '\n') printf("\\n");
+            else printf("\\x%02X", c);
+        }
+        putchar('\n');
+
+        // 1. 用无状态 reader 探测：当前 offset 是否有完整命令
+        int cmd_len = resp_peek_command(ext->recv_buf.data,
+                                        ext->recv_buf.size,
+                                        parsed_total);
+
+        if (cmd_len < 0) {
+            // 协议错误
+            printf("resp_peek_command error for fd %d\n", fd);
+            ext->processing = 0;
+            event_unregister(fd);
+            return -1;
+        } else if (cmd_len == 0) {
+            // 半包，当前 offset 这条命令还不完整，等待更多数据
+            break;
+        }                                
+
+        // 2. 此处保证 [parsed_total, parsed_total+cmd_len) 就是一整条命令
+        //    用 stateful resp_parser 在这段上解析一次
+        if (c->parser.state != RESP_PARSE_INIT &&
+            c->parser.state != RESP_PARSE_COMPLETE) {
+            // 理论上不该发生，保险起见 reset 一下
+            resp_parser_reset(&c->parser);
+        }
+
+        int parsed = resp_parser(&c->parser,
+                                 ext->recv_buf.data + parsed_total,
+                                 (size_t)cmd_len);
+
+        if (parsed < 0) {
+            printf("Protocol parse error for fd %d\n", fd);
+            printf("Protocol parse error for fd %d, state=%d\n", fd, c->parser.state);
+            ext->processing = 0;
+            event_unregister(fd);
+            return -1;
+        }
+        
+        if (parsed != cmd_len || c->parser.state != RESP_PARSE_COMPLETE) {
+            // 正常情况下，cmd_len 保证了完整命令，此时 parser 一定 COMPLETE
+            printf("resp_parser mismatch: cmd_len=%d, parsed=%d, state=%d\n",
+                   cmd_len, parsed, c->parser.state);
+            ext->processing = 0;
+            event_unregister(fd);
+            return -1;
+        }
+
+        // 3. 一条完整命令解析成功，调用 kvs_handler 生成响应
+        g_total_cmd[fd]++;
+        printf("fd %d: parsed one command (global #%lld), parsed_total=%zu(+%d), recv_buf.size=%zu\n",
+               fd, g_total_cmd[fd], parsed_total, cmd_len, ext->recv_buf.size);
+
+        char response_buf[KVS_MAX_RESPONSE_SIZE];
+        int resp_len = kvs_handler(c->parser.tokens,
+                                   c->parser.arg_index,
+                                   response_buf);
+
+
+        // 4. 把响应 append 到 send_buf
+        if (ext->send_buf.size + (size_t)resp_len > ext->send_buf.capacity) {
+            size_t needed      = ext->send_buf.size + (size_t)resp_len;
+            size_t new_capacity = ext->send_buf.capacity;
+            while (new_capacity < needed) {
+                new_capacity *= 2;
+            }
+            if (new_capacity > 512 * 1024 * 1024) {
+                printf("Send buffer too large for fd %d\n", fd);
+                ext->processing = 0;
+                return -1;
+            }
+            if (expand_large_buffer(&ext->send_buf, new_capacity) < 0) {
+                ext->processing = 0;
+                return -1;
+            }
+        }
+        memcpy(ext->send_buf.data + ext->send_buf.size,
+               response_buf, (size_t)resp_len);
+        ext->send_buf.size += (size_t)resp_len;
+        command_count++;
+
+        // if (command_count == 1) {
+        //     printf("first response_buf: ");
+        //     for (int i = 0; i < resp_len && i < 16; ++i) {
+        //         unsigned char cch = (unsigned char)response_buf[i];
+        //         if (cch >= 32 && cch <= 126) putchar(cch);
+        //         else if (cch == '\r') printf("\\r");
+        //         else if (cch == '\n') printf("\\n");
+        //         else printf("\\x%02X", cch);
+        //     }
+        //     putchar('\n');
+        // }
+        
+        // 5. 准备解析下一条命令
+        parsed_total += (size_t)cmd_len;
+        resp_parser_reset(&c->parser);
+
+        // 如果你怕单次处理太多导致饿死其它连接，可以加个限速：
+        // const int max_per_batch = 1000;
+        // if (command_count >= max_per_batch) break;
+
+
+        // int parsed = resp_parser(&c->parser, cur_buf, cur_len);
+
+        // if(parsed > 0){
+        //     parsed_total += (size_t)parsed;
+
+        //     if(c->parser.state == RESP_PARSE_COMPLETE){
+        //         //只处理这一条命令
+        //         g_total_cmd[fd]++;
+        //         printf("fd %d: parsed one command (global #%lld), parsed_total=%zu, recv_buf.size=%zu\n",
+        //             fd, g_total_cmd[fd], parsed_total, ext->recv_buf.size);
+
+        //         char response_buf[KVS_MAX_RESPONSE_SIZE];
+        //         int resp_len = kvs_handler(c->parser.tokens, c->parser.arg_index, response_buf);
+
+        //         //检查发送缓冲区是否有足够空间
+        //         if(ext->send_buf.size + (size_t)resp_len > ext->send_buf.capacity){
+        //             size_t needed = ext->send_buf.size + (size_t)resp_len;
+        //             size_t new_capacity = ext->send_buf.capacity;
+        //             while(new_capacity < needed){
+        //                 new_capacity *= 2;
+        //             }
+
+        //             if(new_capacity > 512 * 1024 * 1024){
+        //                 printf("Send buffer too large for fd %d\n", fd);
+        //                 ext->processing = 0;
+        //                 return -1;
+        //             }
+
+        //             if(expand_large_buffer(&ext->send_buf, new_capacity) < 0){
+        //                 ext->processing = 0;
+        //                 return -1;
+        //             }
+        //         }
+
+        //         //将响应添加到发送缓冲区
+        //         memcpy(ext->send_buf.data + ext->send_buf.size, response_buf, (size_t)resp_len);
+        //         ext->send_buf.size += (size_t)resp_len;
+        //         command_count++;
+
+        //         if(command_count == 1){
+        //             printf("first response_buf: ");
+        //             for(int i = 0; i < resp_len && i < 16; ++i){
+        //                 unsigned char c = (unsigned char)response_buf[i];
+        //                 if(c >= 32 && c <= 126) putchar(c);
+        //                 else if(c == '\r') printf("\\r");
+        //                 else if(c == '\n') printf("\\n");
+        //                 else printf("\\x%02X", c);
+        //             }
+        //             putchar('\n');
+        //         }
+
+        //         resp_parser_reset(&c->parser);
+
+        //         // break;
+        //     }else{
+        //         // parsed>0 但还没到 COMPLETE，说明本轮只是推进了一部分状态
+        //         // 继续 while，看看是否还能在同一 buffer 内完成这条命令
+        //         // （注意：这里只推进“同一条命令”的状态，不会跨到下一条）
+        //     }
+        // }else if(parsed == 0){
+        //     //当前为半包状态 不足一条命令 不能移动任何数据
+        //     break;
+        // }else{
+        //     //解析错误
+        //     printf("Protocol parse error for fd %d\n", fd);
+        //     printf("Protocol parse error for fd %d, state=%d\n", fd, c->parser.state);
+        //     ext->processing = 0;
+        //     event_unregister(fd);
+        //     return -1;
+        // }
+    }
+
+    //将完全解析的数据裁剪掉 只剩下未处理的半包
+    if(parsed_total > 0){
+        size_t remaining = ext->recv_buf.size - parsed_total;
+        if(remaining > 0){
+            memmove(ext->recv_buf.data,
+                    ext->recv_buf.data + parsed_total,
+                    remaining);
+        }
+        ext->recv_buf.size = remaining;
+
+        printf("fd %d: moved %zu unprocessed bytes to buffer start, parser state=%d\n",
+               fd, remaining, c->parser.state);
+    }
+    ext->processing = 0;
+
+    //如果有数据要发送，注册写事件
+    if(ext->send_buf.size > 0){
+        set_event(fd, EPOLLOUT | EPOLLIN, 0);
+    }else{
+        set_event(fd, EPOLLIN, 0);
+    }
+
+    return command_count;
+}
+#endif
+
 
 int recv_cb(int fd) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
     
     struct conn *c = &conn_list[fd];
     conn_extension_t *ext = &conn_extensions[fd];
+
+    int total_recv = 0;  // 添加统计
+    int recv_count = 0;   // 统计recv调用次数
     
     // 边缘触发模式需要循环读取直到EAGAIN
     while (1) {
         // 确保有足够空间接收数据
-        if (ext->recv_buf.size + 4096 > ext->recv_buf.capacity) {
-            if (expand_large_buffer(&ext->recv_buf, ext->recv_buf.size + 4096) < 0) {
+        size_t min_space = 64 * 1024;
+        // if (ext->recv_buf.size + 4096 > ext->recv_buf.capacity) {
+        //     if (expand_large_buffer(&ext->recv_buf, ext->recv_buf.size + 4096) < 0) {
+        //         event_unregister(fd);
+        //         return -1;
+        //     }
+        // }
+        if (ext->recv_buf.capacity - ext->recv_buf.size < min_space) {
+            // 扩展到当前容量的2倍,最大512MB
+            size_t new_capacity = ext->recv_buf.capacity * 2;
+            if (new_capacity > 512 * 1024 * 1024) {
+                printf("Receive buffer too large for fd %d\n", fd);
+                event_unregister(fd);
+                return -1;
+            }
+            
+            if (expand_large_buffer(&ext->recv_buf, new_capacity) < 0) {
                 event_unregister(fd);
                 return -1;
             }
@@ -388,9 +794,12 @@ int recv_cb(int fd) {
             event_unregister(fd);
             return -1;
         }
+
+        // 🔥 增加每次recv的大小
+        size_t recv_size = remaining > (256 * 1024) ? (256 * 1024) : remaining;
         
         // 接收数据
-        int count = recv(fd, ext->recv_buf.data + ext->recv_buf.size, remaining, 0);
+        int count = recv(fd, ext->recv_buf.data + ext->recv_buf.size, recv_size, 0);
         if (count <= 0) {
             if (count == 0) {
                 // 连接关闭
@@ -409,15 +818,33 @@ int recv_cb(int fd) {
         }
         
         ext->recv_buf.size += count;
+        total_recv += count;
+        recv_count++;
         
         // 如果接收了大量数据，先处理一部分避免阻塞太久
-        if (ext->recv_buf.size > 1024 * 1024) { // 超过1MB时开始处理
-            process_received_data(fd);
-        }
+        // if (ext->recv_buf.size > 1024 * 1024) { // 超过1MB时开始处理
+        //     process_received_data(fd);
+        // }
+    }
+
+    // 打印接收统计
+    if (total_recv > 0) {
+        printf("fd %d: received %d bytes in %d recv() calls, buffer total %zu bytes\n", 
+               fd, total_recv, recv_count, ext->recv_buf.size);
     }
     
-    // 处理接收到的数据
-    process_received_data(fd);
+    // 等所有数据接收完毕后，一次性处理
+    if (ext->recv_buf.size > 0) {
+        int processed = process_received_data(fd);
+        if (processed > 0) {
+            printf("fd %d: processed %d commands, send buffer %zu bytes\n", 
+                   fd, processed, ext->send_buf.size);
+        }
+        if (processed < 0) {
+            // process_received_data 已经调用 event_unregister 关闭了fd
+            return -1;
+        }
+    }
     
     return 0;
 }
@@ -449,6 +876,9 @@ int prepare_iovecs(int fd) {
     return ext->iovec_count;
 }
 
+
+static long long g_total_sent_bytes[CONNECTION_SIZE] = {0};
+
 int send_cb(int fd) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
     
@@ -462,7 +892,10 @@ int send_cb(int fd) {
         set_event(fd, EPOLLIN, 0);
         return 0;
     }
+
+    long long sent_this_round = 0;
     
+#if 0
     // 准备iovec
     if (prepare_iovecs(fd) <= 0) {
         return 0;
@@ -496,9 +929,40 @@ int send_cb(int fd) {
             break;
         }
     }
+#endif
+
+    // 使用循环发送，尽可能发送所有数据
+    while (ext->send_offset < ext->send_buf.size) {
+        size_t remaining = ext->send_buf.size - ext->send_offset;
+        
+        ssize_t sent = send(fd, 
+                           ext->send_buf.data + ext->send_offset, 
+                           remaining, 
+                           MSG_NOSIGNAL);  // 避免SIGPIPE信号
+        
+        if (sent < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // TCP缓冲区满，等待下次EPOLLOUT
+                set_event(fd, EPOLLOUT | EPOLLIN, 0);
+                return 0;
+            }
+            printf("Send error for fd %d: %s\n", fd, strerror(errno));
+            event_unregister(fd);
+            return -1;
+        } else if (sent == 0) {
+            printf("Connection closed during send for fd %d\n", fd);
+            event_unregister(fd);
+            return -1;
+        }
+        
+        ext->send_offset += sent;
+        sent_this_round   += sent;
+        g_total_sent_bytes[fd] += sent;
+    }
     
-    //printf("Sent %zd bytes for fd %d (total: %zu/%zu)\n", total_sent, fd, ext->send_offset, ext->send_buf.size);
-    
+    printf("fd %d: send_cb sent %lld bytes this round, total_sent=%lld, offset=%zu, buf_size=%zu\n",
+           fd, sent_this_round, g_total_sent_bytes[fd], ext->send_offset, ext->send_buf.size);
+
     // 检查是否全部发送完毕
     if (ext->send_offset >= ext->send_buf.size) {
         // 全部发送完毕，重置缓冲区
@@ -509,6 +973,13 @@ int send_cb(int fd) {
         // 还有数据要发送，保持EPOLLOUT事件
         set_event(fd, EPOLLOUT | EPOLLIN, 0);
     }
+
+    // 全部发送完毕，重置缓冲区
+    // ext->send_offset = 0;
+    // ext->send_buf.size = 0;
+
+    // // 只监听读事件
+    // set_event(fd, EPOLLIN, 0);
     
     return 0;
 }
@@ -616,7 +1087,7 @@ int reactor_start(unsigned short port, msg_handler handler) {
 
 			if (events[i].events & (EPOLLERR | EPOLLHUP)) {
                 event_unregister(connfd);
-                close(connfd);
+                // close(connfd);
             }
 
 		}
@@ -626,7 +1097,7 @@ int reactor_start(unsigned short port, msg_handler handler) {
 	for (int i = 0; i < CONNECTION_SIZE; i++) {
         if (conn_list[i].fd > 0) {
             event_unregister(i);
-            close(conn_list[i].fd);
+            // close(conn_list[i].fd);
         }
     }
 	

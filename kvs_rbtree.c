@@ -6,7 +6,7 @@
 #include <string.h>
 
 
-#include "kvstore.h"
+#include "include/kvs_api.h"
 
 rbtree_node *rbtree_mini(rbtree *T, rbtree_node *x) {
 	if (x == T->nil) return T->nil; // 空树检查
@@ -490,13 +490,13 @@ void kvs_rbtree_destory(kvs_rbtree_t *inst) {
 }
 
 // 辅助函数：安全字符串复制
-char* kvs_strdup(const char *src) {
-    if (!src) return NULL;
-    size_t len = strlen(src) + 1;
-    char *dest = kvs_malloc(len);
-    if (dest) memcpy(dest, src, len);  // 比strcpy更安全
-    return dest;
-}
+// char* kvs_strdup(const char *src) {
+//     if (!src) return NULL;
+//     size_t len = strlen(src) + 1;
+//     char *dest = kvs_malloc(len);
+//     if (dest) memcpy(dest, src, len);  // 比strcpy更安全
+//     return dest;
+// }
 
 int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
 

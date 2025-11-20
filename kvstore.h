@@ -21,13 +21,13 @@
 #include <sys/time.h>
 #include <stdint.h>
 
-
+#if 0
 
 #define NETWORK_REACTOR 	0
 #define NETWORK_PROACTOR	1
 #define NETWORK_NTYCO		2
 
-#define NETWORK_SELECT		NETWORK_NTYCO
+#define NETWORK_SELECT		NETWORK_REACTOR
 
 
 
@@ -338,7 +338,7 @@ static kvs_operations skiplist_ops = {
 void kvs_save_all(const char *filename);
 void kvs_load_all(const char *filename);
 
-#endif
+
 
 
 
@@ -394,12 +394,18 @@ void* mem_alloc(size_t size);
 void mem_free(void* ptr);
 void mem_destroy();
 void* kvs_realloc(void *ptr, size_t new_size);
+char* kvs_strdup(const char *s);
+void *memleak_alloc(size_t size, const char *filename, const char *funcname, int line);
+void memleak_free(void *ptr, const char *filename, const char *funcname, int line);
 
 #ifndef USE_MEMPOOL
 
 // 替换原有的分配函数
 #define kvs_malloc(size) mem_alloc(size)
 #define kvs_free(ptr) mem_free(ptr)
+
+// #define kvs_malloc(size) memleak_alloc(size, __FILE__, __func__, __LINE__)
+// #define kvs_free(ptr) memleak_free(ptr, __FILE__, __func__, __LINE__)
 
 #else
 // 使用系统内存管理
@@ -593,3 +599,12 @@ void aof_stop_rewrite(void);
 int should_buffer_rewrite_command(void);
 
 extern aof_state_t aof_state;
+
+
+#endif // __KV_STORE_H__
+
+#endif
+
+#pragma once
+// 兼容旧入口：只聚合新的模块化头
+#include "include/kvs_api.h"

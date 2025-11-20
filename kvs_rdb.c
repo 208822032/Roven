@@ -1,4 +1,8 @@
 #include "kvstore.h"
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include "include/kvs_memory.h"
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -16,6 +20,16 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
+// 内部函数前向声明（需在首次调用前声明以避免隐式声明）
+static void rdb_save_array(FILE *fp);
+static void rdb_load_array(FILE *fp);
+static void rdb_save_rbtree(FILE *fp);
+static void rdb_load_rbtree(FILE *fp);
+static void rdb_save_hash(FILE *fp);
+static void rdb_load_hash(FILE *fp);
+static void rdb_save_skiptable(FILE *fp);
+static void rdb_load_skiptable(FILE *fp);
+
 //检查文件是否存在
 static int file_exists(const char *filename){
 
@@ -26,6 +40,7 @@ static int file_exists(const char *filename){
 
 //保存rdb文件
 int kvs_rdb_save(const char *filename){
+
     FILE *fp = fopen(filename, "wb");
     if(!fp){
         perror("Failed to open RDB file for writing");
@@ -164,8 +179,10 @@ int kvs_rdb_load(const char *filename){
 
 }
 
+ 
+
 //保存数组
-void rdb_save_array(FILE *fp){
+static void rdb_save_array(FILE *fp){
     uint8_t type = 0x01;//数据类型标识符
     fwrite(&type, sizeof(type), 1, fp);
 
@@ -186,7 +203,7 @@ void rdb_save_array(FILE *fp){
 }
 
 //加载数组
-void rdb_load_array(FILE *fp){
+static void rdb_load_array(FILE *fp){
     uint32_t count;
     fread(&count, sizeof(count), 1, fp);
 
@@ -210,7 +227,7 @@ void rdb_load_array(FILE *fp){
 }
 
 //保存红黑树
-void rdb_save_rbtree(FILE *fp){
+static void rdb_save_rbtree(FILE *fp){
     uint8_t type = 0x02;//红黑树类型
     fwrite(&type, sizeof(type), 1, fp);
 
@@ -249,7 +266,7 @@ void rdb_save_rbtree(FILE *fp){
 }
 
 //红黑树加载实现
-void rdb_load_rbtree(FILE *fp){
+static void rdb_load_rbtree(FILE *fp){
     uint32_t count;
     fread(&count, sizeof(count), 1, fp);
 
@@ -274,9 +291,15 @@ void rdb_load_rbtree(FILE *fp){
 }
 
 //哈希表实现
-void rdb_save_hash(FILE *fp){
+static void rdb_save_hash(FILE *fp){
     uint8_t type = 0x03; // 哈希表类型标识
     fwrite(&type, sizeof(type), 1, fp);
+
+    if (!global_hash.nodes || global_hash.max_slots == 0) { // 防御
+        uint32_t zero = 0;
+        fwrite(&zero, sizeof(zero), 1, fp);
+        return;
+    }
 
     uint32_t count = 0;
     long count_pos = ftell(fp);
@@ -285,6 +308,10 @@ void rdb_save_hash(FILE *fp){
     for (int i = 0; i < global_hash.max_slots; i++){
         hashnode_t *node = global_hash.nodes[i];
         while (node) {
+            if (!node->key || !node->value) { // 防御
+                node = node->next;
+                continue;
+            }
             uint16_t key_len = strlen(node->key);
             uint16_t value_len = strlen(node->value);
             
@@ -306,7 +333,7 @@ void rdb_save_hash(FILE *fp){
 }
 
 //哈希表加载
-void rdb_load_hash(FILE *fp){
+static void rdb_load_hash(FILE *fp){
     uint32_t count;
     fread(&count, sizeof(count), 1, fp);
 
@@ -331,7 +358,7 @@ void rdb_load_hash(FILE *fp){
 }
 
 //跳表保存
-void rdb_save_skiptable(FILE *fp){
+static void rdb_save_skiptable(FILE *fp){
     uint8_t type = 0x04; // 跳表类型标识
     fwrite(&type, sizeof(type), 1, fp);
 
@@ -354,7 +381,7 @@ void rdb_save_skiptable(FILE *fp){
 }
 
 //跳表加载
-void rdb_load_skiptable(FILE *fp){
+static void rdb_load_skiptable(FILE *fp){
     uint32_t count;
     fread(&count, sizeof(count), 1, fp);
 

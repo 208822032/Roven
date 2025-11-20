@@ -7,7 +7,7 @@
 #include <pthread.h>
 
 
-#include "kvstore.h"
+#include "include/kvs_api.h"
 
 
 // Key, Value --> 
@@ -77,12 +77,15 @@ int kvs_hash_create(kvs_hash_t *hash) {
 	hash->nodes = (hashnode_t**)kvs_malloc(sizeof(hashnode_t*) * MAX_TABLE_SIZE);
 	if (!hash->nodes) return -1;
 
+    memset(hash->nodes, 0, sizeof(hashnode_t*) * MAX_TABLE_SIZE); // 关键: 清零
+
 	hash->max_slots = MAX_TABLE_SIZE;
 	hash->count = 0; 
 	return 0;
 }
 
 // 
+#if 0
 void kvs_hash_destory(kvs_hash_t *hash) {
 
 	if (!hash) return;
@@ -105,6 +108,34 @@ void kvs_hash_destory(kvs_hash_t *hash) {
 	kvs_free(hash->nodes);
 	
 }
+#else
+void kvs_hash_destory(kvs_hash_t *hash) {
+
+	if (!hash) return;
+
+	int i = 0;
+	for (i = 0;i < hash->max_slots;i ++) {
+		hashnode_t *node = hash->nodes[i];
+
+		while (node != NULL) { // error
+
+			hashnode_t *tmp = node;
+			node = node->next;
+#if ENABLE_KEY_POINTER
+            if (tmp->key) kvs_free(tmp->key);
+            if (tmp->value) kvs_free(tmp->value);
+#endif
+			kvs_free(tmp);
+		}
+        hash->nodes[i] = NULL;
+	}
+	kvs_free(hash->nodes);
+    hash->nodes = NULL;
+    hash->count = 0;
+    hash->max_slots = 0;
+	
+}
+#endif
 
 // 5 + 2
 

@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include "kvstore.h"
+#include "include/kvs_api.h"
 
 //测试内存池基本功能
 void test_basic_functionality(){

@@ -1,7 +1,15 @@
-#include "distributed.h"
-#include "kvstore.h"
+#include "include/distributed.h"
+#include "include/kvs_api.h"
+#include "include/resp_protocol.h"
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include "sync_mode.h"
+
+
 
 distributed_config_t global_dist_config;
 
@@ -168,7 +176,18 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
         pthread_t sync_thread;
         pthread_create(&sync_thread, NULL, master_sync_server, NULL);
 
-        printf("Running ad MASTER, sync port :%d\n", sync_port);
+#if (SYNC_MODE == SYNC_MODE_EBPF)
+            // 初始化 eBPF 同步
+            if (ebpf_sync_init(sync_port) != 0) {
+                fprintf(stderr, "Failed to initialize eBPF sync, fallback disabled\n");
+                //回退到 TCP 模式
+                // return -1;
+            }else{
+                printf("[DISTRIBUTED] Running as MASTER, sync port: %d, mode: EBPF\n", sync_port);
+            }
+#else   
+        printf("Running as MASTER, sync port: %d, mode: TCP\n", sync_port);
+#endif
     }else{
         strncpy(global_dist_config.master_ip, master_ip, sizeof(global_dist_config.master_ip)-1);
         global_dist_config.master_port = master_port;

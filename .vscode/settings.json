@@ -11,6 +11,22 @@
         "fcntl.h": "c",
         "limits.h": "c",
         "ebpf_kern.h": "c",
-        "string.h": "c"
-    }
+        "string.h": "c",
+        "kvs_api.h": "c",
+        "kvs_platform.h": "c",
+        "kvs_config.h": "c",
+        "kvs_operations.h": "c",
+        "kvs_memory.h": "c",
+        "kvs_rdb.h": "c",
+        "kvs_aof.h": "c",
+        "kvs_array.h": "c",
+        "kvs_server.h": "c",
+        "kvs_skiptable.h": "c",
+        "kvs_types.h": "c",
+        "stdlib.h": "c",
+        "sync_mode.h": "c",
+        "type_traits": "c",
+        "time.h": "c"
+    },
+    "C_Cpp.default.compilerPath": "E:/vscode/codeConfiguration/x86_64-8.1.0-release-posix-sjlj-rt_v6-rev0/mingw64/bin/gcc.exe"
 }

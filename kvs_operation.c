@@ -1,4 +1,9 @@
-#include "kvstore.h"
+#include "include/kvs_api.h"
+#include "include/kvs_globals.h"
+#include "include/resp_protocol.h"
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 extern aof_state_t aof_state;
 
@@ -245,22 +250,22 @@ int handle_set(command_context_t *ctx, char *response){
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_set(&global_array, ctx->key, ctx->value);
+            ret = kvs_array_set(kvs_get_global_array(), ctx->key, ctx->value);
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_set(&global_rbtree, ctx->key, ctx->value);
+            ret = kvs_rbtree_set(kvs_get_global_rbtree(), ctx->key, ctx->value);
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_set(&global_hash, ctx->key, ctx->value);
+            ret = kvs_hash_set(kvs_get_global_hash(), ctx->key, ctx->value);
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_set(&global_skiptable, ctx->key, ctx->value);
+            ret = kvs_skiptable_set(kvs_get_global_skiptable(), ctx->key, ctx->value);
             break;
 #endif
         default:
@@ -283,22 +288,22 @@ int handle_get(command_context_t *ctx, char *response){
     switch (ctx->data_structure) {
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            result = kvs_array_get(&global_array, ctx->key);
+            result = kvs_array_get(kvs_get_global_array(), ctx->key);
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            result = kvs_rbtree_get(&global_rbtree, ctx->key);
+            result = kvs_rbtree_get(kvs_get_global_rbtree(), ctx->key);
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            result = kvs_hash_get(&global_hash, ctx->key);
+            result = kvs_hash_get(kvs_get_global_hash(), ctx->key);
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            result = kvs_skiptable_get(&global_skiptable, ctx->key);
+            result = kvs_skiptable_get(kvs_get_global_skiptable(), ctx->key);
             break;
 #endif
         default:
@@ -317,22 +322,22 @@ int handle_del(command_context_t *ctx, char *response){
     switch (ctx->data_structure) {
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_del(&global_array, ctx->key);
+            ret = kvs_array_del(kvs_get_global_array(), ctx->key);
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_del(&global_rbtree, ctx->key);
+            ret = kvs_rbtree_del(kvs_get_global_rbtree(), ctx->key);
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_del(&global_hash, ctx->key);
+            ret = kvs_hash_del(kvs_get_global_hash(), ctx->key);
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_del(&global_skiptable, ctx->key);
+            ret = kvs_skiptable_del(kvs_get_global_skiptable(), ctx->key);
             break;
 #endif
         default:
@@ -353,22 +358,22 @@ int handle_mod(command_context_t *ctx, char *response){
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_mod(&global_array, ctx->key, ctx->value);
+            ret = kvs_array_mod(kvs_get_global_array(), ctx->key, ctx->value);
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_mod(&global_rbtree, ctx->key, ctx->value);
+            ret = kvs_rbtree_mod(kvs_get_global_rbtree(), ctx->key, ctx->value);
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_mod(&global_hash, ctx->key, ctx->value);
+            ret = kvs_hash_mod(kvs_get_global_hash(), ctx->key, ctx->value);
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_mod(&global_skiptable, ctx->key, ctx->value);
+            ret = kvs_skiptable_mod(kvs_get_global_skiptable(), ctx->key, ctx->value);
             break;
 #endif
         default:
@@ -389,22 +394,22 @@ int handle_exist(command_context_t *ctx, char *response){
     switch (ctx->data_structure) {
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_exist(&global_array, ctx->key);
+            ret = kvs_array_exist(kvs_get_global_array(), ctx->key);
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_exist(&global_rbtree, ctx->key);
+            ret = kvs_rbtree_exist(kvs_get_global_rbtree(), ctx->key);
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_exist(&global_hash, ctx->key);
+            ret = kvs_hash_exist(kvs_get_global_hash(), ctx->key);
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_exist(&global_skiptable, ctx->key);
+            ret = kvs_skiptable_exist(kvs_get_global_skiptable(), ctx->key);
             break;
 #endif
         default:
@@ -424,22 +429,22 @@ int handle_range(command_context_t *ctx, char *response){
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_range(&global_array, ctx->start_key, ctx->end_key, temp_response, sizeof(temp_response));
+            ret = kvs_array_range(kvs_get_global_array(), ctx->start_key, ctx->end_key, temp_response, sizeof(temp_response));
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_range(&global_rbtree, ctx->start_key, ctx->end_key, temp_response, sizeof(temp_response));
+            ret = kvs_rbtree_range(kvs_get_global_rbtree(), ctx->start_key, ctx->end_key, temp_response, sizeof(temp_response));
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_range(&global_hash, ctx->start_key, ctx->end_key, temp_response, sizeof(temp_response));
+            ret = kvs_hash_range(kvs_get_global_hash(), ctx->start_key, ctx->end_key, temp_response, sizeof(temp_response));
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_range(&global_skiptable, ctx->start_key, ctx->end_key, temp_response, sizeof(temp_response));
+            ret = kvs_skiptable_range(kvs_get_global_skiptable(), ctx->start_key, ctx->end_key, temp_response, sizeof(temp_response));
             break;
 #endif
         default:
@@ -459,22 +464,22 @@ int handle_sort(command_context_t *ctx, char *response){
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_sort(&global_array, ctx->order, ctx->limit, temp_response, sizeof(temp_response));
+            ret = kvs_array_sort(kvs_get_global_array(), ctx->order, ctx->limit, temp_response, sizeof(temp_response));
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_sort(&global_rbtree, ctx->order, ctx->limit, temp_response, sizeof(temp_response));
+            ret = kvs_rbtree_sort(kvs_get_global_rbtree(), ctx->order, ctx->limit, temp_response, sizeof(temp_response));
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_sort(&global_hash, ctx->order, ctx->limit, temp_response, sizeof(temp_response));
+            ret = kvs_hash_sort(kvs_get_global_hash(), ctx->order, ctx->limit, temp_response, sizeof(temp_response));
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_sort(&global_skiptable, ctx->order, ctx->limit, temp_response, sizeof(temp_response));
+            ret = kvs_skiptable_sort(kvs_get_global_skiptable(), ctx->order, ctx->limit, temp_response, sizeof(temp_response));
             break;
 #endif       
 

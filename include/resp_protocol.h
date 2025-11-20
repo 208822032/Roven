@@ -51,11 +51,15 @@ typedef enum{
 typedef struct {
     resp_parse_state state;
     int array_len;   //数组长度
-    int bulk_len;    //当前批量字符串长度
+
     int arg_count;   //已解析的参数个数
     int arg_index;   //当前解析的参数索引
     char **tokens;   //解析出来的tokens
     int array_len_allocated;
+
+    int bulk_len;    //当前批量字符串长度
+    int bulk_read;   //已经从body中读了多少字节
+
 } resp_parser_t;
 
 
@@ -82,5 +86,8 @@ int resp_generate_array_item(char *response, const char *str);
 
 //处理RESP协议命令
 int resp_process_command(char **tokens, int count, char *response);
+
+//使用一个无状态reader只负责在一块连续内存里 从offset中算出第一个完整命令占用了多少字节
+int resp_peek_command(const char* buf, size_t len, size_t offset);
 
 #endif

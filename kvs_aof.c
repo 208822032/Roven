@@ -1,10 +1,15 @@
-#include "kvstore.h"
+#include "include/kvs_api.h"
+#include "include/kvs_aof_internal.h"
+#include "include/resp_protocol.h"
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <time.h>
 #include <sys/wait.h>
 #include <errno.h>
-#include "distributed.h"
+#include "include/distributed.h"
+
+
+
 
 //负责AOF初始化 追加命令 同步和加载功能
 
@@ -30,6 +35,9 @@ extern distributed_config_t global_dist_config;
 
 //初始化函数
 int aof_init(const char *filename, int fsync_mode){
+
+    // 先清零整个结构体
+    memset(&aof_state, 0, sizeof(aof_state));
 
     //初始化重写相关字段
     aof_state.rewrite_in_progress = 0;
@@ -58,8 +66,6 @@ int aof_init(const char *filename, int fsync_mode){
         fprintf(stderr, "Invalid AOF sync mode: %d\n", fsync_mode);
         return -1;
     }
-
-    memset(&aof_state, 0, sizeof(aof_state));
 
     aof_state.filename = strdup(filename);
     if(!aof_state.filename){
@@ -173,6 +179,8 @@ int aof_init(const char *filename, int fsync_mode){
 void aof_append(int argc, char **argv){
     if(!aof_state.fp || aof_state.rewrite_in_progress) return;
 
+    // Proactor 模式下禁用 COW 保护机制，避免阻塞异步 I/O
+    #if (NETWORK_SELECT != NETWORK_PROACTOR)
     //COW保护 如果正在重写 添加COW保护
     if(aof_state.rewrite_in_progress && aof_state.cow_snapshot_ready){
         if(pthread_rwlock_rdlock(&aof_state.data_rwlock) == 0){
@@ -195,6 +203,14 @@ void aof_append(int argc, char **argv){
         }
         return; //COW模式下提前返回
     }
+    #endif
+    // Proactor 重写期间：只写入重写缓冲区，避免与快照竞争
+    #if (NETWORK_SELECT == NETWORK_PROACTOR)
+    if (aof_state.rewrite_in_progress) {
+        aof_rewrite_append_command(argc, argv);
+        return;
+    }
+    #endif
 
     //非COW模式的正常处理 
     pthread_mutex_lock(&aof_state.mutex);

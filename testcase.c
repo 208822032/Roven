@@ -10,6 +10,7 @@
 #include <fcntl.h>  // 包含 fcntl() 函数的声明
 #include <hiredis/hiredis.h>
 
+#include <netinet/tcp.h>
 #define MAX_MSG_LENGTH		1024
 #define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
@@ -26,6 +27,10 @@ int send_msg(int connfd, char *msg, int length) {
 #else
     int total_sent = 0;
     int remaining = length;
+
+    // 可选：把 connfd 设为非阻塞
+    // int flags = fcntl(connfd, F_GETFL, 0);
+    // fcntl(connfd, F_SETFL, flags | O_NONBLOCK);
     
     while (total_sent < length) {
         int res = send(connfd, msg + total_sent, remaining, 0);
@@ -33,7 +38,7 @@ int send_msg(int connfd, char *msg, int length) {
         if (res < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // 如果是非阻塞socket且缓冲区满，可以稍等或处理其他任务
-                //usleep(1000); // 等待1ms
+                usleep(1000); // 等待1ms
                 continue;
             }
             perror("send");
@@ -973,125 +978,497 @@ char* generate_custom_set_pipeline(int count, const char* key_format, const char
     pipeline[written] = '\0';
     return pipeline;
 }
+ 
 
-void hugepacket_testcase(int connfd){
+static int parse_resp_object(const char *buf, int len, int *consumed);
 
-    char *pipeline_cmd = generate_set_pipeline(1000, "key", "value");
-    //pipeline_cmd = 
-
-    //printf("send msg: %s\n", pipeline_cmd);
-    // 发送pipeline请求
-    send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
-
-#if 0
-    // 接收响应缓冲区
-    char response[2048] = {0};
-    int total_received = 0;
-    int expected_responses = 9; // 我们发送了9个命令
-
-    // 接收所有响应（可能需要多次recv）
-    while (total_received < sizeof(response) - 1) {
-        int n = recv(connfd, response + total_received, 
-                    sizeof(response) - total_received - 1, 0);
-        if (n <= 0) break;
-        total_received += n;
-        
-        // 检查是否收到全部响应（按\r\n计数）
-        int response_count = 0;
-        for (int i = 0; i < total_received; i++) {
-            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
-                response_count++;
-            }
+/* 辅助：读取一行，返回行长度(包含 \r\n)，不够返回 0，错误返回 -1 */
+static int read_line(const char *buf, int len) {
+    for (int i = 0; i < len - 1; ++i) {
+        if (buf[i] == '\r' && buf[i+1] == '\n') {
+            return i + 2; // 包含 \r\n
         }
-        if (response_count >= expected_responses) break;
     }
-    response[total_received] = '\0';
-
-    // 验证响应内容
-    const char *expected_response = 
-        "+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-		"+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-		"+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-		"+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-		"+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-		"+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-		"+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-        "+OK\r\n"
-		"+OK\r\n"
-		"+OK\r\n"
-        "+OK\r\n"
-		"+OK\r\n";
-    
-	if (strcmp(response, expected_response) == 0) {
-        //printf("==> PASS -> Pipeline test\n");
-    } else {
-        printf("==> FAILED -> Pipeline test\n");
-        printf("Expected:\n%s\n", expected_response);
-        printf("Received:\n%s\n", response);
-    }
-#else
-    // 接收所有响应
-    char response[65536] = {0};
-    int total_received = 0;
-    int expected_responses = 1000;
-    
-    // 接收所有响应（可能需要多次recv）
-    while (total_received < sizeof(response) - 1) {
-        int n = recv(connfd, response + total_received, 
-                    sizeof(response) - total_received - 1, 0);
-        if (n <= 0) break;
-        total_received += n;
-        
-        // 检查是否收到全部响应（按\r\n计数）
-        int response_count = 0;
-        for (int i = 0; i < total_received; i++) {
-            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
-                response_count++;
-            }
-        }
-        if (response_count >= expected_responses) break;
-    }
-    response[total_received] = '\0';
-    //printf("response: %s\n", response);
-    
-    // 验证响应
-    char expected_response[65535] = {0};
-    for (int i = 0; i < 1000; i++) {
-        strcat(expected_response, "+OK\r\n");
-    }
-    
-    if (strcmp(response, expected_response) == 0) {
-        printf("==> PASS -> Huge packet test\n");
-    } else {
-        printf("==> FAILED -> Huge packet test\n");
-        printf("Expected %d bytes, Received %d bytes\n", 
-               (int)strlen(expected_response), total_received);
-    }
-    
-    free(pipeline_cmd);
-#endif
+    return 0; // 不够一行
 }
 
+/* 辅助：从形如 ":123\r\n" / "$5\r\n" / "*10\r\n" 中解析整数 */
+static int parse_integer(const char *buf, int len, long long *value, int *line_len) {
+    int l = read_line(buf, len);
+    if (l == 0) return 0;           // 数据不够
+    if (buf[l-2] != '\r' || buf[l-1] != '\n') return -1;
 
+    long long v = 0;
+    int sign = 1;
+    int i = 0;
+    if (buf[0] == '-' || buf[0] == '+') {
+        if (buf[0] == '-') sign = -1;
+        i = 1;
+    }
+    for (; i < l-2; ++i) {
+        if (buf[i] < '0' || buf[i] > '9') return -1;
+        v = v * 10 + (buf[i] - '0');
+    }
+    *value   = v * sign;
+    *line_len = l;
+    return 1;
+}
+
+static int parse_resp_object(const char *buf, int len, int *consumed) {
+    if (len <= 0) return 0;
+
+    // 1. 跳过前导空白字符（\r, \n, 空格, \t）
+    int skip = 0;
+    while (skip < len) {
+        char c = buf[skip];
+        if (c == '\r' || c == '\n' || c == ' ' || c == '\t') {
+            skip++;
+        } else {
+            break;
+        }
+    }
+    if (skip >= len) return 0;  // 全是空白，数据还不够
+
+    // 2. 真正的 RESP 类型
+    char type = buf[skip];
+    buf += skip + 1;   // 跳过空白和类型字节
+    len -= skip + 1;
+
+    int line_len = 0;
+    long long num = 0;
+    int ret = 0;
+    int used = skip + 1; // 已经消耗的字节数（空白+类型）
+
+    switch (type) {
+    case '+': // 简单字符串
+    case '-': // 错误
+    case ':': { // 整数
+        int l = read_line(buf, len);
+        if (l == 0) return 0;     // 数据不够
+        if (type == ':') {
+            long long dummy;
+            int ll;
+            ret = parse_integer(buf, len, &dummy, &ll);
+            if (ret <= 0) return ret;
+            l = ll;
+        }
+        *consumed = used + l;
+        return 1;
+    }
+
+    case '$': { // 批量字符串
+        ret = parse_integer(buf, len, &num, &line_len);
+        if (ret <= 0) return ret;
+        used += line_len;
+        buf  += line_len;
+        len  -= line_len;
+
+        if (num < 0) {
+            *consumed = used;
+            return 1;
+        }
+        if (len < num + 2) return 0;
+        if (buf[num] != '\r' || buf[num+1] != '\n') return -1;
+
+        used += (int)(num + 2);
+        *consumed = used;
+        return 1;
+    }
+
+    case '*': { // 数组
+        ret = parse_integer(buf, len, &num, &line_len);
+        if (ret <= 0) return ret;
+        used += line_len;
+        buf  += line_len;
+        len  -= line_len;
+
+        if (num < 0) {
+            *consumed = used;
+            return 1;
+        }
+        for (long long i = 0; i < num; ++i) {
+            int sub_used = 0;
+            ret = parse_resp_object(buf, len, &sub_used);
+            if (ret <= 0) return ret;
+            buf  += sub_used;
+            len  -= sub_used;
+            used += sub_used;
+        }
+        *consumed = used;
+        return 1;
+    }
+
+    default:
+        return -1;
+    }
+}
+
+#if 0
+void hugepacket_testcase(int connfd){
+    int command_count = 10000;
+    char *pipeline_cmd = generate_set_pipeline(command_count, "key", "value");
+    if (!pipeline_cmd) {
+        printf("Failed to generate pipeline\n");
+        return;
+    }
+
+    printf("Sending %d commands (%zu bytes)...\n", command_count, strlen(pipeline_cmd));
+
+    // 关闭 Nagle，减小小包延迟（可选）
+    int flag = 1;
+    setsockopt(connfd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
+
+    // 分批发送
+    size_t total_len = strlen(pipeline_cmd);
+    size_t sent = 0;
+    size_t chunk = 128 * 1024;
+
+    while (sent < total_len) {
+        size_t to_send = (total_len - sent > chunk) ? chunk : (total_len - sent);
+        ssize_t n = send(connfd, pipeline_cmd + sent, to_send, 0);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                usleep(1000);
+                continue;
+            }
+            printf("Send failed: %s\n", strerror(errno));
+            free(pipeline_cmd);
+            return;
+        }
+        sent += n;
+
+        // 每发送 128KB，尝试非阻塞读一点，防止窗口堵死
+        if (sent % (128 * 1024) == 0) {
+            char tmpbuf[4096];
+            recv(connfd, tmpbuf, sizeof(tmpbuf), MSG_DONTWAIT);
+        }
+    }
+    printf("Sent %zu bytes\n", sent);
+
+    // 动态接收缓冲区
+    size_t response_capacity = 2 * 1024 * 1024;  // 初始 2MB
+    char *response = malloc(response_capacity);
+    if (!response) {
+        printf("Failed to allocate response buffer\n");
+        free(pipeline_cmd);
+        return;
+    }
+
+    int total_received   = 0;  // 当前缓冲区有效数据长度
+    int resp_count = 0;  // 已经扫描到的位置（下标）
+
+    // 用于检测“长时间无进展”
+    int idle_loops = 0;
+    const int max_idle_loops = 10; // 按 2 秒超时算，大约 20 秒
+
+    int eof = 0;
+
+    while (resp_count < command_count) {
+        if(!eof){
+            if (response_capacity - total_received < 4096) {
+                response_capacity *= 2;
+                char *new_response = realloc(response, response_capacity);
+                if (!new_response) {
+                    printf("Failed to expand response buffer\n");
+                    free(response);
+                    free(pipeline_cmd);
+                    return;
+                }
+                response = new_response;
+            }
+
+            int n = recv(connfd,
+                         response + total_received,
+                         (int)(response_capacity - total_received - 1),
+                         0);
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK ||
+                    errno == EINVAL || errno == EINTR) {
+                    // 没有新数据立刻可读；如果之前已经 EOF，就直接走解析分支
+                    idle_loops++;
+                    if (idle_loops > max_idle_loops) {
+                        printf("No more data from server for a long time, stop waiting.\n");
+                        break;
+                    }
+                    // 先尝试用现有 buffer 再解析一轮，看能不能增加 resp_count
+                } else {
+                    printf("recv error: %s\n", strerror(errno));
+                    break;
+                }
+            } else if (n == 0) {
+                // 对端关闭，标记 EOF，但不要立刻 break
+                printf("Server closed connection.\n");
+                eof = 1;
+            } else {
+                idle_loops = 0;
+                total_received += n;
+
+                static int printed = 0;
+                if (!printed) {
+                    printed = 1;
+                    printf("first chunk n=%d, bytes:\n", n);
+                    for (int i = 0; i < n && i < 64; ++i) {
+                        unsigned char c = (unsigned char)response[i];
+                        if (c >= 32 && c <= 126)
+                            putchar(c);
+                        else if (c == '\r')
+                            printf("\\r");
+                        else if (c == '\n')
+                            printf("\\n");
+                        else
+                            printf("\\x%02X", c);
+                    }
+                    printf("\n----\n");
+                }
+            }
+        }
+        
+        int offset = 0;
+        int old_resp_count = resp_count;
+
+        while (offset < total_received) {
+            int consumed = 0;
+            int ret = parse_resp_object(response + offset,
+                                        total_received - offset,
+                                        &consumed);
+            if (ret == 1) {
+                resp_count++;
+                offset += consumed;
+            } else if (ret == 0) {
+                // 数据不够，等待下一次 recv
+                break;
+            } else {
+                // 解析错误，直接打印并退出
+                printf("RESP parse error in client, offset=%d\n", offset);
+                free(response);
+                free(pipeline_cmd);
+                return;
+            }
+        }
+
+        // 将未解析完的残留数据前移到缓冲区开头
+        if (offset > 0 && offset < total_received) {
+            memmove(response, response + offset, total_received - offset);
+        }
+        total_received -= offset;
+
+       printf("buffer_remain=%d, resp_count=%d\n",
+               total_received, resp_count);
+
+        // 3) 如果已经 EOF，且这一轮解析没有任何进展（old_resp_count 未增加），
+        //    且 buffer 里也凑不出一个完整对象（parse_resp_object 返回 0），
+        //    则可以认为所有数据都处理完毕，退出
+        if (eof && old_resp_count == resp_count) {
+            break;
+        }
+
+        // 4) 如果已经收齐所有预期响应，也可以退出
+        if (resp_count >= command_count) {
+            break;
+        }
+    }
+
+        
+        
+
+    if (resp_count == command_count) {
+        printf("==> PASS -> Huge packet test (%d commands)\n", command_count);
+    } else {
+        printf("==> FAILED -> Huge packet test\n");
+        printf("Expected %d responses, got %d\n", command_count, resp_count);
+    }
+
+    free(response);
+    free(pipeline_cmd);
+}
+#else
+static int parse_simple_resp_line(const char *buf, int len, int *consumed) {
+    if (len <= 0) return 0;
+
+    int skip = 0;
+    while (skip < len) {
+        char c = buf[skip];
+        if (c == '\r' || c == '\n' || c == ' ' || c == '\t') {
+            skip++;
+        } else {
+            break;
+        }
+    }
+    if (skip >= len) return 0;
+
+    char type = buf[skip];
+    if (type != '+' && type != '-') {
+        // 对于 huge pipeline 测试，理论上只会返回简单字符串/错误
+        // 若遇到其它类型，直接当作错误
+        return -1;
+    }
+
+    const char *p = buf + skip + 1;   // 跳过 '+' 或 '-'
+    int remain   = len - (skip + 1);
+
+    int l = read_line(p, remain);
+    if (l == 0) return 0;  // 不够一行
+
+    // p[l-2]==\r, p[l-1]==\n 在 read_line 中已经保证
+    *consumed = skip + 1 + l;
+    return 1;
+}
+
+void hugepacket_testcase(int connfd, int command_count) {
+    if (command_count <= 0) {
+        printf("command_count must > 0\n");
+        return;
+    }
+
+    // 1. 构造 pipeline 命令
+    char *pipeline_cmd = generate_set_pipeline(command_count, "key", "value");
+    if (!pipeline_cmd) {
+        printf("Failed to generate pipeline\n");
+        return;
+    }
+    size_t total_len = strlen(pipeline_cmd);
+    printf("Sending %d commands (%zu bytes)...\n", command_count, total_len);
+
+    // 2. 用 send_msg 阻塞发送全部数据
+    int sent = send_msg(connfd, pipeline_cmd, (int)total_len);
+    if (sent != (int)total_len) {
+        printf("Send incomplete: sent=%d, expected=%zu\n", sent, total_len);
+        free(pipeline_cmd);
+        return;
+    }
+    printf("Sent %d bytes\n", sent);
+
+    // 3. 接收响应：按 RESP 简单字符串 / 错误 一条条解析
+    size_t buf_cap = 1024 * 1024;
+    char *buf = (char *)malloc(buf_cap);
+    if (!buf) {
+        printf("Failed to allocate recv buffer\n");
+        free(pipeline_cmd);
+        return;
+    }
+
+    int total_received = 0;
+    int resp_count     = 0;
+    int eof            = 0;
+
+    // 设置接收超时（例如 5 秒，防止永久阻塞）
+    // struct timeval tv;
+    // tv.tv_sec  = 5;
+    // tv.tv_usec = 0;
+    // setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
+    while (resp_count < command_count) {
+        // 如果还没 EOF，先尝试多收一点数据
+        if (!eof) {
+            if (buf_cap - total_received < 4096) {
+                buf_cap *= 2;
+                char *nb = (char *)realloc(buf, buf_cap);
+                if (!nb) {
+                    printf("Failed to expand recv buffer\n");
+                    free(buf);
+                    free(pipeline_cmd);
+                    return;
+                }
+                buf = nb;
+            }
+
+            int n = recv(connfd, buf + total_received,
+                         (int)(buf_cap - total_received - 1), 0);
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK ||
+                    errno == EINVAL || errno == EINTR) {
+                    // 没有新数据了，继续用现有 buf 尝试解析
+                } else {
+                    printf("recv error: %s\n", strerror(errno));
+                    break;
+                }
+            } else if (n == 0) {
+                // 对端关闭，标记 EOF
+                printf("Server closed connection.\n");
+                eof = 1;
+            } else {
+                total_received += n;
+            }
+        }
+
+        // 尽量多地从 buf 里解析简单 RESP 行（+ 或 -）
+        int offset = 0;
+        int old_resp = resp_count;
+        while (offset < total_received) {
+            int consumed = 0;
+            int ret = parse_simple_resp_line(buf + offset,
+                                             total_received - offset,
+                                             &consumed);
+            if (ret == 1) {
+                resp_count++;
+                offset += consumed;
+            } else if (ret == 0) {
+                // 数据不够一行，等待更多 recv
+                break;
+            } else {
+                printf("Simple RESP parse error around offset=%d\n", offset);
+                printf("Dump: ");
+                for (int i = 0; i < 32 && offset + i < total_received; ++i) {
+                    unsigned char c = (unsigned char)buf[offset + i];
+                    if (c >= 32 && c <= 126) putchar(c);
+                    else if (c == '\r') printf("\\r");
+                    else if (c == '\n') printf("\\n");
+                    else printf("\\x%02X", c);
+                }
+                printf("\n");
+                free(buf);
+                free(pipeline_cmd);
+                return;
+            }
+        }
+
+        if (offset > 0 && offset < total_received) {
+            memmove(buf, buf + offset, total_received - offset);
+        }
+        total_received -= offset;
+
+        printf("buffer_remain=%d, resp_count=%d\n", total_received, resp_count);
+
+        // 如果已经 EOF 且这轮解析没有任何进展，则退出
+        if (eof && old_resp == resp_count) {
+            break;
+        }
+    }
+
+    if (resp_count == command_count) {
+        printf("==> PASS -> Huge packet test (%d commands)\n", command_count);
+    } else {
+        printf("==> FAILED -> Huge packet test\n");
+        printf("Expected %d responses, got %d\n", command_count, resp_count);
+    }
+
+    free(buf);
+    free(pipeline_cmd);
+}
+#endif
+
+
+
+//在测试用例间添加连接清理
+void cleanup_connction(int connfd){
+
+    //清空可能的残留响应
+    char dummy_buf[1024];
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 100000; // 100ms
+    setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
+    while(recv(connfd, dummy_buf, sizeof(dummy_buf)-1, 0) > 0){
+        //继续读取直到没有数据
+    }
+
+    //恢复默认超时
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
+}
 
 // testcase 192.168.243.131  2000
 int main(int argc, char *argv[]) {
@@ -1138,23 +1515,32 @@ int main(int argc, char *argv[]) {
 	}else if(mode == 9){
 		//pipeline_testcase(connfd);
 	}else if(mode == 10){
+        cleanup_connction(connfd);
 		array_resp_testcase(connfd);
 	}else if(mode == 11){
+        cleanup_connction(connfd);
 		rbtree_resp_testcase(connfd);
 	}else if(mode == 12){
+        cleanup_connction(connfd);
 		hash_resp_testcase(connfd);
 	}else if(mode == 13){
+        cleanup_connction(connfd);
 		skiptable_resp_testcase(connfd);
 	}else if(mode == 14){
+        cleanup_connction(connfd);
 		array_pipeline_qps_testcase(connfd);
 	}else if(mode == 15){
+        cleanup_connction(connfd);
 		hash_pipeline_qps_testcase(connfd);
 	}else if(mode == 16){
+        cleanup_connction(connfd);
 		rbtreee_pipeline_qps_testcase(connfd);
 	}else if(mode == 17){
+        cleanup_connction(connfd);cleanup_connction(connfd);
 		skiptable_pipeline_qps_testcase(connfd);
 	}else if(mode == 18){
-        hugepacket_testcase(connfd);
+        cleanup_connction(connfd);
+        hugepacket_testcase(connfd, 1000000);
     }
 
 	return 0;

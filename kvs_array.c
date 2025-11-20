@@ -1,6 +1,9 @@
 
 
-#include "kvstore.h"
+#include "include/kvs_api.h"
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 
 

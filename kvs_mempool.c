@@ -1,4 +1,18 @@
-#include "kvstore.h"
+#include "include/kvs_memory_internal.h"
+#include "include/kvs_memory.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <link.h>
+#include <errno.h>
+#include <string.h>
+#ifdef __linux__
+#include <execinfo.h>
+#endif
+
 
 // 新增：全局大内存块链表
 //gmalloc 自定义 系统自带 对比
@@ -49,6 +63,70 @@ void mem_init() {
 // 内存对齐 (8字节对齐)
 #define MEM_ALIGNMENT 8
 #define ALIGN_SIZE(size) (((size) + MEM_ALIGNMENT - 1) & ~(MEM_ALIGNMENT - 1))
+
+void *memleak_alloc(size_t size, const char *filename, const char *funcname, int line) {
+
+	void *ptr = mem_alloc(size);
+
+	char buff[128] = {0};
+	snprintf(buff, 128, "./block/%p.mem", ptr);
+
+	FILE* fp = fopen(buff, "w");
+	if (!fp) {
+		mem_free(ptr);
+		return NULL;
+	}
+
+	fprintf(fp, "[+][%s:%s:%d] %p: %ld malloc\n", filename, funcname, line, ptr, size);
+
+	fflush(fp);
+	fclose(fp);
+
+	return ptr;
+}
+
+
+void memleak_free(void *ptr, const char *filename, const char *funcname, int line) {
+	
+	char buff[128] = {0};
+	snprintf(buff, 128, "./block/%p.mem", ptr);
+
+	if (unlink(buff) < 0) { // no exist
+        int err = errno;
+        const char* err_str = strerror(err);
+
+        // 针对常见场景给出提示
+        const char *hint = (err == ENOENT)
+            ? "可能重复释放，或未通过 memleak_alloc 分配导致未创建跟踪文件"
+            : "unlink 失败，请检查路径/权限";
+
+        printf("[DOUBLE-FREE][%s:%s:%d] ptr=%p, path=%s, errno=%d(%s). 提示: %s\n",
+               filename, funcname, line, ptr, buff, err, err_str, hint);
+
+		#ifdef __linux__
+        // 可选：打印简单栈回溯（仅Linux）
+        void *bt[16];
+        int n = backtrace(bt, 16);
+        printf("[BACKTRACE] 深度=%d\n", n);
+        backtrace_symbols_fd(bt, n, fileno(stdout));
+        #endif
+        fflush(stdout);
+		return ;
+	}
+	
+	return mem_free(ptr);
+	
+}
+
+
+char* kvs_strdup(const char *s){
+    if(!s) return NULL;
+    size_t len = strlen(s) + 1;
+    char *p = kvs_malloc(len);
+    if(p) memcpy(p, s, len);
+    return p;
+}
+
 
 void* mem_alloc(size_t size) {
     // 检查内存池是否已初始化，若未初始化或已销毁则返回NULL
