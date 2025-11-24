@@ -1,0 +1,25 @@
+[
+{
+  "directory": "/home/zhengpan/share/Linux/chapter_9/11.14/build",
+  "command": "/usr/bin/clang   -g   -o CMakeFiles/nty_core.dir/nty_coroutine.o   -c /home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core/nty_coroutine.c",
+  "file": "/home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core/nty_coroutine.c"
+},
+
+{
+  "directory": "/home/zhengpan/share/Linux/chapter_9/11.14/build",
+  "command": "/usr/bin/clang   -g   -o CMakeFiles/nty_core.dir/nty_epoll.o   -c /home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core/nty_epoll.c",
+  "file": "/home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core/nty_epoll.c"
+},
+
+{
+  "directory": "/home/zhengpan/share/Linux/chapter_9/11.14/build",
+  "command": "/usr/bin/clang   -g   -o CMakeFiles/nty_core.dir/nty_schedule.o   -c /home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core/nty_schedule.c",
+  "file": "/home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core/nty_schedule.c"
+},
+
+{
+  "directory": "/home/zhengpan/share/Linux/chapter_9/11.14/build",
+  "command": "/usr/bin/clang   -g   -o CMakeFiles/nty_core.dir/nty_socket.o   -c /home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core/nty_socket.c",
+  "file": "/home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core/nty_socket.c"
+}
+]

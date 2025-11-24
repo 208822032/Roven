@@ -40,6 +40,9 @@ typedef struct aof_state_s {
     pthread_rwlock_t data_rwlock;     // 数据读写锁
     volatile int cow_snapshot_ready;  // COW快照准备就绪标志
     time_t snapshot_timestamp;        // 快照时间戳
+
+    // 初始化标志，防止重复释放
+    int initialized;
 } aof_state_t;
 
 // 内部模块共享的全局状态（实现文件负责定义）

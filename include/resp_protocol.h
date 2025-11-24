@@ -24,7 +24,8 @@
 #include <sys/mman.h>
 #include <limits.h>
 
-#define MAX_BULK_LENGTH (512 * 1024 * 1024) // 512MB 最大批量字符串长度
+// #define MAX_BULK_LENGTH (512 * 1024 * 1024) // 512MB 最大批量字符串长度
+#define MAX_BULK_LENGTH  (10 * 1048576) // 10MB 最大批量字符串长度
 #define MAX_ARRAY_LENGTH 1024 * 1024        // 最大数组元素数量
 
 
@@ -89,5 +90,10 @@ int resp_process_command(char **tokens, int count, char *response);
 
 //使用一个无状态reader只负责在一块连续内存里 从offset中算出第一个完整命令占用了多少字节
 int resp_peek_command(const char* buf, size_t len, size_t offset);
+
+size_t resp_estimate_simple_string_len(const char *str);
+size_t resp_estimate_error_len(const char *err);
+size_t resp_estimate_integer_len(long long num);
+size_t resp_estimate_bulk_string_len(const char *str);
 
 #endif

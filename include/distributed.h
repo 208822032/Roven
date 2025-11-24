@@ -45,5 +45,8 @@ void master_sync_command(const char *cmd, const char *key, const char *value);
 void slave_connect_master();
 void* slave_connect_thread(void *arg);
 
+//关闭分布式系统
+void distributed_shutdown(void);
+
 
 #endif

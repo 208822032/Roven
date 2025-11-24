@@ -4,10 +4,11 @@
 
 #define MAX_KEY_LEN     128
 #define MAX_VALUE_LEN   512
-#define MAX_TABLE_SIZE  1024
+#define MAX_TABLE_SIZE  1048576
 
-#define ENABLE_KEY_POINTER 1
+#define ENABLE_KEY_POINTER 0
 
+#if 0
 typedef struct hashnode_s {
 #if ENABLE_KEY_POINTER
 	char *key;
@@ -18,9 +19,18 @@ typedef struct hashnode_s {
 #endif
 	struct hashnode_s *next;
 } hashnode_t;
+#else
+typedef struct hashnode_s {
+	unsigned char used;
+	unsigned char klen;
+	unsigned short vlen;
+	char key[MAX_KEY_LEN];
+	char value[MAX_VALUE_LEN];
+} hashnode_t;
+#endif
 
 typedef struct hashtable_s {
-	hashnode_t **nodes;
+	hashnode_t *nodes;
 	int max_slots;
 	int count;
 } hashtable_t;

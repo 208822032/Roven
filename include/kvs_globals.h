@@ -5,6 +5,9 @@
 #include "kvs_hash.h"
 #include "kvs_skiptable.h"
 
+// 全局运行时配置
+extern kvs_config_t g_cfg;
+
 // 提供集中式访问接口，避免在各处直接 extern 变量名
 
 #if ENABLE_ARRAY

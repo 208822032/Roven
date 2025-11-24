@@ -26,7 +26,25 @@
         "stdlib.h": "c",
         "sync_mode.h": "c",
         "type_traits": "c",
-        "time.h": "c"
+        "time.h": "c",
+        "kvs_memory_internal.h": "c",
+        "jemalloc_wrapper.h": "c",
+        "jemalloc.h": "c",
+        "array": "c",
+        "string_view": "c",
+        "initializer_list": "c",
+        "utility": "c",
+        "pthread.h": "c",
+        "optional": "c",
+        "istream": "c",
+        "ostream": "c",
+        "ratio": "c",
+        "system_error": "c",
+        "functional": "c",
+        "tuple": "c",
+        "sync_backend.h": "c",
+        "kvs_aof_internal.h": "c"
     },
-    "C_Cpp.default.compilerPath": "E:/vscode/codeConfiguration/x86_64-8.1.0-release-posix-sjlj-rt_v6-rev0/mingw64/bin/gcc.exe"
+    "C_Cpp.default.compilerPath": "E:/vscode/codeConfiguration/x86_64-8.1.0-release-posix-sjlj-rt_v6-rev0/mingw64/bin/gcc.exe",
+    "cmake.sourceDirectory": "/home/zhengpan/share/Linux/chapter_9/11.14/NtyCo/core"
 }
