@@ -1,3 +1,0 @@
-/home/zhengpan/share/Linux/chapter_9/11.14/build/CMakeFiles/rebuild_cache.dir
-/home/zhengpan/share/Linux/chapter_9/11.14/build/CMakeFiles/edit_cache.dir
-/home/zhengpan/share/Linux/chapter_9/11.14/build/CMakeFiles/nty_core.dir
