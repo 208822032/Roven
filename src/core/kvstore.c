@@ -236,13 +236,29 @@ int main(int argc, char *argv[]) {
 		       g_cfg.aof_filename, g_cfg.enable_aof, g_cfg.aof_fsync_mode);
 	}
 	
-#if (NETWORK_SELECT == NETWORK_REACTOR)
-	reactor_start(g_cfg.port, kvs_filter_protocol);  
-#elif (NETWORK_SELECT == NETWORK_NTYCO)
-	ntyco_start(g_cfg.port, kvs_filter_protocol); 
-#elif (NETWORK_SELECT == NETWORK_PROACTOR)
-	proactor_start(g_cfg.port, kvs_filter_protocol); //kvs_protocol
-#endif
+// #if (NETWORK_SELECT == NETWORK_REACTOR)
+// 	reactor_start(g_cfg.port, kvs_filter_protocol);  
+// #elif (NETWORK_SELECT == NETWORK_NTYCO)
+// 	ntyco_start(g_cfg.port, kvs_filter_protocol); 
+// #elif (NETWORK_SELECT == NETWORK_PROACTOR)
+// 	proactor_start(g_cfg.port, kvs_filter_protocol); //kvs_protocol
+// #endif
+
+    int mode = g_cfg.network_mode;
+
+	if (mode == NETWORK_NTYCO) {
+		printf("Starting in NTYCO mode on port %d\n", g_cfg.port);
+        ntyco_start(g_cfg.port, kvs_filter_protocol);
+    } else if (mode == NETWORK_PROACTOR) {
+		printf("Starting in PROACTOR mode on port %d\n", g_cfg.port);
+        proactor_start(g_cfg.port, kvs_filter_protocol);
+    } else if(mode == NETWORK_REACTOR){
+		printf("Starting in PROACTOR mode on port %d\n", g_cfg.port);
+        reactor_start(g_cfg.port, kvs_filter_protocol);
+    }else {
+		// 无网络模式：既不启动监听，也直接走保存流程退出
+		printf("network_mode=%d, no network listener started (offline mode)\n", mode);
+	}
        
     // 保存数据并退出
     printf("Shutdown requested, saving data...\n");

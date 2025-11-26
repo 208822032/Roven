@@ -301,18 +301,16 @@ void* mem_alloc(size_t size) {
 
 void mem_free(void* ptr) {
 
-    if (!g_mem_manager.is_initialized) return;
-
     if (!ptr) return;
 
     // 根据当前后端释放
     switch (g_mem_backend) {
     case KVS_MEM_BACKEND_SYSTEM:
-        fprintf(stderr, "[MEM] system free %p\n", ptr);
+        // fprintf(stderr, "[MEM] system free %p\n", ptr);
         free(ptr);
         return;
     case KVS_MEM_BACKEND_JEMALLOC:
-        fprintf(stderr, "[MEM] jemalloc free %p\n", ptr);
+        // fprintf(stderr, "[MEM] jemalloc free %p\n", ptr);
         if (jemalloc_free_impl) {
             jemalloc_free_impl(ptr);
             return;

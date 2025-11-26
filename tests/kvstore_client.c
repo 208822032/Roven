@@ -9,6 +9,10 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+static int read_and_print_reply_with_save(int fd, const char *save_path);
+static int read_bulk_and_save(int fd, const char *save_path);
+
+
 #define BUF_SIZE 4096
 
 /*==================== 颜色宏 ====================*/
@@ -43,12 +47,12 @@ static cli_help_entry_t g_help_table[] = {
     { "SDEL",     "Skiplist delete",            "SDEL key" },
     { "PAPERSET", "Save paper from file",       "PAPERSET key /path/to/paper" },
     { "PAPERGET", "Get paper and save to file", "PAPERGET key /path/to/save" },
+    { "PAPERDEL", "Delete paper",                "PAPERDEL key" },
+    { "PAPERMOD", "Modify paper from file",      "PAPERMOD key /path/to/paper" },
     // 注意：服务器 QUIT 用 SQUIT 转发，避免与客户端退出冲突
     { "SQUIT",    "Send QUIT to server",        "SQUIT" },
     { "EXIT",     "Exit client",                "EXIT" },
     { "HELP",     "Show help",                  "HELP [command]" },
-    // 新增：保存大文件
-    { "SAVEHUGE", "Save large file as value",   "SAVEHUGE key /path/to/file" },
 };
 
 static size_t g_help_count = sizeof(g_help_table) / sizeof(g_help_table[0]);
@@ -64,8 +68,9 @@ static void print_usage(const char *prog) {
     "\n"
     "Notes:\n"
     "  PAPERSET key /path/to/paper : read paper from local file and store as value\n"
+    "  PAPERMOD key /path/to/paper : modify existing paper with content from file\n"
     "  PAPERGET key /path/to/save  : download paper, only print length, body saved to file\n"
-    "  SAVEHUGE key /path/to/file  : store large binary value using SET\n",
+    "  PAPERDEL key                : delete paper\n",
         prog, prog, prog);
 }
 
@@ -190,86 +195,6 @@ static int read_file_all(const char *path, char **out_buf, size_t *out_len) {
     return 0;
 }
 
-// 根据 key + 原始二进制内容构造 RESP：SET key <binary>
-// out_buf 由本函数 malloc，调用者负责 free
-static int build_savehuge_request(const char *key,
-                                  const char *file_data,
-                                  size_t file_len,
-                                  char **out_buf,
-                                  size_t *out_len)
-{
-    *out_buf = NULL;
-    if (out_len) *out_len = 0;
-
-    char key_len_str[32];
-    char val_len_str[64];
-    int key_len_str_n = snprintf(key_len_str, sizeof(key_len_str), "%zu", strlen(key));
-    int val_len_str_n = snprintf(val_len_str, sizeof(val_len_str), "%zu", file_len);
-    if (key_len_str_n <= 0 || val_len_str_n <= 0) {
-        return -1;
-    }
-
-    // 估算最大请求长度
-    size_t max_req =
-        4 +                        // "*3\r\n"
-        4 + 3 + 2 +               // "$3\r\nSET\r\n"
-        1 + (size_t)key_len_str_n + 2 +  // "$<keylen>\r\n"
-        strlen(key) + 2 +         // "<key>\r\n"
-        1 + (size_t)val_len_str_n + 2 +  // "$<file_len>\r\n"
-        file_len + 2;             // "<file_data>\r\n"
-
-    char *buf = (char *)malloc(max_req);
-    if (!buf) {
-        perror("malloc");
-        return -1;
-    }
-
-    size_t n = 0;
-    int w = 0;
-
-    // *3\r\n
-    w = snprintf(buf + n, max_req - n, "*3\r\n");
-    if (w < 0 || (size_t)w >= max_req - n) goto fail;
-    n += (size_t)w;
-
-    // $3\r\nSET\r\n
-    w = snprintf(buf + n, max_req - n, "$3\r\nSET\r\n");
-    if (w < 0 || (size_t)w >= max_req - n) goto fail;
-    n += (size_t)w;
-
-    // $<keylen>\r\n
-    w = snprintf(buf + n, max_req - n, "$%s\r\n", key_len_str);
-    if (w < 0 || (size_t)w >= max_req - n) goto fail;
-    n += (size_t)w;
-
-    // <key>\r\n
-    if (strlen(key) + 2 > max_req - n) goto fail;
-    memcpy(buf + n, key, strlen(key));
-    n += strlen(key);
-    buf[n++] = '\r';
-    buf[n++] = '\n';
-
-    // $<file_len>\r\n
-    w = snprintf(buf + n, max_req - n, "$%s\r\n", val_len_str);
-    if (w < 0 || (size_t)w >= max_req - n) goto fail;
-    n += (size_t)w;
-
-    // <file_data>\r\n
-    if (file_len + 2 > max_req - n) goto fail;
-    memcpy(buf + n, file_data, file_len);
-    n += file_len;
-    buf[n++] = '\r';
-    buf[n++] = '\n';
-
-    *out_buf = buf;
-    if (out_len) *out_len = n;
-    return 0;
-
-fail:
-    free(buf);
-    return -1;
-}
-
 // 根据 key + 原始二进制内容构造 RESP：PAPERSET key <binary>
 // 与 build_savehuge_request 类似，只是命令名不同
 static int build_paperset_request(const char *key,
@@ -350,6 +275,85 @@ fail2:
     return -1;
 }
 
+// 根据 key + 原始二进制内容构造 RESP：PAPERMOD key <binary>
+static int build_papermod_request(const char *key,
+                                  const char *file_data,
+                                  size_t file_len,
+                                  char **out_buf,
+                                  size_t *out_len)
+{
+    *out_buf = NULL;
+    if (out_len) *out_len = 0;
+
+    char key_len_str[32];
+    char val_len_str[64];
+    int key_len_str_n = snprintf(key_len_str, sizeof(key_len_str), "%zu", strlen(key));
+    int val_len_str_n = snprintf(val_len_str, sizeof(val_len_str), "%zu", file_len);
+    if (key_len_str_n <= 0 || val_len_str_n <= 0) {
+        return -1;
+    }
+
+    // 命令名 PAPERMOD 长度为 8
+    size_t max_req =
+        4 +                         // "*3\r\n"
+        4 + 8 + 2 +                 // "$8\r\nPAPERMOD\r\n"
+        1 + (size_t)key_len_str_n + 2 +  // "$<keylen>\r\n"
+        strlen(key) + 2 +           // "<key>\r\n"
+        1 + (size_t)val_len_str_n + 2 +  // "$<file_len>\r\n"
+        file_len + 2;               // "<file_data>\r\n"
+
+    char *buf = (char *)malloc(max_req);
+    if (!buf) {
+        perror("malloc");
+        return -1;
+    }
+
+    size_t n = 0;
+    int w = 0;
+
+    // *3\r\n
+    w = snprintf(buf + n, max_req - n, "*3\r\n");
+    if (w < 0 || (size_t)w >= max_req - n) goto fail3;
+    n += (size_t)w;
+
+    // $8\r\nPAPERMOD\r\n
+    w = snprintf(buf + n, max_req - n, "$8\r\nPAPERMOD\r\n");
+    if (w < 0 || (size_t)w >= max_req - n) goto fail3;
+    n += (size_t)w;
+
+    // $<keylen>\r\n
+    w = snprintf(buf + n, max_req - n, "$%s\r\n", key_len_str);
+    if (w < 0 || (size_t)w >= max_req - n) goto fail3;
+    n += (size_t)w;
+
+    // <key>\r\n
+    if (strlen(key) + 2 > max_req - n) goto fail3;
+    memcpy(buf + n, key, strlen(key));
+    n += strlen(key);
+    buf[n++] = '\r';
+    buf[n++] = '\n';
+
+    // $<file_len>\r\n
+    w = snprintf(buf + n, max_req - n, "$%s\r\n", val_len_str);
+    if (w < 0 || (size_t)w >= max_req - n) goto fail3;
+    n += (size_t)w;
+
+    // <file_data>\r\n
+    if (file_len + 2 > max_req - n) goto fail3;
+    memcpy(buf + n, file_data, file_len);
+    n += file_len;
+    buf[n++] = '\r';
+    buf[n++] = '\n';
+
+    *out_buf = buf;
+    if (out_len) *out_len = n;
+    return 0;
+
+fail3:
+    free(buf);
+    return -1;
+}
+
 /*==================== RESP 输出美化（含颜色） ====================*/
 
 static void print_resp_array(const char *buf, int n, char *p, char *cr) {
@@ -395,10 +399,28 @@ static void print_resp_array(const char *buf, int n, char *p, char *cr) {
     }
 }
 
+static int read_paperget_reply(int fd, const char *save_path) {
+    // 先读一个字节看类型
+    char t;
+    ssize_t r = recv(fd, &t, 1, MSG_PEEK);
+    if (r <= 0) {
+        perror("recv");
+        return -1;
+    }
+
+    if (t == '$') {
+        // 仍然按之前逻辑：bulk -> 写文件
+        return read_bulk_and_save(fd, save_path);
+    } else {
+        // 非 bulk：用通用打印逻辑，不保存文件
+        return read_and_print_reply_with_save(fd, NULL);
+    }
+}
+
 // 专用于 PAPERGET：读取一个 bulk 响应，打印长度并流式写入文件
 static int read_bulk_and_save(int fd, const char *save_path) {
     if (!save_path) return -1;
-
+    
     char header[64];
     size_t used = 0;
 
@@ -685,8 +707,6 @@ int main(int argc, char *argv[]) {
                CLR_BOLD "GET key" CLR_RESET ", ...\n");
         printf("Type '" CLR_BOLD "EXIT" CLR_RESET "' to exit client, ");
         printf("'" CLR_BOLD "SQUIT" CLR_RESET "' to send QUIT to server.\n");
-        printf("Type '" CLR_BOLD "SAVEHUGE key /path/to/file" CLR_RESET
-               "' to save large file as value.\n");
         printf("Type '" CLR_BOLD "HELP" CLR_RESET "' for help.\n");
 
         rl_attempted_completion_function = cli_completion;
@@ -720,10 +740,10 @@ int main(int argc, char *argv[]) {
             return 0;
         }
 
-        // SAVEHUGE key file
-        if (!strcasecmp(tokens[0], "SAVEHUGE")) {
+        // PAPERSET key file
+        if (!strcasecmp(tokens[0], "PAPERSET")) {
             if (argcnt != 3) {
-                fprintf(stderr, CLR_RED "Usage: SAVEHUGE key /path/to/file\n" CLR_RESET);
+                fprintf(stderr, CLR_RED "Usage: PAPERSET key /path/to/file\n" CLR_RESET);
                 close(fd);
                 return 1;
             }
@@ -740,8 +760,8 @@ int main(int argc, char *argv[]) {
 
             char  *req = NULL;
             size_t req_len = 0;
-            if (build_savehuge_request(key, file_data, file_len, &req, &req_len) != 0) {
-                fprintf(stderr, CLR_RED "Failed to build SAVEHUGE request (maybe file too large)\n" CLR_RESET);
+            if (build_paperset_request(key, file_data, file_len, &req, &req_len) != 0) {
+                fprintf(stderr, CLR_RED "Failed to build PAPERSET request (maybe file too large)\n" CLR_RESET);
                 free(file_data);
                 close(fd);
                 return 1;
@@ -766,10 +786,10 @@ int main(int argc, char *argv[]) {
             return 0;
         }
 
-        // PAPERSET key file
-        if (!strcasecmp(tokens[0], "PAPERSET")) {
+        // PAPERMOD key file
+        if (!strcasecmp(tokens[0], "PAPERMOD")) {
             if (argcnt != 3) {
-                fprintf(stderr, CLR_RED "Usage: PAPERSET key /path/to/file\n" CLR_RESET);
+                fprintf(stderr, CLR_RED "Usage: PAPERMOD key /path/to/file\n" CLR_RESET);
                 close(fd);
                 return 1;
             }
@@ -786,8 +806,8 @@ int main(int argc, char *argv[]) {
 
             char  *req = NULL;
             size_t req_len = 0;
-            if (build_paperset_request(key, file_data, file_len, &req, &req_len) != 0) {
-                fprintf(stderr, CLR_RED "Failed to build PAPERSET request (maybe file too large)\n" CLR_RESET);
+            if (build_papermod_request(key, file_data, file_len, &req, &req_len) != 0) {
+                fprintf(stderr, CLR_RED "Failed to build PAPERMOD request (maybe file too large)\n" CLR_RESET);
                 free(file_data);
                 close(fd);
                 return 1;
@@ -845,7 +865,7 @@ int main(int argc, char *argv[]) {
                 sent += n;
             }
 
-            (void)read_bulk_and_save(fd, path);
+            (void)read_paperget_reply(fd, path);
             close(fd);
             return 0;
         }
@@ -919,131 +939,6 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
-            // SAVEHUGE key file
-            if (!strcasecmp(tokens[0], "SAVEHUGE")) {
-                if (argcnt != 3) {
-                    fprintf(stderr, CLR_RED "Usage: SAVEHUGE key /path/to/file\n" CLR_RESET);
-                    continue;
-                }
-                const char *key  = tokens[1];
-                const char *path = tokens[2];
-
-                char  *file_data = NULL;
-                size_t file_len  = 0;
-                if (read_file_all(path, &file_data, &file_len) != 0) {
-                    fprintf(stderr, CLR_RED "Failed to read file '%s'\n" CLR_RESET, path);
-                    continue;
-                }
-
-                char  *req = NULL;
-                size_t req_len = 0;
-                if (build_savehuge_request(key, file_data, file_len, &req, &req_len) != 0) {
-                    fprintf(stderr, CLR_RED "Failed to build SAVEHUGE request (maybe file too large)\n" CLR_RESET);
-                    free(file_data);
-                    continue;
-                }
-                free(file_data);
-
-                size_t sent = 0;
-                while (sent < req_len) {
-                    ssize_t n = send(fd, req + sent, req_len - sent, 0);
-                    if (n <= 0) {
-                        perror("send");
-                        free(req);
-                        close(fd);
-                        return 1;
-                    }
-                    sent += (size_t)n;
-                }
-                free(req);
-
-                if (read_and_print_reply(fd) != 0) {
-                    break;
-                }
-                continue;
-            }
-
-            // PAPERGET key /path/to/save
-            if (!strcasecmp(tokens[0], "PAPERGET")) {
-                if (argcnt != 3) {
-                    fprintf(stderr, CLR_RED "Usage: PAPERGET key /path/to/save\n" CLR_RESET);
-                    continue;
-                }
-                const char *key  = tokens[1];
-                const char *path = tokens[2];
-
-                const char *argv_local[2];
-                argv_local[0] = "PAPERGET";
-                argv_local[1] = key;
-
-                char req[BUF_SIZE];
-                int req_len = build_resp_request((char **)argv_local, 2, req, sizeof(req));
-                if (req_len < 0) {
-                    fprintf(stderr, CLR_RED "Error: PAPERGET command too long or build RESP failed\n" CLR_RESET);
-                    continue;
-                }
-
-                int sent = 0;
-                while (sent < req_len) {
-                    int n = send(fd, req + sent, req_len - sent, 0);
-                    if (n <= 0) {
-                        perror("send");
-                        close(fd);
-                        return 1;
-                    }
-                    sent += n;
-                }
-
-                if (read_bulk_and_save(fd, path) != 0) {
-                    break;
-                }
-                continue;
-            }
-
-            // PAPERSET key file
-            if (!strcasecmp(tokens[0], "PAPERSET")) {
-                if (argcnt != 3) {
-                    fprintf(stderr, CLR_RED "Usage: PAPERSET key /path/to/file\n" CLR_RESET);
-                    continue;
-                }
-                const char *key  = tokens[1];
-                const char *path = tokens[2];
-
-                char  *file_data = NULL;
-                size_t file_len  = 0;
-                if (read_file_all(path, &file_data, &file_len) != 0) {
-                    fprintf(stderr, CLR_RED "Failed to read file '%s'\n" CLR_RESET, path);
-                    continue;
-                }
-
-                char  *req = NULL;
-                size_t req_len = 0;
-                if (build_paperset_request(key, file_data, file_len, &req, &req_len) != 0) {
-                    fprintf(stderr, CLR_RED "Failed to build PAPERSET request (maybe file too large)\n" CLR_RESET);
-                    free(file_data);
-                    continue;
-                }
-                free(file_data);
-
-                size_t sent = 0;
-                while (sent < req_len) {
-                    ssize_t n = send(fd, req + sent, req_len - sent, 0);
-                    if (n <= 0) {
-                        perror("send");
-                        free(req);
-                        close(fd);
-                        return 1;
-                    }
-                    sent += (size_t)n;
-                }
-                free(req);
-
-                if (read_and_print_reply(fd) != 0) {
-                    break;
-                }
-                continue;
-            }
-
             // PAPERGET key /path/to/save
             if (!strcasecmp(tokens[0], "PAPERGET")) {
                 if (argcnt != 3) {
@@ -1075,7 +970,7 @@ int main(int argc, char *argv[]) {
                     sent += n;
                 }
 
-                if (read_bulk_and_save(fd, path) != 0) {
+                if (read_paperget_reply(fd, path) != 0) {
                     break;
                 }
                 continue;
@@ -1101,6 +996,50 @@ int main(int argc, char *argv[]) {
                 size_t req_len = 0;
                 if (build_paperset_request(key, file_data, file_len, &req, &req_len) != 0) {
                     fprintf(stderr, CLR_RED "Failed to build PAPERSET request (maybe file too large)\n" CLR_RESET);
+                    free(file_data);
+                    continue;
+                }
+                free(file_data);
+
+                size_t sent = 0;
+                while (sent < req_len) {
+                    ssize_t n = send(fd, req + sent, req_len - sent, 0);
+                    if (n <= 0) {
+                        perror("send");
+                        free(req);
+                        close(fd);
+                        return 1;
+                    }
+                    sent += (size_t)n;
+                }
+                free(req);
+
+                if (read_and_print_reply(fd) != 0) {
+                    break;
+                }
+                continue;
+            }
+
+            // PAPERMOD key file
+            if (!strcasecmp(tokens[0], "PAPERMOD")) {
+                if (argcnt != 3) {
+                    fprintf(stderr, CLR_RED "Usage: PAPERMOD key /path/to/file\n" CLR_RESET);
+                    continue;
+                }
+                const char *key  = tokens[1];
+                const char *path = tokens[2];
+
+                char  *file_data = NULL;
+                size_t file_len  = 0;
+                if (read_file_all(path, &file_data, &file_len) != 0) {
+                    fprintf(stderr, CLR_RED "Failed to read file '%s'\n" CLR_RESET, path);
+                    continue;
+                }
+
+                char  *req = NULL;
+                size_t req_len = 0;
+                if (build_papermod_request(key, file_data, file_len, &req, &req_len) != 0) {
+                    fprintf(stderr, CLR_RED "Failed to build PAPERMOD request (maybe file too large)\n" CLR_RESET);
                     free(file_data);
                     continue;
                 }
@@ -1182,45 +1121,7 @@ int main(int argc, char *argv[]) {
 
             // SAVEHUGE key file
             if (!strcasecmp(tokens[0], "SAVEHUGE")) {
-                if (argcnt != 3) {
-                    fprintf(stderr, CLR_RED "Usage: SAVEHUGE key /path/to/file\n" CLR_RESET);
-                    continue;
-                }
-                const char *key  = tokens[1];
-                const char *path = tokens[2];
-
-                char  *file_data = NULL;
-                size_t file_len  = 0;
-                if (read_file_all(path, &file_data, &file_len) != 0) {
-                    fprintf(stderr, CLR_RED "Failed to read file '%s'\n" CLR_RESET, path);
-                    continue;
-                }
-
-                char  *req = NULL;
-                size_t req_len = 0;
-                if (build_savehuge_request(key, file_data, file_len, &req, &req_len) != 0) {
-                    fprintf(stderr, CLR_RED "Failed to build SAVEHUGE request (maybe file too large)\n" CLR_RESET);
-                    free(file_data);
-                    continue;
-                }
-                free(file_data);
-
-                size_t sent = 0;
-                while (sent < req_len) {
-                    ssize_t n = send(fd, req + sent, req_len - sent, 0);
-                    if (n <= 0) {
-                        perror("send");
-                        free(req);
-                        close(fd);
-                        return 1;
-                    }
-                    sent += (size_t)n;
-                }
-                free(req);
-
-                if (read_and_print_reply(fd) != 0) {
-                    break;
-                }
+                fprintf(stderr, CLR_RED "SAVEHUGE is no longer supported. Use PAPERSET / PAPERMOD instead.\n" CLR_RESET);
                 continue;
             }
 

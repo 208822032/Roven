@@ -2,7 +2,7 @@ CC = gcc
 SYNC_MODE ?= 0
 
 # 与 kvs_config.h 中的 KVS_MAX_RESPONSE_SIZE 保持一致
-KVS_MAX_RESPONSE_SIZE ?= 2048
+KVS_MAX_RESPONSE_SIZE ?= 65535
 
 SRC_CORE := src/core
 SRC_STORAGE := src/storage
@@ -10,6 +10,15 @@ SRC_PERSIST := src/persistence
 SRC_NETWORK := src/network
 SRC_DIST := src/distributed
 SRC_UTILS := src/utils
+
+NTYCO_DIR := NtyCo
+NTYCO_CORE_DIR := $(NTYCO_DIR)/core
+NTYCO_LIB := $(NTYCO_DIR)/libntyco.a
+NTYCO_OBJS := \
+	$(NTYCO_DIR)/objs/nty_socket.o \
+	$(NTYCO_DIR)/objs/nty_coroutine.o \
+	$(NTYCO_DIR)/objs/nty_epoll.o \
+	$(NTYCO_DIR)/objs/nty_schedule.o
 
 # 提前固定好目录
 BPF_DIR := $(SRC_DIST)
@@ -72,13 +81,28 @@ TEST_DIR := tests
 TEST_CASE := $(TEST_DIR)/testcase
 TEST_WRITE_QPS := $(TEST_DIR)/write_qps_test
 TEST_KVSTORE_CLIENT := $(TEST_DIR)/kvstore_client
+TEST_MEMPOOL := $(TEST_DIR)/mempool_test
+TEST_PAPER := $(TEST_DIR)/test_paper
+TEST_PAPER_SYNC := $(TEST_DIR)/test_paper_sync
 
 TEST_BINARIES = \
 	$(TEST_CASE) \
 	$(TEST_WRITE_QPS) \
-	$(TEST_KVSTORE_CLIENT)
+	$(TEST_KVSTORE_CLIENT) \
+	$(TEST_MEMPOOL) \
+	$(TEST_PAPER) \
+	$(TEST_PAPER_SYNC) \
 
-all: $(TARGET) $(TEST_BINARIES)
+all: $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) 
+
+$(NTYCO_DIR)/objs:
+	mkdir -p $@
+
+$(NTYCO_DIR)/objs/%.o: $(NTYCO_CORE_DIR)/%.c | $(NTYCO_DIR)/objs
+	$(CC) -c $(CFLAGS) -o $@ $< -I $(NTYCO_CORE_DIR) -O3 -lpthread -ldl
+
+$(NTYCO_LIB): $(NTYCO_OBJS)
+	ar rcs $@ $^
 
 $(TARGET): $(OBJS) $(BPF_OBJ)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
@@ -93,6 +117,22 @@ $(TEST_WRITE_QPS): $(TEST_DIR)/write_qps_test.c
 
 $(TEST_KVSTORE_CLIENT): $(TEST_DIR)/kvstore_client.c
 	$(CC) $(CFLAGS) -o $@ $< -lreadline
+
+$(TEST_PAPER): $(TEST_DIR)/test_paper.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+MEMPOOL_OBJS := \
+	$(SRC_STORAGE)/kvs_mempool.o \
+	$(SRC_CORE)/kvs_config.o \
+	$(SRC_CORE)/kvs_globals.o \
+	$(SRC_STORAGE)/jemalloc_wrapper.o \
+	$(SRC_STORAGE)/kvs_array.o \
+	$(SRC_STORAGE)/kvs_rbtree.o \
+	$(SRC_STORAGE)/kvs_hash.o \
+	$(SRC_STORAGE)/kvs_skiptable.o
+
+$(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(MEMPOOL_OBJS)
+	$(CC) $(CFLAGS) -o $@ $< $(MEMPOOL_OBJS) -lpthread $(JEMALLOC_LIB) -ldl
 
 
 %.o: %.c
@@ -120,6 +160,6 @@ $(BPF_DIR)/vmlinux.h:
 	fi
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(BPF_OBJ) src/distributed/vmlinux.h $(TEST_BINARIES) $(SRC_DIST)/*.o 
-
+	rm -f $(OBJS) $(TARGET) $(BPF_OBJ) src/distributed/vmlinux.h $(TEST_BINARIES) $(SRC_DIST)/*.o
+	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 .PHONY: all clean

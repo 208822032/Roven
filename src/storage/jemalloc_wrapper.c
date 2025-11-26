@@ -16,11 +16,11 @@ void* jemalloc_alloc_impl(size_t size) {
 }
 
 void jemalloc_free_impl(void* ptr) {
-    // 临时调试：打印调用栈
-    void *bt[16];
-    int n = backtrace(bt, 16);
-    fprintf(stderr, "[JEMALLOC_FREE] ptr=%p, backtrace depth=%d\n", ptr, n);
-    backtrace_symbols_fd(bt, n, fileno(stderr));
+    // // 临时调试：打印调用栈
+    // void *bt[16];
+    // int n = backtrace(bt, 16);
+    // fprintf(stderr, "[JEMALLOC_FREE] ptr=%p, backtrace depth=%d\n", ptr, n);
+    // backtrace_symbols_fd(bt, n, fileno(stderr));
 
 
     je_free(ptr);

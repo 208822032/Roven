@@ -1,7 +1,7 @@
-# KVStore （类 Redis KV 引擎）
+# KVStore 
 
 项目现在支持通过简单的 `key=value` 配置文件集中管理启动参数，并允许命令行覆盖关键项。
-## KVStore（类 Redis KV 引擎）
+## KVStore
 
 一个类 Redis 的轻量级 KV 引擎，支持多种数据结构、RESP 协议 & Pipeline、内存池、RDB/AOF 持久化，以及 TCP / eBPF 两种主从同步模式，并通过统一配置文件完成启动参数管理。
 
@@ -17,7 +17,7 @@
 - **协议**：自研 RESP 解析器，兼容 Redis 风格，多命令 Pipeline
 - **持久化**：RDB 快照 + AOF 追加日志，支持重写
 - **分布式**：主从复制（TCP / eBPF 两种同步实现）
-- **内存管理**：自定义内存池 + jemalloc 封装，可按配置选择后端
+- **内存管理**：自定义内存池 + jemalloc 封装 + glibc内存管理
 - **网络模型**：Reactor（epoll）/ Proactor（io_uring）/ NtyCo 协程
 
 ---
@@ -46,13 +46,15 @@ make            # 默认 SYNC_MODE=0，使用 TCP 同步
 make SYNC_MODE=1  # 启用 eBPF 同步，需要 libbpf/clang 等环境和 root 运行权限
 ```
 
-生成的二进制：
+生成的二进制文件：
 
 - 服务端：`kvstore`
 - 测试客户端：
-  - `tests/testcase`
-  - `tests/write_qps_test`
-  - `tests/kvstore_client`
+  - `tests/testcase`：协议正确性、主从同步、大pipeline压测
+  - `tests/write_qps_test`：单机写入QPS、主从写入QPS
+  - `tests/kvstore_client`：交互式、管道式客户端
+  - `tests/test_paper`：单机写入、获取、修改、删除大value
+  - `tests/test_paper_sync`：主从同步写入、获取、修改、删除大value
 
 > 如果使用 eBPF 模式，`Makefile` 会在 `src/distributed/` 下自动生成并编译 `ebpf_sync.bpf.o`，要求内核导出 `/sys/kernel/btf/vmlinux` 且已安装 `bpftool`、`clang`、`libbpf` 相关开发包。
 
@@ -79,12 +81,11 @@ make SYNC_MODE=1  # 启用 eBPF 同步，需要 libbpf/clang 等环境和 root �
   - 若未配置，master 默认 `port + 1000`
   - slave 默认 `master_port + 1000`
 - `enable_aof`：`yes/no/true/false/0/1`
-- `aof_fsync_mode`：`no / everysec / always`
+- `aof_fsync_mode`：`no / everysec / always`：系统决定同步/每秒一次同步/每次写命令都同步
 - `aof_filename`：AOF 文件名
 - `rdb_filename`：RDB 文件名
-- `dump_filename`：旧文本快照文件名（关闭 RDB 时使用）
-- `mem_backend`：`pool / system / jemalloc`
-- `network_mode`：`reactor / proactor / ntyco`（当前主要做记录，真正选择由编译阶段 `NETWORK_SELECT` 控制）
+- `mem_backend`：`pool / system / jemalloc`：自定义内存池/glibc/jemalloc
+- `network_mode`：`reactor / proactor / ntyco`
 
 ### 4.3 Master 示例（`config/master.conf`）
 
@@ -195,6 +196,15 @@ network_mode=ntyco
   SEXIST key
   SRANGE startKey endKey
   SSORT [high|low] [limit]
+  ```
+
+- 大key大value
+
+  ```text
+  PAPERSET key value
+  PAPERSGET key
+  PAPERDEL key
+  PAPERMOD key value
   ```
 
 - 其他
@@ -321,6 +331,12 @@ k1\r
 - 无从节点时的最大吞吐
 - 挂载从节点后主从同步带来的性能影响（TCP / eBPF 模式对比）
 
+### 8.3 PAPER 测试
+
+`tests/test_paper.c`、`tests/test_paper_sync.c` 中提供了针对单机、主从同步的测试脚本，用于验证：
+
+- 单机对大key大value的增删改查
+- 主从同步对大key大value的增删改查
 ---
 
 # 9 `kvstore_client` 交互客户端
@@ -335,22 +351,19 @@ k1\r
 
 # 单条命令模式
 ./tests/kvstore_client <ip> <port> -c "CMD ..."
-
-# 管道模式（从 stdin 读取多行命令）
-echo "SET k v" | ./tests/kvstore_client <ip> <port>
 ```
 
 ### 内置命令与功能
 
 - 基本 KV 操作：`SET / GET / DEL` 以及 `RSET/RGET/RDEL`、`HSET/HGET/HDEL`、`SSET/SGET/SDEL`
 - Paper 存取：
-  - `PAPERSET key /path/to/paper`：从本地文件读取内容，写入服务器（底层用 RESP bulk 传输）
-  - `PAPERGET key /path/to/save`：从服务器拉取内容，直接写入本地文件，只在终端打印长度
-- 大 Value 存储：
-  - `SAVEHUGE key /path/to/file`：把大文件作为二进制 value 存到 `SET key` 中
+  - `PAPERSET key /path/to/paper`：从本地文件读取内容，写入服务器（底层用 RESP bulk 传输，使用 RBTree 存储）。
+  - `PAPERMOD key /path/to/paper`：从本地文件读取内容，修改已有论文内容（语义类似 `MOD`）。
+  - `PAPERGET key /path/to/save`：从服务器拉取内容，如果存在则按 bulk 方式写入本地文件并打印长度；如果不存在则打印 `NO EXIST`。
+  - `PAPERDEL key`：删除论文，成功返回 `OK`，不存在返回 `NO EXIST`。
 - 连接/退出：
   - `EXIT`：退出客户端
-  - `SQUIT`：向服务器发送 `QUIT` 命令（不会退出客户端本身）
+  - `SQUIT`：向服务器发送 `QUIT` 命令（客户端仍保持运行，服务器收到后会进入优雅关闭流程）
 - 帮助与补全：
   - `HELP`：列出所有支持的客户端命令
   - `HELP <command>`：查看某个命令的说明与用法
@@ -364,23 +377,21 @@ echo "SET k v" | ./tests/kvstore_client <ip> <port>
 
 kv> SET foo bar
 kv> GET foo
-kv> SAVEHUGE big /tmp/big.bin
 kv> PAPERSET paper1 /home/user/paper.pdf
 kv> PAPERGET paper1 /tmp/paper-copy.pdf
+kv> PAPERMOD paper1 /home/user/paper-v2.pdf
+kv> PAPERDEL paper1
 kv> EXIT
 
 # 2）非交互调用一条命令
 ./tests/kvstore_client 127.0.0.1 8080 -c "GET foo"
-
-# 3）脚本或管道模式
-printf "SET a 1\nGET a\n" | ./tests/kvstore_client 127.0.0.1 8080
 ```
 
 借助该客户端，可以方便地做手工调试、大 value/论文文件读写验证以及简单脚本化测试。
 
 ---
 
-## 10. 快速入门脚本示例
+# 10. 快速入门脚本示例
 
 1. 编译：
 
@@ -406,3 +417,135 @@ printf "SET a 1\nGET a\n" | ./tests/kvstore_client 127.0.0.1 8080
    ./kvstore --config config/slave.conf
    ./tests/testcase 127.0.0.1 8080 6 127.0.0.1 8081
    ```
+
+5. 启动 客户端进行交互：
+
+   ```bash
+   ./kvstore --config config/master.conf
+   ./tests/kvstore_client <masterip> <masterport> 交互模式
+   ./tests/kvstore_client <masterip> <masterport> -c "单条命令"
+   ```
+
+# 11. 测试附录
+
+  下图给出了部分测试结果的可视化对比（见 `images/` 目录）：
+
+  - 图 1：不同数据结构在 TCP / eBPF、Standalone / Master-Slave 下的单次写 QPS 对比。
+
+    ![QPS Single Write](images/image1.png)
+
+  - 图 2：不同数据结构在 TCP / eBPF、Standalone / Master-Slave 下的 pipeline QPS 对比。
+
+    ![QPS Pipeline](images/image2.png)
+
+  - 图 3：不同内存后端（pool / glibc / jemalloc）的基础 QPS 对比。
+
+    ![Memory Backend Basic](images/image3.png)
+
+  - 图 4：不同内存后端在单次写 / pipeline 场景下的 QPS 对比。
+
+    ![Memory Backend RW QPS](images/image4.png)
+
+  1. 单机与主从同步 QPS 差异
+
+  **单次写（100000 条），TCP，QPS 对比**
+
+  | Mode         | Structure | time_used (ms) | count    | QPS       |
+  | ------------ | --------- | -------------- | -------- | --------- |
+  | Standalone   | array     | 7518           | 100000   | 13301.41  |
+  | Standalone   | rbtree    | 10629          | 100000   | 9408.22   |
+  | Standalone   | hash      | 7860           | 100000   | 12722.65  |
+  | Standalone   | skiptable | 7815           | 100000   | 12795.91  |
+  | Master-Slave | array     | 8234           | 100000   | 12144.77  |
+  | Master-Slave | rbtree    | 12763          | 100000   | 7835.15   |
+  | Master-Slave | hash      | 7897           | 100000   | 12663.04  |
+  | Master-Slave | skiptable | 7810           | 100000   | 12804.10  |
+
+  **1000 条命令 pipeline（合计 100000 条），TCP，QPS 对比**
+
+  | Mode         | Structure | time_used (ms) | count    | QPS       |
+  | ------------ | --------- | -------------- | -------- | --------- |
+  | Standalone   | array     | 413            | 100000   | 242130.75 |
+  | Standalone   | rbtree    | 528            | 100000   | 189393.94 |
+  | Standalone   | hash      | 441            | 100000   | 226757.37 |
+  | Standalone   | skiptable | 458            | 100000   | 218340.61 |
+  | Master-Slave | array     | 786            | 100000   | 127226.46 |
+  | Master-Slave | rbtree    | 412            | 100000   | 242718.45 |
+  | Master-Slave | hash      | 352            | 100000   | 284090.91 |
+  | Master-Slave | skiptable | 385            | 100000   | 259740.26 |
+
+  **单次写（100000 条），eBPF，QPS 对比**
+
+  | Mode         | Structure | time_used (ms) | count    | QPS       |
+  | ------------ | --------- | -------------- | -------- | --------- |
+  | Standalone   | array     | 9767           | 100000   | 10238.56  |
+  | Standalone   | rbtree    | 8863           | 100000   | 11282.86  |
+  | Standalone   | hash      | 10679          | 100000   | 9364.17   |
+  | Standalone   | skiptable | 10974          | 100000   | 9112.45   |
+  | Master-Slave | array     | 10290          | 100000   | 9718.17   |
+  | Master-Slave | rbtree    | 10330          | 100000   | 9680.54   |
+  | Master-Slave | hash      | 11020          | 100000   | 9074.41   |
+  | Master-Slave | skiptable | 10753          | 100000   | 9299.73   |
+
+  **1000 条命令 pipeline（合计 100000 条），eBPF，QPS 对比**
+
+  | Mode         | Structure | time_used (ms) | count    | QPS       |
+  | ------------ | --------- | -------------- | -------- | --------- |
+  | Standalone   | array     | 802            | 100000   | 124688.28 |
+  | Standalone   | rbtree    | 1461           | 100000   | 68446.27  |
+  | Standalone   | hash      | 1213           | 100000   | 82440.23  |
+  | Standalone   | skiptable | 995            | 100000   | 100502.51 |
+  | Master-Slave | array     | 766            | 100000   | 130548.30 |
+  | Master-Slave | rbtree    | 1083           | 100000   | 92336.10  |
+  | Master-Slave | hash      | 937            | 100000   | 106723.59 |
+  | Master-Slave | skiptable | 1005           | 100000   | 99502.49  |
+
+  2. 不同内存池对比
+
+  **基础功能（pool / system / jemalloc 对比）**
+
+  | BACKEND | PATTERN           | maxrss (KB) | QPS / OPS                    |
+  | ------- | ----------------- | ----------- | ---------------------------- |
+  | POOL    | small-fixed       | 210576      | qps-small = 27027027.03      |
+  | POOL    | mid-fixed         | 210576      | read-heavy-small = 24005840  |
+  | POOL    | big-after-frag    | 1029412     | time = 0 ms                  |
+  | SYSTEM  | small-fixed       | 10176       | qps-small = 26315789.47      |
+  | SYSTEM  | mid-fixed         | 52416       | read-heavy-small = 46167076.92 |
+  | SYSTEM  | big-after-frag    | 1068024     | time = 0 ms                  |
+  | JEMALLOC| small-fixed       | 10188       | qps-small = 25641025.64      |
+  | JEMALLOC| mid-fixed         | 52428       | read-heavy-small = 49996000  |
+  | JEMALLOC| big-after-frag    | 1068036     | time = 0 ms                  |
+
+  **单次写（100000 条），不同内存后端 QPS 对比**
+
+  | Backend | Structure | time_used (ms) | count  | QPS       |
+  | ------- | --------- | -------------- | ------ | --------- |
+  | pool    | array     | 7404           | 100000 | 13506.21  |
+  | pool    | rbtree    | 8228           | 100000 | 12153.62  |
+  | pool    | hash      | 8209           | 100000 | 12181.75  |
+  | pool    | skiptable | 7560           | 100000 | 13227.51  |
+  | glibc   | array     | 7752           | 100000 | 12899.90  |
+  | glibc   | rbtree    | 7560           | 100000 | 13227.51  |
+  | glibc   | hash      | 5570           | 100000 | 17953.32  |
+  | glibc   | skiptable | 6456           | 100000 | 15489.47  |
+  | jemalloc| array     | 8529           | 100000 | 11724.70  |
+  | jemalloc| rbtree    | 7964           | 100000 | 12556.50  |
+  | jemalloc| hash      | 8214           | 100000 | 12174.34  |
+  | jemalloc| skiptable | 8135           | 100000 | 12292.56  |
+
+  **1000 条命令 pipeline（合计 100000 条），不同内存后端 QPS 对比**
+
+  | Backend | Structure | time_used (ms) | count  | QPS       |
+  | ------- | --------- | -------------- | ------ | --------- |
+  | pool    | array     | 421            | 100000 | 237529.69 |
+  | pool    | rbtree    | 775            | 100000 | 129032.26 |
+  | pool    | hash      | 414            | 100000 | 241545.89 |
+  | pool    | skiptable | 444            | 100000 | 225225.23 |
+  | glibc   | array     | 382            | 100000 | 261780.10 |
+  | glibc   | rbtree    | 449            | 100000 | 222717.15 |
+  | glibc   | hash      | 691            | 100000 | 144717.80 |
+  | glibc   | skiptable | 456            | 100000 | 219298.25 |
+  | jemalloc| array     | 436            | 100000 | 229357.80 |
+  | jemalloc| rbtree    | 510            | 100000 | 196078.43 |
+  | jemalloc| hash      | 487            | 100000 | 205338.81 |
+  | jemalloc| skiptable | 511            | 100000 | 195694.72 |

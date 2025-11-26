@@ -75,8 +75,37 @@ int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t s
     bpf_core_read(&seg_len, sizeof(seg_len), &iov->iov_len);
     if (!base || seg_len == 0)
         return 0;
+    
+    //真实发送的字节数 = min(size, seg_len, sizeof(e->data))
+    // __u64 sz = size;
+    // __u64 s1 = seg_len;
+    // __u32 max_copy = EBPF_KVS_MAX_RESPONSE_SIZE;
+    // __u64 min1 = sz < s1 ? sz : s1;
+    // __u64 min2 = min1 < max_copy ? min1 : max_copy;
+    // __u32 copy_len = (__u32)min2;
 
-    e = bpf_ringbuf_reserve(&sync_events, sizeof(*e), 0);
+    __u32 copy_len = (__u32)size;
+    __u64 seg_len64 = seg_len;
+
+    if(seg_len64 < copy_len)
+        copy_len = (__u32)seg_len64;
+
+    if(copy_len > EBPF_KVS_MAX_RESPONSE_SIZE)
+        copy_len = EBPF_KVS_MAX_RESPONSE_SIZE;
+
+    /* 额外约束：验证器要求 len 为非负且有固定上界 */
+    copy_len &= (EBPF_KVS_MAX_RESPONSE_SIZE - 1u);
+
+    //事件总大小
+    const __u32 header_size_const = (__u32)offsetof(struct net_sync_event, data);
+    const __u32 max_event_size = header_size_const + EBPF_KVS_MAX_RESPONSE_SIZE;
+    __u32 event_size  = max_event_size;
+
+    // 额外保护：确保 event_size 不超过编译期可知上界
+    if (event_size > header_size_const + EBPF_KVS_MAX_RESPONSE_SIZE)
+        event_size = header_size_const + EBPF_KVS_MAX_RESPONSE_SIZE;
+
+    e = bpf_ringbuf_reserve(&sync_events, event_size, 0);
     if (!e)
         return 0;
 
@@ -84,18 +113,12 @@ int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t s
     e->pid   = bpf_get_current_pid_tgid() >> 32;
     e->sport = sport;
     e->dport = dport;
+    e->len   = copy_len;
 
-    //真实发送的字节数 = min(size, seg_len, sizeof(e->data))
-    __u64 sz = size;
-    __u64 s1 = seg_len;
-    __u32 max_copy = sizeof(e->data);
-    __u64 min1 = sz < s1 ? sz : s1;
-    __u64 min2 = min1 < max_copy ? min1 : max_copy;
-    __u32 copy_len = (__u32)min2;
-    e->len = copy_len;
 
-    if(copy_len > 0){
-        bpf_core_read_user(e->data, copy_len, base);
+    if (copy_len > 0) {
+        __u32 len = copy_len;  /* 显式使用无符号局部变量 */
+        bpf_core_read_user(e->data, len, base);
     }
 
     bpf_ringbuf_submit(e, 0);

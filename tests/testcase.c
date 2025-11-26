@@ -14,6 +14,7 @@
 #define MAX_MSG_LENGTH		1024
 #define TIME_SUB_MS(tv1, tv2)  ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
+void cleanup_connction(int connfd);
 
 int send_msg(int connfd, char *msg, int length) {
 #if 0
@@ -725,8 +726,8 @@ void array_resp_testcase(int connfd){
 	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key2\r\n$6\r\nbanana\r\n", "+OK\r\n", "SET-arr_key2");
 	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key3\r\n$6\r\ncherry\r\n", "+OK\r\n", "SET-arr_key3");
 	testcase(connfd, "*3\r\n$3\r\nSET\r\n$8\r\narr_key4\r\n$4\r\ndate\r\n", "+OK\r\n", "SET-arr_key4");
-	testcase(connfd, "*1\r\n$4\r\nSORT\r\n", "*3\r\n$15\r\narr_key2:banana\r\n$15\r\narr_key3:cherry\r\n$13\r\narr_key4:date\r\n", "array_SORT");
-	testcase(connfd, "*3\r\n$5\r\nRANGE\r\n$8\r\narr_key2\r\n$8\r\narr_key4\r\n", "*3\r\n$15\r\narr_key2:banana\r\n$15\r\narr_key3:cherry\r\n$13\r\narr_key4:date\r\n", "array_RANGE");
+    testcase(connfd, "*1\r\n$4\r\nSORT\r\n", "*3\r\n$15\r\narr_key2:banana\r\n$15\r\narr_key3:cherry\r\n$13\r\narr_key4:date\r\n", "array_SORT");
+    testcase(connfd, "*3\r\n$5\r\nRANGE\r\n$8\r\narr_key2\r\n$8\r\narr_key4\r\n", "*3\r\n$15\r\narr_key2:banana\r\n$15\r\narr_key3:cherry\r\n$13\r\narr_key4:date\r\n", "array_RANGE");
 
     // // 清理本测试用到的所有 key
     // testcase(connfd, "*2\r\n$3\r\nDEL\r\n$8\r\narr_key1\r\n", "+OK\r\n", "CLEAN-arr_key1");
@@ -1238,7 +1239,7 @@ static void master_slave_array_test(const char *master_ip, int master_port,
     }
 
     // 2. 等待主从同步
-    sleep(2);
+    sleep(5);
     // 3. 第一次：验证初始写入同步是否正确
     char *get_pipeline = generate_get_pipeline(count);
     if (!get_pipeline) {
@@ -1376,7 +1377,7 @@ static void master_slave_rbtree_test(const char *master_ip, int master_port,
         recv_full_resp(master_fd, buf, sizeof(buf));    // 期望 +OK
     }
 
-    sleep(2);
+    sleep(5);
 
     char *get_pipeline = generate_rbtree_get_pipeline(count);
     if (!get_pipeline) {
@@ -1516,7 +1517,7 @@ static void master_slave_hash_test(const char *master_ip, int master_port,
         recv_full_resp(master_fd, buf, sizeof(buf));
     }
 
-    sleep(2);
+    sleep(5);
 
     char *get_pipeline = generate_hash_get_pipeline(count);
     if (!get_pipeline) {
@@ -1656,7 +1657,7 @@ static void master_slave_skiptable_test(const char *master_ip, int master_port,
         recv_full_resp(master_fd, buf, sizeof(buf));
     }
 
-    sleep(2);
+    sleep(5);
 
     char *get_pipeline = generate_skiptable_get_pipeline(count);
     if (!get_pipeline) {

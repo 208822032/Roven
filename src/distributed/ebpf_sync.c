@@ -87,13 +87,35 @@ int ebpf_emit_sync_event(const char *buf, size_t len)
 // ringbuf 回调：把内核事件放入本地队列
 static int handle_sync_event(void *ctx, void *data, size_t size)
 {
-    if (size != sizeof(struct net_sync_event)) {
-        fprintf(stderr, "[EBPF_SYNC] unexpected event size=%zu, expect=%zu\n",
-                size, sizeof(struct net_sync_event));
+    // if (size != sizeof(struct net_sync_event)) {
+    //     fprintf(stderr, "[EBPF_SYNC] unexpected event size=%zu, expect=%zu\n",
+    //             size, sizeof(struct net_sync_event));
+    //     return 0;
+    // }
+
+    (void)ctx;
+
+    //头部
+    size_t headr_size = offsetof(struct net_sync_event, data);
+    if (size < headr_size) {
+        fprintf(stderr, "[EBPF_SYNC] event size too small=%zu, expect at least=%zu\n",
+                size, headr_size);
         return 0;
     }
 
-    struct net_sync_event *evt = data;
+    struct net_sync_event *evt = (struct net_sync_event *)data;
+
+    //实际长度 payload = 事件总大小 - 头部
+    size_t payload_len = size - headr_size;
+
+    //需要复制的长度
+    size_t copy_len = evt->len;
+    if(copy_len > payload_len){
+        copy_len = payload_len;
+    }
+    if(copy_len > EBPF_KVS_MAX_RESPONSE_SIZE){
+        copy_len = EBPF_KVS_MAX_RESPONSE_SIZE;
+    }
 
     // fprintf(stderr, "[EBPF_SYNC] ringbuf event: len=%u dport=%u pid=%u\n",
     //         evt->len, evt->dport, evt->pid);
@@ -104,9 +126,9 @@ static int handle_sync_event(void *ctx, void *data, size_t size)
         return 0;
     }
 
-    msg->len = evt->len <= KVS_MAX_RESPONSE_SIZE ? evt->len : KVS_MAX_RESPONSE_SIZE;
-    if(msg->len > 0){
-        memcpy(msg->data, evt->data, msg->len);
+    msg->len = copy_len;
+    if(copy_len > 0){
+        memcpy(msg->data, evt->data, copy_len);
     }
 
     if (msg_queue_push(&g_ebpf_queue, msg) != 0) {
@@ -120,7 +142,7 @@ static int handle_sync_event(void *ctx, void *data, size_t size)
 static void *ebpf_sync_daemon(void *arg)
 {
     (void)arg;
-    printf("[EBPF_SYNC] ringbuf daemon started\n");
+    // printf("[EBPF_SYNC] ringbuf daemon started\n");
     while (running) {
         int err = ring_buffer__poll(rb, 100); // 100ms
         if (err < 0 && err != -EINTR) {
@@ -128,7 +150,7 @@ static void *ebpf_sync_daemon(void *arg)
             break;
         }
     }
-    printf("[EBPF_SYNC] ringbuf daemon stopped\n");
+    // printf("[EBPF_SYNC] ringbuf daemon stopped\n");
     return NULL;
 }
 
@@ -136,7 +158,7 @@ static void *ebpf_sync_daemon(void *arg)
 static void *ebpf_sync_dispatcher(void *arg)
 {
     (void)arg;
-    printf("[EBPF_SYNC] dispatcher started\n");
+    // printf("[EBPF_SYNC] dispatcher started\n");
 
     while(g_ebpf_running){
         void* item = NULL;
@@ -176,7 +198,7 @@ static void *ebpf_sync_dispatcher(void *arg)
         kvs_free(msg);
     }
 
-    printf("[EBPF_SYNC] dispatcher stopped\n");
+    // printf("[EBPF_SYNC] dispatcher stopped\n");
     return NULL;
 }
 
@@ -289,7 +311,7 @@ int ebpf_sync_init(int sync_port)
         return -1;
     }
 
-    printf("[EBPF_SYNC] initialized: sync_port=%d (kprobe tcp_sendmsg)\n", sync_port);
+    // printf("[EBPF_SYNC] initialized: sync_port=%d (kprobe tcp_sendmsg)\n", sync_port);
     return 0;
 }
 
@@ -319,7 +341,7 @@ void ebpf_sync_cleanup(void)
         bpf_obj = NULL;
     }
 
-    printf("[EBPF_SYNC] cleaned up\n");
+    // printf("[EBPF_SYNC] cleaned up\n");
 }
 
 #endif

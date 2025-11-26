@@ -13,9 +13,13 @@
 
 
 // 同步队列元素
+// typedef struct sync_msg {
+//     size_t len;
+//     char data[KVS_MAX_RESPONSE_SIZE];
+// } sync_msg_t;
 typedef struct sync_msg {
     size_t len;
-    char data[KVS_MAX_RESPONSE_SIZE];
+    uint8_t payload[];
 } sync_msg_t;
 
 // TCP backend 的全局队列和线程
@@ -46,19 +50,43 @@ static void *tcp_backend_worker(void *arg)
         pthread_mutex_lock(&global_dist_config.slave_mutex);
         for (int i = 0; i < global_dist_config.slave_count; ++i) {
             slave_info_t *slave = &global_dist_config.slaves[i];
-            ssize_t n = send(slave->sockfd, msg->data, msg->len, MSG_NOSIGNAL);
-            // printf("[SYNC_TCP] sent %zd bytes to slave %s:%d\n", n,
-            //        inet_ntoa(slave->addr.sin_addr),
-            //        ntohs(slave->addr.sin_port));
-            if (n < 0) {
-                int err = errno;
-                fprintf(stderr, "[SYNC_TCP] send to slave %s:%d failed: %s\n",
-                        inet_ntoa(slave->addr.sin_addr),
-                        ntohs(slave->addr.sin_port),
-                        strerror(err));
-                // 连接断开，具体清理由别处完成（如 slave_sync_thread/health_check）
-                continue;
+
+            size_t total_sent = 0;
+            while (total_sent < msg->len) {
+                ssize_t n = send(slave->sockfd,
+                                 msg->payload + total_sent,
+                                 msg->len - total_sent,
+                                 MSG_NOSIGNAL);
+
+                if (n < 0) {
+                    int err = errno;
+                    fprintf(stderr,
+                            "[SYNC_TCP] send to slave %s:%d failed after %zu/%zu bytes: %s\n",
+                            inet_ntoa(slave->addr.sin_addr),
+                            ntohs(slave->addr.sin_port),
+                            total_sent, msg->len,
+                            strerror(err));
+                    // 出错就放弃该 slave，交由其它逻辑清理
+                    break;
+                }
+
+                if (n == 0) {
+                    fprintf(stderr,
+                            "[SYNC_TCP] send returned 0 to slave %s:%d (sent=%zu/%zu), closing stream\n",
+                            inet_ntoa(slave->addr.sin_addr),
+                            ntohs(slave->addr.sin_port),
+                            total_sent, msg->len);
+                    break;
+                }
+
+                total_sent += (size_t)n;
             }
+
+            // fprintf(stderr,
+            //         "[SYNC_TCP] worker sent %zu/%zu bytes to slave %s:%d\n",
+            //         total_sent, msg->len,
+            //         inet_ntoa(slave->addr.sin_addr),
+            //         ntohs(slave->addr.sin_port));
         }
         pthread_mutex_unlock(&global_dist_config.slave_mutex);
 
@@ -93,19 +121,27 @@ int sync_backend_broadcast(const void *data, size_t len){
     if (!data || len == 0) return -1;
     if (!g_tcp_running)   return -1;
 
-    sync_msg_t *msg = (sync_msg_t*)kvs_malloc(sizeof(sync_msg_t));
+    if(len > KVS_MAX_RESPONSE_SIZE){
+        fprintf(stderr, "[SYNC_TCP] message too large to broadcast: %zu bytes\n", len);
+        return -1;
+    }
+
+    sync_msg_t *msg = (sync_msg_t*)kvs_malloc(sizeof(sync_msg_t) + len);
     if (!msg) {
         fprintf(stderr, "[SYNC_TCP] alloc sync_msg failed\n");
         return -1;
     }
-    msg->len = len <= sizeof(msg->data) ? len : sizeof(msg->data);
-    memcpy(msg->data, data, msg->len);
+    // msg->len = len <= sizeof(msg->data) ? len : sizeof(msg->data);
+    // memcpy(msg->data, data, msg->len);
+    msg->len = len;
+    memcpy(msg->payload, data, len);
 
     if (msg_queue_push(&g_tcp_queue, msg) != 0) {
         fprintf(stderr, "[SYNC_TCP] msg_queue_push failed\n");
         kvs_free(msg);
         return -1;
     }
+    // fprintf(stderr, "[SYNC_TCP] broadcast push len=%zu\n", len);
     return 0;
 }
 

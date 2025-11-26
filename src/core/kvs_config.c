@@ -40,8 +40,8 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     // 默认使用自定义内存池
     cfg->mem_backend = KVS_MEM_BACKEND_POOL;
 
-    // 默认允许较大 Value（10MB），可通过配置覆盖或关闭限制
-    cfg->max_value_size = 10 * 1048576; // 10MB
+    // 默认允许较大 Value，可通过配置覆盖或关闭限制
+    cfg->max_value_size = 512 * 1024; // 512KB
 }
 
 static int parse_bool(const char *v, int def) {

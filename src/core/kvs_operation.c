@@ -35,7 +35,7 @@ const command_info command_table[] = {
     {"RRANGE", handle_range,  3, 0, DATA_STRUCTURE_RBTREE},
     {"RSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_RBTREE},
 
-    // Hash commands（保留原有 Hash，不再用于论文大 value）
+    // Hash commands）
     {"HSET",   handle_set,    3, 1, DATA_STRUCTURE_HASH},
     {"HGET",   handle_get,    2, 0, DATA_STRUCTURE_HASH},
     {"HDEL",   handle_del,    2, 1, DATA_STRUCTURE_HASH},
@@ -57,6 +57,7 @@ const command_info command_table[] = {
     {"PAPERSET", handle_set,  3, 1, DATA_STRUCTURE_RBTREE},
     {"PAPERGET", handle_get,  2, 0, DATA_STRUCTURE_RBTREE},
     {"PAPERDEL", handle_del,  2, 1, DATA_STRUCTURE_RBTREE},
+    {"PAPERMOD", handle_mod,  3, 1, DATA_STRUCTURE_RBTREE},
 
     // Special commands
     {"QUIT",   handle_quit,   1, 0, -1},
@@ -139,8 +140,11 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
         ctx->data_structure = DATA_STRUCTURE_HASH;
     }else if(cmd >= KVS_CMD_SSET && cmd <= KVS_CMD_SSORT){
         ctx->data_structure = DATA_STRUCTURE_SKIPTABLE;
-    }else if(cmd >= KVS_CMD_PAPERSET && cmd <= KVS_CMD_PAPERDEL){
+    }else if(cmd >= KVS_CMD_PAPERSET && cmd <= KVS_CMD_PAPERMOD){
         ctx->data_structure = DATA_STRUCTURE_RBTREE; // Paper 使用 RBTree 存储大 value
+    }else if(cmd == KVS_CMD_QUIT){
+        //QUIT命令不需要额外参数
+        return 0;
     }else{
         return -1; //未知命令 
     }  
@@ -228,12 +232,12 @@ int handle_set(command_context_t *ctx, char *response){
     int ret = -1;
 
     // 按配置限制单条 value 大小；0 表示不限制
-    if (g_cfg.max_value_size > 0 && ctx->value) {
-        size_t vlen = strlen(ctx->value);
-        if (vlen > g_cfg.max_value_size) {
-            return resp_generate_error(response, "ERR value too large, check max_value_size");
-        }
-    }
+    // if (g_cfg.max_value_size > 0 && ctx->value) {
+    //     size_t vlen = strlen(ctx->value);
+    //     if (vlen > g_cfg.max_value_size) {
+    //         return resp_generate_error(response, "ERR value too large, check max_value_size");
+    //     }
+    // }
 
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
@@ -348,6 +352,14 @@ int handle_del(command_context_t *ctx, char *response){
 int handle_mod(command_context_t *ctx, char *response){
     int ret = -1;
 
+    // 按配置限制单条 value 大小；0 表示不限制
+    // if (g_cfg.max_value_size > 0 && ctx->value) {
+    //     size_t vlen = strlen(ctx->value);
+    //     if (vlen > g_cfg.max_value_size) {
+    //         return resp_generate_error(response, "ERR value too large, check max_value_size");
+    //     }
+    // }
+
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
@@ -419,6 +431,12 @@ int handle_range(command_context_t *ctx, char *response){
     int ret = -1;
 	char *temp_response = NULL;
 
+    temp_response = kvs_malloc(KVS_MAX_RESPONSE_LENGTH);
+    if (!temp_response) {
+        return resp_generate_error(response, "ERROR");
+    }
+    temp_response[0] = '\0';
+
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
@@ -456,6 +474,13 @@ int handle_range(command_context_t *ctx, char *response){
 int handle_sort(command_context_t *ctx, char *response){
     int ret = -1;
 	char *temp_response = NULL;
+
+    temp_response = kvs_malloc(KVS_MAX_RESPONSE_LENGTH);
+    if (!temp_response) {
+        return resp_generate_error(response, "ERROR");
+    }
+
+    temp_response[0] = '\0';
 
     switch(ctx->data_structure){
 #if ENABLE_ARRAY

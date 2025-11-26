@@ -503,7 +503,9 @@ int ntyco_start(unsigned short port, msg_handler handler) {
 
 	// 修改调度循环，添加关闭标志检测
     while (!g_shutdown_flag) {
-        nty_schedule_run();  // 非阻塞执行
+        fprintf(stderr, "[ntyco] schedule_run enter, flag=%d\n", g_shutdown_flag);
+        nty_schedule_run();
+        fprintf(stderr, "[ntyco] schedule_run return, flag=%d\n", g_shutdown_flag);
         usleep(10000);       // 10ms休眠
     }
 

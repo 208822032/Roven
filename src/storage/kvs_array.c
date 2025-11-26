@@ -280,7 +280,7 @@ int kvs_array_sort(kvs_array_t *inst, char *response, int max_len) {
 }
 #else
 int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int max_len){
-    if(!inst) return -1;
+    if (!inst || !response || max_len <= 0) return -1;
 
     kvs_array_item_t *items = kvs_malloc(inst->total * sizeof(kvs_array_item_t));
     if(!items) return -1;

@@ -15,17 +15,22 @@
 #include "kvs_globals.h"
 #include "kvstore.h"
 #include "sync_backend.h"
+#include <stdint.h>
 
 
 
 distributed_config_t global_dist_config;
 
 //同步队列中存放二进制消息
+// typedef struct sync_msg {
+//     size_t len;
+//     char data[KVS_MAX_RESPONSE_SIZE];
+// } sync_msg_t;
+
 typedef struct sync_msg {
     size_t len;
-    char data[KVS_MAX_RESPONSE_SIZE];
+    uint8_t payload[];
 } sync_msg_t;
-
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -114,7 +119,7 @@ void* ebpf_dummy_server(void *arg){
         return NULL;
     }
 
-    printf("[EBPF_SYNC] Dummy server listening on loopback:%d\n", global_dist_config.sync_port+1);
+    // printf("[EBPF_SYNC] Dummy server listening on loopback:%d\n", global_dist_config.sync_port+1);
 
     while(1){
         int client_fd = accept(server_fd, NULL, NULL);
@@ -260,9 +265,9 @@ void* slave_sync_thread(void *arg){
     }
 #endif
 
-    printf("[DIST] Full sync completed for slave %s:%d\n",
-           inet_ntoa(slave->addr.sin_addr),
-           ntohs(slave->addr.sin_port));
+    // printf("[DIST] Full sync completed for slave %s:%d\n",
+    //        inet_ntoa(slave->addr.sin_addr),
+    //        ntohs(slave->addr.sin_port));
 
     // 增量同步
 #if (SYNC_MODE == SYNC_MODE_TCP)
@@ -554,12 +559,34 @@ void slave_connect_master(){
 
 
     //接收同步数据
-    char buffer[KVS_MAX_RESPONSE_SIZE] = {0};
+    // char buffer[KVS_MAX_RESPONSE_SIZE] = {0};
+    size_t buf_cap = KVS_MAX_RESPONSE_SIZE;
+    uint8_t *buffer = kvs_malloc(buf_cap);
+    if(!buffer){
+        fprintf(stderr, "[SLAVE] malloc buffer failed\n");
+        close(sock);
+        return;
+    }
     size_t recv_len = 0;
 
     //解析命令
     while(1){
-        ssize_t n = recv(sock, buffer + recv_len, sizeof(buffer) - recv_len, 0);
+        if(recv_len >= buf_cap){
+            size_t new_cap = buf_cap * 2;
+            if(new_cap < buf_cap){
+                fprintf(stderr, "[SLAVE] buffer size overflow\n");
+                break;
+            }
+            uint8_t* tmp = (uint8_t*)kvs_realloc(buffer, new_cap);
+            if(!tmp){
+                fprintf(stderr, "[SLAVE] realloc buffer failed\n");
+                break;
+            }
+            buffer = tmp;
+            buf_cap = new_cap;
+        }
+
+        ssize_t n = recv(sock, buffer + recv_len, buf_cap - recv_len, 0);
 
         if(n == 0){
             printf("Master closed connection\n");
@@ -621,7 +648,7 @@ void slave_connect_master(){
 
             set_sync_context(1); // 标记这是主从同步写，避免回写 master
 
-            // printf("[SLAVE] decoded msg: op=%d key_len=%zu val_len=%zu\n",
+    //         printf("[SLAVE] decoded msg: op=%d key_len=%zu val_len=%zu\n",
     //    op, klen, vlen);
 
             switch(op){
@@ -692,6 +719,9 @@ void slave_connect_master(){
                 case MS_OP_PAPERDEL:
                     kvs_rbtree_del(&global_rbtree, key);
                     break;
+                case MS_OP_PAPERMOD:
+                    kvs_rbtree_mod(&global_rbtree, key, val ? val : "");
+                    break;
 #endif                   
                 default:
                     fprintf(stderr, "[SLAVE] Unknown operation %d\n", op);
@@ -717,6 +747,7 @@ void slave_connect_master(){
         }
     }
 
+    kvs_free(buffer);
     close(sock);
     return;
 }
@@ -758,11 +789,11 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     }else if(strcmp(cmd, "SMOD") == 0){
         op = MS_OP_SKIPTABLE_SMOD;
     }else if(strcmp(cmd, "PAPERSET") == 0){
-        fprintf(stderr, "[MASTER] PAPERSET key=%s len=%zu\n", key, strlen(key));
         op = MS_OP_PAPERSET;
     }else if(strcmp(cmd, "PAPERDEL") == 0){
         op = MS_OP_PAPERDEL;
-        fprintf(stderr, "[MASTER] PAPERDEL key=%s\n", key);
+    }else if(strcmp(cmd, "PAPERMOD") == 0){
+        op = MS_OP_PAPERMOD;
     }else{
         //未知命令
         return;

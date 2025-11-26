@@ -16,13 +16,23 @@
 # error "EBPF_KVS_MAX_RESPONSE_SIZE must be defined before including ebpf_sync_shared.h"
 #endif
 
+// struct net_sync_event {
+//     __u64 ts_ns;
+//     __u32 pid;
+//     __u32 len;
+//     __u16 sport;
+//     __u16 dport;
+//     char  data[EBPF_KVS_MAX_RESPONSE_SIZE];
+// };
+
+//使用柔性数组
 struct net_sync_event {
     __u64 ts_ns;
     __u32 pid;
     __u32 len;
     __u16 sport;
     __u16 dport;
-    char  data[EBPF_KVS_MAX_RESPONSE_SIZE];
+    char  data[];
 };
 
 #endif // EBPF_SYNC_SHARED_H

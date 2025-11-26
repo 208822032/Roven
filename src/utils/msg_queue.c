@@ -2,11 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// 可选：如果你希望统一用 kvs_memory，可以打开下面宏
-// #include "kvs_memory.h"
-// #define MSGQ_MALLOC  kvs_malloc
-// #define MSGQ_FREE    kvs_free
-
 #ifndef MSGQ_MALLOC
 #   define MSGQ_MALLOC malloc
 #   define MSGQ_FREE   free
