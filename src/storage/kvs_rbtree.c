@@ -691,7 +691,6 @@ void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node,
     callback(node, userdata);
     rbtree_traversal_with_callback(T, node->right, callback, userdata);
 }
-
 #if 0
 int main(){
 	// 初始化红黑树

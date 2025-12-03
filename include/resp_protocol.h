@@ -24,6 +24,8 @@
 #include <sys/mman.h>
 #include <limits.h>
 
+#include "kvs_memory_internal.h"  // for kvs_mem_stats_t snapshot in MEMSTATS
+
 // #define MAX_BULK_LENGTH (512 * 1024 * 1024) // 512MB 最大批量字符串长度
 #define MAX_BULK_LENGTH  (10 * 1048576) // 10MB 最大批量字符串长度
 #define MAX_ARRAY_LENGTH 1024 * 1024        // 最大数组元素数量

@@ -9,11 +9,12 @@
 
 ## 1. 功能概览
 
-- **数据结构**：数组 / 红黑树 / 哈希表 / 跳表
+- **数据结构**：数组 / 红黑树 / 哈希表 / 跳表（全部支持**动态长度 value**）
   - 数组：`SET / GET / DEL / MOD / EXIST / RANGE / SORT`
   - 红黑树：`RSET / RGET / RDEL / RMOD / REXIST / RRANGE / RSORT`
   - 哈希表：`HSET / HGET / HDEL / HMOD / HEXIST / HRANGE / HSORT`
   - 跳表：`SSET / SGET / SDEL / SMOD / SEXIST / SRANGE / SSORT`
+  - 以上四种结构的 value 均使用统一内存管理层，支持从小 key 到大 value 的**按需动态分配与释放**，不会被固定长度数组/结构体限制。
 - **协议**：自研 RESP 解析器，兼容 Redis 风格，多命令 Pipeline
 - **持久化**：RDB 快照 + AOF 追加日志，支持重写
 - **分布式**：主从复制（TCP / eBPF 两种同步实现）
@@ -428,24 +429,6 @@ kv> EXIT
 
 # 11. 测试附录
 
-  下图给出了部分测试结果的可视化对比（见 `images/` 目录）：
-
-  - 图 1：不同数据结构在 TCP / eBPF、Standalone / Master-Slave 下的单次写 QPS 对比。
-
-    ![QPS Single Write](images/image1.png)
-
-  - 图 2：不同数据结构在 TCP / eBPF、Standalone / Master-Slave 下的 pipeline QPS 对比。
-
-    ![QPS Pipeline](images/image2.png)
-
-  - 图 3：不同内存后端（pool / glibc / jemalloc）的基础 QPS 对比。
-
-    ![Memory Backend Basic](images/image3.png)
-
-  - 图 4：不同内存后端在单次写 / pipeline 场景下的 QPS 对比。
-
-    ![Memory Backend RW QPS](images/image4.png)
-
   1. 单机与主从同步 QPS 差异
 
   **单次写（100000 条），TCP，QPS 对比**
@@ -461,44 +444,18 @@ kv> EXIT
   | Master-Slave | hash      | 7897           | 100000   | 12663.04  |
   | Master-Slave | skiptable | 7810           | 100000   | 12804.10  |
 
-  **1000 条命令 pipeline（合计 100000 条），TCP，QPS 对比**
-
-  | Mode         | Structure | time_used (ms) | count    | QPS       |
-  | ------------ | --------- | -------------- | -------- | --------- |
-  | Standalone   | array     | 413            | 100000   | 242130.75 |
-  | Standalone   | rbtree    | 528            | 100000   | 189393.94 |
-  | Standalone   | hash      | 441            | 100000   | 226757.37 |
-  | Standalone   | skiptable | 458            | 100000   | 218340.61 |
-  | Master-Slave | array     | 786            | 100000   | 127226.46 |
-  | Master-Slave | rbtree    | 412            | 100000   | 242718.45 |
-  | Master-Slave | hash      | 352            | 100000   | 284090.91 |
-  | Master-Slave | skiptable | 385            | 100000   | 259740.26 |
-
   **单次写（100000 条），eBPF，QPS 对比**
 
   | Mode         | Structure | time_used (ms) | count    | QPS       |
   | ------------ | --------- | -------------- | -------- | --------- |
-  | Standalone   | array     | 9767           | 100000   | 10238.56  |
-  | Standalone   | rbtree    | 8863           | 100000   | 11282.86  |
-  | Standalone   | hash      | 10679          | 100000   | 9364.17   |
-  | Standalone   | skiptable | 10974          | 100000   | 9112.45   |
-  | Master-Slave | array     | 10290          | 100000   | 9718.17   |
-  | Master-Slave | rbtree    | 10330          | 100000   | 9680.54   |
-  | Master-Slave | hash      | 11020          | 100000   | 9074.41   |
-  | Master-Slave | skiptable | 10753          | 100000   | 9299.73   |
-
-  **1000 条命令 pipeline（合计 100000 条），eBPF，QPS 对比**
-
-  | Mode         | Structure | time_used (ms) | count    | QPS       |
-  | ------------ | --------- | -------------- | -------- | --------- |
-  | Standalone   | array     | 802            | 100000   | 124688.28 |
-  | Standalone   | rbtree    | 1461           | 100000   | 68446.27  |
-  | Standalone   | hash      | 1213           | 100000   | 82440.23  |
-  | Standalone   | skiptable | 995            | 100000   | 100502.51 |
-  | Master-Slave | array     | 766            | 100000   | 130548.30 |
-  | Master-Slave | rbtree    | 1083           | 100000   | 92336.10  |
-  | Master-Slave | hash      | 937            | 100000   | 106723.59 |
-  | Master-Slave | skiptable | 1005           | 100000   | 99502.49  |
+  | Standalone   | array     | 9767           | 100000   | 13758.94  |
+  | Standalone   | rbtree    | 8863           | 100000   | 9214.89   |
+  | Standalone   | hash      | 10679          | 100000   | 13478.91  |
+  | Standalone   | skiptable | 10974          | 100000   | 13550.14  |
+  | Master-Slave | array     | 10290          | 100000   | 10162.60  |
+  | Master-Slave | rbtree    | 10330          | 100000   | 9730.47   |
+  | Master-Slave | hash      | 11020          | 100000   | 10261.67  |
+  | Master-Slave | skiptable | 10753          | 100000   | 9449.12   |
 
   2. 不同内存池对比
 
@@ -517,35 +474,20 @@ kv> EXIT
   | JEMALLOC| big-after-frag    | 1068036     | time = 0 ms                  |
 
   **单次写（100000 条），不同内存后端 QPS 对比**
+  | Backend  | Structure | n       | total_ops | time_used (ms) | QPS (ops/s) | 虚拟内存 (GiB) |
+|----------|-----------|---------|-----------|----------------|-------------|----------------|
+| pool     | array     | 100000  | 600000    | 36417          | 16475.82    | 2.91           |
+| pool     | rbtree    | 100000  | 600000    | 34882          | 17200.85    | 2.91           |
+| pool     | hash      | 100000  | 600000    | 34370          | 17457.08    | 2.91           |
+| pool     | skiptable | 100000  | 600000    | 33827          | 17737.31    | 2.91           |
+| system   | array     | 100000  | 600000    | 32639          | 18382.92    | 2.69           |
+| system   | rbtree    | 100000  | 600000    | 35581          | 16862.93    | 2.69           |
+| system   | hash      | 100000  | 600000    | 35653          | 16828.88    | 2.69           |
+| system   | skiptable | 100000  | 600000    | 34072          | 17609.77    | 2.69           |
+| jemalloc | array     | 100000  | 600000    | 33320          | 18007.20    | 2.67           |
+| jemalloc | rbtree    | 100000  | 600000    | 32964          | 18201.67    | 2.67           |
+| jemalloc | hash      | 100000  | 600000    | 33219          | 18061.95    | 2.67           |
+| jemalloc | skiptable | 100000  | 600000    | 34638          | 17322.02    | 2.67           |
 
-  | Backend | Structure | time_used (ms) | count  | QPS       |
-  | ------- | --------- | -------------- | ------ | --------- |
-  | pool    | array     | 7404           | 100000 | 13506.21  |
-  | pool    | rbtree    | 8228           | 100000 | 12153.62  |
-  | pool    | hash      | 8209           | 100000 | 12181.75  |
-  | pool    | skiptable | 7560           | 100000 | 13227.51  |
-  | glibc   | array     | 7752           | 100000 | 12899.90  |
-  | glibc   | rbtree    | 7560           | 100000 | 13227.51  |
-  | glibc   | hash      | 5570           | 100000 | 17953.32  |
-  | glibc   | skiptable | 6456           | 100000 | 15489.47  |
-  | jemalloc| array     | 8529           | 100000 | 11724.70  |
-  | jemalloc| rbtree    | 7964           | 100000 | 12556.50  |
-  | jemalloc| hash      | 8214           | 100000 | 12174.34  |
-  | jemalloc| skiptable | 8135           | 100000 | 12292.56  |
 
-  **1000 条命令 pipeline（合计 100000 条），不同内存后端 QPS 对比**
 
-  | Backend | Structure | time_used (ms) | count  | QPS       |
-  | ------- | --------- | -------------- | ------ | --------- |
-  | pool    | array     | 421            | 100000 | 237529.69 |
-  | pool    | rbtree    | 775            | 100000 | 129032.26 |
-  | pool    | hash      | 414            | 100000 | 241545.89 |
-  | pool    | skiptable | 444            | 100000 | 225225.23 |
-  | glibc   | array     | 382            | 100000 | 261780.10 |
-  | glibc   | rbtree    | 449            | 100000 | 222717.15 |
-  | glibc   | hash      | 691            | 100000 | 144717.80 |
-  | glibc   | skiptable | 456            | 100000 | 219298.25 |
-  | jemalloc| array     | 436            | 100000 | 229357.80 |
-  | jemalloc| rbtree    | 510            | 100000 | 196078.43 |
-  | jemalloc| hash      | 487            | 100000 | 205338.81 |
-  | jemalloc| skiptable | 511            | 100000 | 195694.72 |

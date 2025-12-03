@@ -21,11 +21,12 @@ typedef struct hashnode_s {
 } hashnode_t;
 #else
 typedef struct hashnode_s {
-	unsigned char used;
-	unsigned char klen;
-	unsigned short vlen;
-	char key[MAX_KEY_LEN];
-	char value[MAX_VALUE_LEN];
+	unsigned char used;   // 0: empty, 1: used, 2: tombstone
+	unsigned char pad;    // 对齐填充
+	unsigned short klen;
+	unsigned int   vlen;
+	char *key;
+	char *value;
 } hashnode_t;
 #endif
 

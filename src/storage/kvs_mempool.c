@@ -15,11 +15,6 @@
 #endif
 
 
-// 新增：全局大内存块链表
-//gmalloc 自定义 系统自带 对比
-    //虚拟内存占用率
-    //一百万次请求
-// static mem_block_header_t *large_blocks_head = NULL;
 
 static large_block_record_t *large_blocks_head = NULL;
 static large_block_record_t *large_blocks_tail = NULL;
@@ -48,6 +43,7 @@ void mem_init() {
     // 根据全局配置选择后端
     extern kvs_config_t g_cfg;
     g_mem_backend = g_cfg.mem_backend;
+
 
     // 如果不是使用自定义内存池，则可以直接返回（仍然允许调用 kvs_malloc）
     if (g_mem_backend != KVS_MEM_BACKEND_POOL) {
@@ -164,12 +160,22 @@ void* mem_alloc(size_t size) {
 
     // 根据当前后端选择不同实现
     switch (g_mem_backend) {
-    case KVS_MEM_BACKEND_SYSTEM:
-        return malloc(size);
+    case KVS_MEM_BACKEND_SYSTEM: {
+        void *p = malloc(size);
+        if (p) ;
+        return p;
+    }
     case KVS_MEM_BACKEND_JEMALLOC:
-        if (jemalloc_alloc_impl) return jemalloc_alloc_impl(size);
-        // 如果尚未绑定 jemalloc，则退回系统分配
-        return malloc(size);
+        if (jemalloc_alloc_impl) {
+            void *p = jemalloc_alloc_impl(size);
+            if (p) ;
+            return p;
+        }
+        {
+            void *p = malloc(size);
+            if (p) ;
+            return p;
+        }
     case KVS_MEM_BACKEND_POOL:
     default:
         break;
@@ -217,7 +223,6 @@ void* mem_alloc(size_t size) {
                 // 分割内存并加入空闲链表
                 char *p = mem;
                 mem_block_t *new_blocks = NULL;
-                int new_block_count = 0;
 
                 for (int i = 0; i < BLOCKS_PER_ALLOC; i++) {
                     mem_block_header_t *header = (mem_block_header_t*)p;
@@ -231,7 +236,6 @@ void* mem_alloc(size_t size) {
                     mem_block_t *block = (mem_block_t*)data;
                     block->next = new_blocks;
                     new_blocks = block;
-                    new_block_count++;
 
                     p += block_total_size;
                 }
@@ -419,7 +423,6 @@ void mem_destroy() {
         while(chunk){
             mem_chunk_t *next_chunk = chunk->next;
             free(chunk->chunk);//释放大块内存
-            free(chunk);//释放记录
             chunk = next_chunk;
         }
         pool->chunks = NULL;
@@ -439,9 +442,10 @@ void mem_destroy() {
 
     // 新增：重置初始化标志
     g_mem_manager.is_initialized = 0;
-    pthread_mutex_destroy(&g_mem_manager.large_blocks_lock);
+        pthread_mutex_destroy(&g_mem_manager.large_blocks_lock);
     
-}
+    }
+
 
 //重新分配
 void* mem_realloc(void *ptr, size_t new_size){

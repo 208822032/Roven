@@ -40,8 +40,9 @@ static void *tcp_backend_worker(void *arg)
         void *item = NULL;
         int r = msg_queue_pop(&g_tcp_queue, &item);
         if (r != 0) {
-            // 队列关闭或出错，退出
-            break;
+            //队列关闭或出错
+            usleep(100);
+            continue;
         }
         if (!item) continue;
 
@@ -148,7 +149,6 @@ int sync_backend_broadcast(const void *data, size_t len){
 // 关闭 / 清理
 void sync_backend_shutdown(void){
     g_tcp_running = 0;
-    msg_queue_close(&g_tcp_queue);
     pthread_join(g_tcp_thread, NULL);
     msg_queue_destroy(&g_tcp_queue);
 }

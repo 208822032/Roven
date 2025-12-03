@@ -50,44 +50,6 @@ extern kvs_skiptable_t global_skiptable;
 
 #if (SYNC_MODE == SYNC_MODE_EBPF)
 
-//eBPF模式下 编码后的消息发送到回环地址:同步端口
-//接收方不重要 只需要触发tcp_sendmsg
-
-static int send_via_ebpf_loopback(const void* data, size_t len){
-    if(!data || len == 0) return -1;
-
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if(sockfd < 0){
-        perror("[EBPF_SYNC] socket");
-        return -1;
-    }
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    //回环地址
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    int ebpf_port = global_dist_config.sync_port + 1;
-    addr.sin_port = htons(ebpf_port);
-
-    //本地起一个黑洞server接收连接丢弃数据
-    if(connect(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0){
-        perror("[EBPF_SYNC] connect");
-        close(sockfd);
-        return -1;
-    }
-
-    ssize_t n = send(sockfd, data, len, 0);
-    if(n < 0){
-        perror("[EBPF_SYNC] send");
-        close(sockfd);
-        return -1;
-    }
-    //不关心对端响应 立即关闭
-    close(sockfd);
-    return 0;
-}
-
 //黑洞服务器 只接受连接并读取数据后丢弃 保证三次握手和send正常执行
 void* ebpf_dummy_server(void *arg){
     
@@ -138,9 +100,6 @@ void* ebpf_dummy_server(void *arg){
         }
         close(client_fd);
     }
-
-    //这里只是简单写成一个死循环；如果你想优雅退出，
-    // 可以在 distributed_shutdown / ebpf_sync_cleanup 里增加退出标志和关闭 server_fd
 
     close(server_fd);
     return NULL;
@@ -201,17 +160,6 @@ static void slave_append_aof_from_op(ms_op_t op, const char *key, const char *va
 }
 #endif // ENABLE_AOF
 
-//发送命令到指定socket
-// void send_cmd(int sockfd, const char *cmd, const char *key, const char *value){
-//     char buffer[KVS_MAX_RESPONSE_SIZE];
-    
-//     int len = snprintf(buffer, sizeof(buffer), "*3\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n", 
-//         strlen(cmd), cmd, 
-//         strlen(key), key, 
-//         strlen(value ? value : ""), value ? value : "");
-//     send(sockfd, buffer, len, 0);
-// }
-
 //每个slave同步线程 先全量 再增量
 void* slave_sync_thread(void *arg){
 
@@ -223,9 +171,6 @@ void* slave_sync_thread(void *arg){
            ntohs(slave->addr.sin_port));
 
     // 全量同步：遍历本地所有数据结构，对每个 key 调用 master_sync_command()
-    // 注意：master_sync_command 会根据 SYNC_MODE 决定是：
-    //   TCP 模式 -> 放入 g_sync_queue，由本线程从队列取出再发给该 slave
-    //   EBPF 模式 -> 发送到 loopback，由 eBPF 抓取并通过 ebpf_sync_dispatcher 广播
     
 #if ENABLE_ARRAY
     for (int i = 0; i < global_array.total; i++) {
@@ -324,9 +269,9 @@ void* slave_sync_thread(void *arg){
     }
 #endif
 
-    printf("[DIST] Slave sync thread exit %s:%d\n",
-           inet_ntoa(slave->addr.sin_addr),
-           ntohs(slave->addr.sin_port));
+    // printf("[DIST] Slave sync thread exit %s:%d\n",
+    //        inet_ntoa(slave->addr.sin_addr),
+    //        ntohs(slave->addr.sin_port));
 
     close(sockfd);
 
@@ -490,16 +435,7 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
 
         // printf("[DISTRIBUTED] Running as MASTER, sync port: %d", sync_port);
 
-#if (SYNC_MODE == SYNC_MODE_TCP)
-        // 初始化阻塞同步队列（容量可根据写入压力调整）
-        // if (msg_queue_init(&g_sync_queue, 4096) != 0) {
-        //     fprintf(stderr, "[DIST] msg_queue_init failed\n");
-        //     return -1;
-        // }
-
-        // g_sync_running = 1;
-
-#elif (SYNC_MODE == SYNC_MODE_EBPF)
+#if (SYNC_MODE == SYNC_MODE_EBPF)
             // 初始化 eBPF 同步
             if (ebpf_sync_init(sync_port+1) != 0) {
                 fprintf(stderr, "Failed to initialize eBPF sync, fallback disabled\n");
@@ -513,8 +449,6 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
                 extern void* ebpf_dummy_server(void *arg);
                 pthread_create(&dummy_thread, NULL, ebpf_dummy_server, NULL);
             }
-#else   
-#   error "Unknown SYNC_MODE, please define SYNC_MODE=SYNC_MODE_TCP or SYNC_MODE=SYNC_MODE_EBPF"      
 #endif
     }else{
         //从节点
@@ -759,10 +693,6 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     if(global_dist_config.role != ROLE_MASTER) return;
     if(!key || !cmd) return;
 
-#if (SYNC_MODE == SYNC_MODE_TCP)
-    // if(!g_sync_running) return;    
-#endif
-
     ms_op_t op;
     if(strcmp(cmd, "SET") == 0){
         op = MS_OP_ARRAY_SET;
@@ -802,8 +732,6 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     size_t key_len = strlen(key);
     size_t val_len = value ? strlen(value) : 0;
 
-    /* 为避免 KVS_MAX_RESPONSE_SIZE 限制导致大 value 失败，
-       这里按精确长度临时分配编码缓冲区 */
     size_t needed = (size_t)MS_HEADER_LEN + key_len + val_len;
     uint8_t *buffer = (uint8_t *)kvs_malloc(needed);
     if (!buffer) {
@@ -829,7 +757,6 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     //  fprintf(stderr, "[DIST] master_sync_command: op=%d cmd=%s key=%s\n",
     //         op, cmd, key);
 
-    // 无论 TCP / eBPF，统一通过 sync_backend 广播
     if (sync_backend_broadcast(buffer, (size_t)len) != 0) {
         fprintf(stderr, "[DIST] sync_backend_broadcast failed, cmd=%s key=%s\n",
                 cmd, key);

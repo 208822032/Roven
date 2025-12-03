@@ -87,12 +87,6 @@ int ebpf_emit_sync_event(const char *buf, size_t len)
 // ringbuf 回调：把内核事件放入本地队列
 static int handle_sync_event(void *ctx, void *data, size_t size)
 {
-    // if (size != sizeof(struct net_sync_event)) {
-    //     fprintf(stderr, "[EBPF_SYNC] unexpected event size=%zu, expect=%zu\n",
-    //             size, sizeof(struct net_sync_event));
-    //     return 0;
-    // }
-
     (void)ctx;
 
     //头部
@@ -165,7 +159,8 @@ static void *ebpf_sync_dispatcher(void *arg)
         int recv_msg = msg_queue_pop(&g_ebpf_queue, &item);
         if(recv_msg != 0){
             //队列关闭或出错
-            break;
+            usleep(100);
+            continue;
         }
         if(!item){
             continue;
@@ -173,34 +168,42 @@ static void *ebpf_sync_dispatcher(void *arg)
 
         ebpf_sync_msg_t *msg = (ebpf_sync_msg_t*)item;
 
-        // fprintf(stderr, "[EBPF_SYNC] dispatcher got msg len=%zu, slaves=%d\n",
-        //         msg->len, global_dist_config.slave_count);
+            // fprintf(stderr, "[EBPF_SYNC] dispatcher got msg len=%zu, slaves=%d\n",
+            //         msg->len, global_dist_config.slave_count);
 
-        if(global_dist_config.role == ROLE_MASTER){
-            pthread_mutex_lock(&global_dist_config.slave_mutex);
-            for (int i = 0; i < global_dist_config.slave_count; i++) {
-                slave_info_t *slave = &global_dist_config.slaves[i];
-                ssize_t n = send(slave->sockfd, msg->data, msg->len, MSG_NOSIGNAL);
-                if(n < 0){
-                    int err = errno;
-                    fprintf(stderr, "[EBPF_SYNC] send to slave %s:%d failed: %s\n",
-                            inet_ntoa(slave->addr.sin_addr),
-                            ntohs(slave->addr.sin_port),
-                            strerror(err));
-                    if(err == EPIPE || err == ECONNRESET || err == ETIMEDOUT){
-                        //连接断开，后续由主线程清理
-                        continue;
+            if (global_dist_config.role == ROLE_MASTER) {
+                int local_count = 0;
+                int fds[64];
+
+                pthread_mutex_lock(&global_dist_config.slave_mutex);
+                local_count = global_dist_config.slave_count;
+                if (local_count > (int)(sizeof(fds) / sizeof(fds[0]))) {
+                    local_count = (int)(sizeof(fds) / sizeof(fds[0]));
+                }
+                for (int i = 0; i < local_count; i++) {
+                    fds[i] = global_dist_config.slaves[i].sockfd;
+                }
+                pthread_mutex_unlock(&global_dist_config.slave_mutex);
+
+                for (int i = 0; i < local_count; i++) {
+                    ssize_t n = send(fds[i], msg->data, msg->len, MSG_NOSIGNAL);
+                    if (n < 0) {
+                        int err = errno;
+                        fprintf(stderr, "[EBPF_SYNC] send to slave fd=%d failed: %s\n",
+                                fds[i], strerror(err));
+                        if (err == EPIPE || err == ECONNRESET || err == ETIMEDOUT) {
+                            continue;
+                        }
                     }
                 }
             }
-            pthread_mutex_unlock(&global_dist_config.slave_mutex);
-        }
-        kvs_free(msg);
+            kvs_free(msg);
     }
 
     // printf("[EBPF_SYNC] dispatcher stopped\n");
     return NULL;
 }
+
 
 // 初始化 eBPF：挂 kprobe/tcp_sendmsg，并设置 sync_port
 int ebpf_sync_init(int sync_port)
@@ -208,7 +211,7 @@ int ebpf_sync_init(int sync_port)
     int err;
 
     //初始化msg_queue
-    if(msg_queue_init(&g_ebpf_queue, 4096) != 0){
+    if(msg_queue_init(&g_ebpf_queue, 65535) != 0){
         fprintf(stderr, "[EBPF_SYNC] msg_queue_init failed\n");
         return -1;
     }
@@ -320,8 +323,6 @@ void ebpf_sync_cleanup(void)
     running = 0;    
     g_ebpf_running = 0;
 
-    //关闭队列 唤醒dispatcher线程
-    msg_queue_close(&g_ebpf_queue);
 
     pthread_join(rb_thread, NULL);
     pthread_join(dispatch_thread, NULL);

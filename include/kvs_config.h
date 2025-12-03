@@ -7,7 +7,7 @@
 
 // 基础常量
 #define KVS_MAX_TOKENS              128
-#define KVS_MAX_RESPONSE_SIZE       (64 * 1024)
+#define KVS_MAX_RESPONSE_SIZE       (1024 * 1024)
 #define KVS_MAX_LINE                1000
 // 统一的最大 RESP 响应长度上限（用于防御性检查）/
 #define KVS_MAX_RESPONSE_LENGTH     (2 * 1024 * 1024)

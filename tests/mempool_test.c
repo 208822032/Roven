@@ -205,6 +205,84 @@ static void big_block_probe(const char *tag, size_t big_size)
     if (p) kvs_free(p);
 }
 
+// 自定义压测脚本：
+// 单次写 n(1000000) 两次 -> 删除 n -> 再写 n 一次 -> 最后删除 2n
+// 用于测试不同内存池的 QPS 和虚拟内存占用
+static void custom_pattern_qps_vm(const char *tag, size_t size, int n)
+{
+    printf("\n==== custom pattern: %s, size=%zu, n=%d ====\n", tag, size, n);
+
+    struct timeval tv_begin, tv_end;
+    struct rusage ru;
+
+    void **arr1 = (void**)xmalloc(sizeof(void*) * n);
+    void **arr2 = (void**)xmalloc(sizeof(void*) * n);
+
+    memset(arr1, 0, sizeof(void*) * n);
+    memset(arr2, 0, sizeof(void*) * n);
+
+    // step1: 写 n 次（第一批）
+    gettimeofday(&tv_begin, NULL);
+    for (int i = 0; i < n; ++i) {
+        arr1[i] = xmalloc(size);
+        memset(arr1[i], 0x3C, size < 32 ? size : 32);
+    }
+
+    // step2: 再写 n 次（第二批）
+    for (int i = 0; i < n; ++i) {
+        arr2[i] = xmalloc(size);
+        memset(arr2[i], 0x4D, size < 32 ? size : 32);
+    }
+
+    // step3: 删除 n 个（删掉第一批）
+    for (int i = 0; i < n; ++i) {
+        if (arr1[i]) {
+            kvs_free(arr1[i]);
+            arr1[i] = NULL;
+        }
+    }
+
+    // step4: 再写 n 次（第三批）
+    for (int i = 0; i < n; ++i) {
+        arr1[i] = xmalloc(size);
+        memset(arr1[i], 0x5E, size < 32 ? size : 32);
+    }
+
+    // step5: 删除 2n 个（第二批 + 第三批）
+    for (int i = 0; i < n; ++i) {
+        if (arr2[i]) {
+            kvs_free(arr2[i]);
+            arr2[i] = NULL;
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        if (arr1[i]) {
+            kvs_free(arr1[i]);
+            arr1[i] = NULL;
+        }
+    }
+
+    gettimeofday(&tv_end, NULL);
+    int time_used = TIME_SUB_MS(tv_end, tv_begin);
+    if (time_used <= 0) time_used = 1;
+
+    // 总操作数：三次分配 + 三次释放，共 6n 次操作
+    long long total_ops = (long long)n * 6;
+    double qps = (double)total_ops * 1000.0 / (double)time_used;
+
+    if (getrusage(RUSAGE_SELF, &ru) == 0) {
+        printf("[custom-pattern] tag=%s maxrss(KB)=%ld, minor_faults=%ld, major_faults=%ld\n",
+               tag, ru.ru_maxrss, ru.ru_minflt, ru.ru_majflt);
+    }
+
+    printf("custom pattern %s: size=%zu, n=%d\n"
+           "  total_ops=%lld, time_used=%d ms, qps=%.2f ops/s\n",
+           tag, size, n, total_ops, time_used, qps);
+
+    kvs_free(arr1);
+    kvs_free(arr2);
+}
+
 int main(int argc, char **argv)
 {
     // 仅测试内存分配：显式选择内存池后端并初始化
@@ -275,6 +353,10 @@ int main(int argc, char **argv)
     // 读多写少混合模式：80% 读，20% 写
     read_heavy_pattern("read-heavy-small", 64, 100000, 5, 20);
     read_heavy_pattern("read-heavy-mid", 256, 50000, 5, 20);
+
+    // 自定义脚本：单次写1000000两次 删除1000000
+    // 再写1000000一次 最后删除2000000，用于测 QPS 和虚拟内存
+    custom_pattern_qps_vm("custom-small-1M", 64, 1000000);
 
     mem_destroy();
 

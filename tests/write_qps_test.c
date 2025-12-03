@@ -369,10 +369,102 @@ static void bench_skiptable_pipeline_qps(int fd, int count, int batch) {
                                "skiptable");
 }
 
+// 通用：某种命令的“先写两次/删一次/等待/再写一次/删两次”序列
+static void bench_generic_custom_pattern(int fd, int n,
+                                         const char *set_cmd, int set_cmd_len,
+                                         const char *del_cmd, int del_cmd_len,
+                                         const char *key_prefix,
+                                         const char *tag) {
+    char cmd[256];
+    char key[64];
+    char buf[128];
+    struct timeval tv_begin, tv_end;
+
+    gettimeofday(&tv_begin, NULL);
+
+    // 1) 写 n 次（第一轮）
+    for (int i = 0; i < n; ++i) {
+        int klen = snprintf(key, sizeof(key), "%s%06d", key_prefix, i);
+        int len = snprintf(cmd, sizeof(cmd),
+                           "*3\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n$5\r\nvalue\r\n",
+                           set_cmd_len, set_cmd,
+                           klen,        key);
+        send_all(fd, cmd, len);
+        recv_once(fd, buf, sizeof(buf));
+    }
+
+    // 2) 再写 n 次（第二轮）
+    for (int i = 0; i < n; ++i) {
+        int klen = snprintf(key, sizeof(key), "%s%06d", key_prefix, i);
+        int len = snprintf(cmd, sizeof(cmd),
+                           "*3\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n$5\r\nvalue\r\n",
+                           set_cmd_len, set_cmd,
+                           klen,        key);
+        send_all(fd, cmd, len);
+        recv_once(fd, buf, sizeof(buf));
+    }
+
+    // 3) 删除 n 次（第一次删）
+    for (int i = 0; i < n; ++i) {
+        int klen = snprintf(key, sizeof(key), "%s%06d", key_prefix, i);
+        int len = snprintf(cmd, sizeof(cmd),
+                           "*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+                           del_cmd_len, del_cmd,
+                           klen,        key);
+        send_all(fd, cmd, len);
+        recv_once(fd, buf, sizeof(buf));
+    }
+
+    // 4) 等待一小段时间，模拟“隔一段时间”
+    usleep(100 * 1000); // 100ms，可按需调整
+
+    // 5) 再写 n 次（第三轮）
+    for (int i = 0; i < n; ++i) {
+        int klen = snprintf(key, sizeof(key), "%s%06d", key_prefix, i);
+        int len = snprintf(cmd, sizeof(cmd),
+                           "*3\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n$5\r\nvalue\r\n",
+                           set_cmd_len, set_cmd,
+                           klen,        key);
+        send_all(fd, cmd, len);
+        recv_once(fd, buf, sizeof(buf));
+    }
+
+    // 6) 最后删 2n 次（第二次和第三次写的 key）
+    for (int round = 0; round < 2; ++round) {
+        for (int i = 0; i < n; ++i) {
+            int klen = snprintf(key, sizeof(key), "%s%06d", key_prefix, i);
+            int len = snprintf(cmd, sizeof(cmd),
+                               "*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+                               del_cmd_len, del_cmd,
+                               klen,        key);
+            send_all(fd, cmd, len);
+            recv_once(fd, buf, sizeof(buf));
+        }
+    }
+
+    gettimeofday(&tv_end, NULL);
+    int time_used = TIME_SUB_MS(tv_end, tv_begin);
+    if (time_used <= 0) time_used = 1;
+
+    // 操作数：写 3n 次 + 删 3n 次 = 6n
+    long long total_ops = (long long)n * 6;
+    double qps = (double)total_ops * 1000.0 / (double)time_used;
+
+    printf("%s custom mempool pattern: n=%d, total_ops=%lld, time_used=%d ms, qps=%.2f ops/s\n",
+           tag, n, total_ops, time_used, qps);
+}
+
+static void bench_all_ds_custom_pattern(int fd, int n) {
+    bench_generic_custom_pattern(fd, n, "SET", 3, "DEL", 3, "mw_a", "array");
+    bench_generic_custom_pattern(fd, n, "RSET", 4, "RDEL", 4, "mw_r", "rbtree");
+    bench_generic_custom_pattern(fd, n, "HSET", 4, "HDEL", 4, "mw_h", "hash");
+    bench_generic_custom_pattern(fd, n, "SSET", 4, "SDEL", 4, "mw_s", "skiptable");
+}
+
 int main(int argc, char *argv[]) {
     if (argc < 4) {
         fprintf(stderr, "usage: %s ip port mode [count]\n", argv[0]);
-        fprintf(stderr, "mode: 1=array, 2=rbtree, 3=hash, 4=skiptable, 5=all, 6=pipeline-all-ds\n");
+        fprintf(stderr, "mode: 1=array, 2=rbtree, 3=hash, 4=skiptable, 5=all, 6=pipeline-all-ds, 7=custom-mempool-all-ds, 8=cold-keys-all-ds\n");
         return 1;
     }
 
@@ -407,6 +499,16 @@ int main(int argc, char *argv[]) {
         bench_rbtree_pipeline_qps(fd, count, batch);
         bench_hash_pipeline_qps(fd, count, batch);
         bench_skiptable_pipeline_qps(fd, count, batch);
+    } else if (mode == 7) {
+        // 自定义 mempool 压测（四种数据结构统一）：
+        // 先写 count 两次 -> 删 count 一次 -> 隔一段时间 -> 再写 count 一次 -> 最后删 2*count
+        bench_all_ds_custom_pattern(fd, count);
+    } else if (mode == 8) {
+        // 冷 key 场景：每种数据结构用一批几乎不重复的 key，只写一次再删一次
+        bench_array_set_qps(fd, count);
+        bench_rbtree_set_qps(fd, count);
+        bench_hash_set_qps(fd, count);
+        bench_skiptable_set_qps(fd, count);
     } else {
         fprintf(stderr, "unknown mode %d\n", mode);
     }

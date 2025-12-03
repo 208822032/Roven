@@ -4,15 +4,6 @@
 #include <bpf/bpf_core_read.h>
 #include "ebpf_sync_shared.h"
 
-// // 与用户态 sync_mode.h 中的 struct net_sync_event 保持字段一致
-// struct net_sync_event {
-//     __u64 ts_ns;
-//     __u32 pid;
-//     __u32 len;
-//     __u16 sport;
-//     __u16 dport;
-//     char  data[KVS_MAX_RESPONSE_SIZE];
-// };
 
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -27,7 +18,6 @@ struct {
     __type(value, __u16);
 } sync_conf SEC(".maps");
 
-// kprobe: tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 SEC("kprobe/tcp_sendmsg")
 int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
 {
@@ -37,8 +27,6 @@ int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t s
     __u16 cfg_port = 0;
     __u32 key = 0;
 
-    // 先打印一条，确认 kprobe 触发
-    // bpf_printk("handle_tcp_sendmsg enter, size=%llu\n", (unsigned long long)size);
 
     // 从 sock 读目的端口（网络字节序）
     bpf_core_read(&dport, sizeof(dport), &sk->__sk_common.skc_dport);
@@ -57,8 +45,6 @@ int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t s
     if (dport != cfg_port)
         return 0;
 
-    // bpf_printk("tcp_sendmsg dport=%u cfg_port=%u\n", dport, cfg_port);
-
     // 根据数据长度解析 iovecs
     struct iovec *iov = NULL;
     size_t iovlen = 0;
@@ -76,13 +62,6 @@ int BPF_KPROBE(handle_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t s
     if (!base || seg_len == 0)
         return 0;
     
-    //真实发送的字节数 = min(size, seg_len, sizeof(e->data))
-    // __u64 sz = size;
-    // __u64 s1 = seg_len;
-    // __u32 max_copy = EBPF_KVS_MAX_RESPONSE_SIZE;
-    // __u64 min1 = sz < s1 ? sz : s1;
-    // __u64 min2 = min1 < max_copy ? min1 : max_copy;
-    // __u32 copy_len = (__u32)min2;
 
     __u32 copy_len = (__u32)size;
     __u64 seg_len64 = seg_len;

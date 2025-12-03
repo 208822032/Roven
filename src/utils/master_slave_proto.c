@@ -92,3 +92,28 @@ int ms_decode_message(
 
     return (int)need;
 }
+
+
+// 将一条写操作编码成 ms 二进制流。
+// 返回写入长度 >0 成功，<=0 失败。
+int ms_encode_command(
+    uint8_t *buf, size_t buf_cap,
+    ms_op_t op,
+    const char *key, size_t key_len,
+    const char *val, size_t val_len
+){
+    if (!buf || !key) return -1;
+    return ms_encode_message(buf, buf_cap, op, key, key_len, val, val_len);
+}
+
+// 尝试从 buffer 中解出一条完整命令
+// 返回：>0 表示消费的字节数；0 表示数据不够；<0 表示协议错误。
+int ms_decode_command(
+    const uint8_t *buf, size_t len,
+    ms_op_t *op,
+    const uint8_t **key, size_t *key_len,
+    const uint8_t **val, size_t *val_len
+){
+
+    return ms_decode_message(buf, len, op, key, key_len, val, val_len);
+}

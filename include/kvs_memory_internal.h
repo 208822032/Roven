@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <pthread.h>
 #include "kvs_config.h"
+#include <stdio.h>
 
 typedef struct mem_block {
     struct mem_block* next;
@@ -44,6 +45,7 @@ typedef struct {
 } mem_manager_t;
 
 extern mem_manager_t g_mem_manager;
+
 
 // 允许外部根据配置设置当前内存后端
 void mem_set_backend(kvs_mem_backend_t backend);

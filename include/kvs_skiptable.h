@@ -3,12 +3,10 @@
 #include "kvs_memory.h"
 
 #define MAX_LEVEL 16
-#define KEY_SIZE 128
-#define VALUE_SIZE 256
 
 typedef struct Node {
-	char key[KEY_SIZE];
-	char value[VALUE_SIZE];
+	char *key;
+	char *value;
 	int level;
 	struct Node* forward[];
 } Node;

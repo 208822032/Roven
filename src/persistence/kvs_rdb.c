@@ -39,50 +39,6 @@ static int file_exists(const char *filename){
 }
 
 //保存rdb文件
-#if 0
-int kvs_rdb_save(const char *filename){
-
-    FILE *fp = fopen(filename, "wb");
-    if(!fp){
-        perror("Failed to open RDB file for writing");
-        return RDB_ERR;
-    }
-
-    //写入魔数和版本
-    fwrite(RDB_MAGIC, strlen(RDB_MAGIC), 1, fp);
-    uint8_t version = RDB_VERSION;
-    fwrite(&version, sizeof(version), 1, fp);
-
-    //保存当前时间戳
-    time_t timestamp = time(NULL);
-    fwrite(&timestamp, sizeof(timestamp), 1, fp);
-
-    //保存各数据结构
-    #if ENABLE_ARRAY
-    rdb_save_array(fp);
-    #endif
-
-    #if ENABLE_RBTREE
-    rdb_save_rbtree(fp);
-    #endif
-
-    #if ENABLE_HASH
-    rdb_save_hash(fp);
-    #endif
-
-    #if ENABLE_SKIPTABLE
-    rdb_save_skiptable(fp);
-    #endif
-
-    //写入结束标识
-    uint8_t eof = 0xFF;
-    fwrite(&eof, sizeof(eof), 1, fp);
-
-    fclose(fp);
-    printf("RDB snapshot saved to %s\n", filename);
-    return RDB_OK;
-}
-#else
 int kvs_rdb_save(const char *filename){
     char tmpname[1024];
 
@@ -165,7 +121,6 @@ write_error_no_close:
     unlink(tmpname); // 写失败时删除半成品
     return RDB_ERR;
 }
-#endif
 
 //加载rdb文件
 int kvs_rdb_load(const char *filename){
@@ -279,8 +234,8 @@ static void rdb_save_array(FILE *fp){
     fwrite(&count, sizeof(count), 1, fp);
     for (int i = 0; i < global_array.total; i++) {
         if (global_array.table[i].key && global_array.table[i].value) {
-            uint16_t key_len   = (uint16_t)strlen(global_array.table[i].key);
-            uint16_t value_len = (uint16_t)strlen(global_array.table[i].value);
+            uint32_t key_len   = (uint32_t)strlen(global_array.table[i].key);
+            uint32_t value_len = (uint32_t)strlen(global_array.table[i].value);
 
             fwrite(&key_len, sizeof(key_len), 1, fp);
             fwrite(global_array.table[i].key, key_len, 1, fp);
@@ -297,7 +252,7 @@ static void rdb_load_array(FILE *fp){
     fread(&count, sizeof(count), 1, fp);
 
     for (uint32_t i = 0; i < count; i++) {
-        uint16_t key_len, value_len;
+        uint32_t key_len, value_len;
 
         fread(&key_len, sizeof(key_len), 1, fp);
         char *key = kvs_malloc(key_len + 1);
@@ -325,8 +280,8 @@ static void rdb_save_rbtree_node(rbtree_node *node,
 
     rdb_save_rbtree_node(node->left, T, fp, count);
 
-    uint16_t key_len   = (uint16_t)strlen(node->key);
-    uint16_t value_len = (uint16_t)strlen((char*)node->value);
+    uint32_t key_len   = (uint32_t)strlen(node->key);
+    uint32_t value_len = (uint32_t)strlen((char*)node->value);
 
     fwrite(&key_len,   sizeof(key_len),   1, fp);
     fwrite(node->key,  key_len,          1, fp);
@@ -365,8 +320,7 @@ static void rdb_load_rbtree(FILE *fp){
     fread(&count, sizeof(count), 1, fp);
 
     for (uint32_t i = 0; i < count; i++){
-        uint16_t key_len, value_len;
-
+        uint32_t key_len, value_len;
         fread(&key_len, sizeof(key_len), 1, fp);
         char *key = kvs_malloc(key_len + 1);
         fread(key, key_len, 1, fp);
@@ -403,8 +357,8 @@ static void rdb_save_hash(FILE *fp){
         hashnode_t *slot = &global_hash.nodes[i];
         if (slot->used != 1) continue; // 只保存有效元素
 
-        uint16_t key_len   = (uint16_t)strlen(slot->key);
-        uint16_t value_len = (uint16_t)strlen(slot->value);
+        uint32_t key_len   = (uint32_t)strlen(slot->key);
+        uint32_t value_len = (uint32_t)strlen(slot->value);
 
         fwrite(&key_len, sizeof(key_len), 1, fp);
         fwrite(slot->key, key_len, 1, fp);
@@ -428,7 +382,7 @@ static void rdb_load_hash(FILE *fp){
     uint32_t count;
     fread(&count, sizeof(count), 1, fp);
     for (uint32_t i = 0; i < count; i++){
-        uint16_t key_len, value_len;
+        uint32_t key_len, value_len;
 
         fread(&key_len, sizeof(key_len), 1, fp);
         char *key = kvs_malloc(key_len + 1);
@@ -457,8 +411,8 @@ static void rdb_save_skiptable(FILE *fp){
 
     Node *current = global_skiptable.header->forward[0];
     while (current) {
-        uint16_t key_len = strlen(current->key);
-        uint16_t value_len = strlen(current->value);
+        uint32_t key_len = strlen(current->key);
+        uint32_t value_len = strlen(current->value);
         
         fwrite(&key_len, sizeof(key_len), 1, fp);
         fwrite(current->key, key_len, 1, fp);
@@ -477,7 +431,7 @@ static void rdb_load_skiptable(FILE *fp){
     fread(&count, sizeof(count), 1, fp);
 
     for (uint32_t i = 0; i < count; i++){
-        uint16_t key_len, value_len;
+        uint32_t key_len, value_len;
 
         fread(&key_len, sizeof(key_len), 1, fp);
         char *key = kvs_malloc(key_len + 1);

@@ -2,7 +2,7 @@ CC = gcc
 SYNC_MODE ?= 0
 
 # 与 kvs_config.h 中的 KVS_MAX_RESPONSE_SIZE 保持一致
-KVS_MAX_RESPONSE_SIZE ?= 65535
+KVS_MAX_RESPONSE_SIZE ?= 1048576
 
 SRC_CORE := src/core
 SRC_STORAGE := src/storage
@@ -84,6 +84,7 @@ TEST_KVSTORE_CLIENT := $(TEST_DIR)/kvstore_client
 TEST_MEMPOOL := $(TEST_DIR)/mempool_test
 TEST_PAPER := $(TEST_DIR)/test_paper
 TEST_PAPER_SYNC := $(TEST_DIR)/test_paper_sync
+TEST_BIGVALUE := $(TEST_DIR)/test_bigvalue
 
 TEST_BINARIES = \
 	$(TEST_CASE) \
@@ -92,6 +93,7 @@ TEST_BINARIES = \
 	$(TEST_MEMPOOL) \
 	$(TEST_PAPER) \
 	$(TEST_PAPER_SYNC) \
+	$(TEST_BIGVALUE) \
 
 all: $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) 
 

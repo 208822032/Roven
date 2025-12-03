@@ -1,5 +1,6 @@
 #pragma once
 
+
 typedef struct {
 	int (*set)(void*, char*, char*);
 	char* (*get)(void*, char*);

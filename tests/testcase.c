@@ -1266,6 +1266,7 @@ static void master_slave_array_test(const char *master_ip, int master_port,
         return;
     }
 
+    // 对 array 模式暂时仍按原始 RESP 比较
     int equal = 0;
     if (master_len == slave_len &&
         memcmp(master_resp, slave_resp, master_len) == 0) {
@@ -1352,6 +1353,95 @@ static void master_slave_array_test(const char *master_ip, int master_port,
     free(slave_resp);
 }
 
+// 解析简单流水线 GET/RGET/HGET/SGET 响应，将每个 key 对应的 bulk string
+// value 按顺序提取出来放到 values[count][buf] 里；返回解析出的条目数。
+// 这里利用前面已经实现的 RESP 解析函数 parse_resp_object。
+static int parse_values_from_resp(const char *buf, size_t len,
+                                  char values[][32], int max_values) {
+    int parsed = 0;
+    int offset = 0;
+
+    while (offset < (int)len && parsed < max_values) {
+        int consumed = 0;
+        int ret = parse_resp_object(buf + offset, (int)len - offset, &consumed);
+        if (ret <= 0) break;
+
+        // 简单处理：只关心形如 $6\r\nvalueX\r\n 的 bulk string
+        if (buf[offset] == '$') {
+            // 找到第一个 CRLF，取得长度
+            int line_len = read_line(buf + offset + 1, (int)len - offset - 1);
+            if (line_len <= 0) break;
+            long long bulk_len = 0;
+            int dummy = 0;
+            if (parse_integer(buf + offset + 1, (int)len - offset - 1,
+                              &bulk_len, &dummy) != 1) {
+                break;
+            }
+            const char *data = buf + offset + 1 + dummy;
+            if (bulk_len > 0 &&
+                data + bulk_len + 2 <= buf + len &&
+                bulk_len <  (long long)sizeof(values[0])) {
+                memcpy(values[parsed], data, (size_t)bulk_len);
+                values[parsed][bulk_len] = '\0';
+                parsed++;
+            }
+        }
+
+        offset += consumed;
+    }
+
+    return parsed;
+}
+
+// 比较两端 RESP 流解析出的 value 序列是否一致（忽略原始字节长度差异）
+static int compare_resp_value_sequences(const char *master_buf, size_t master_len,
+                                        const char *slave_buf, size_t slave_len,
+                                        const char *name, const char *phase,
+                                        int keys, int time_used) {
+    char master_values[100000][32];
+    char slave_values[100000][32];
+
+    int m_cnt = parse_values_from_resp(master_buf, master_len,
+                                       master_values, 100000);
+    int s_cnt = parse_values_from_resp(slave_buf, slave_len,
+                                       slave_values, 100000);
+
+    int equal = 1;
+    if (m_cnt != s_cnt) {
+        equal = 0;
+    } else {
+        for (int i = 0; i < m_cnt; ++i) {
+            if (strcmp(master_values[i], slave_values[i]) != 0) {
+                equal = 0;
+                break;
+            }
+        }
+    }
+
+    if (time_used >= 0) {
+        printf("%s master-slave pipeline [%s] compare: keys %d, time_used %d ms, "
+               "master_len %zu, slave_len %zu, %s\n",
+               name, phase, keys, time_used, master_len, slave_len,
+               equal ? "SYNC OK" : "SYNC MISMATCH");
+    } else {
+        printf("%s master-slave pipeline [%s] compare: keys %d, master_len %zu, "
+               "slave_len %zu, %s\n",
+               name, phase, keys, master_len, slave_len,
+               equal ? "SYNC OK" : "SYNC MISMATCH");
+    }
+
+    if (!equal) {
+        int dump = (int)((master_len < 256) ? master_len : 256);
+        printf("[%s] %s master_resp (first %d bytes):\n%.*s\n",
+               phase, name, dump, dump, master_buf);
+        dump = (int)((slave_len < 256) ? slave_len : 256);
+        printf("[%s] %s slave_resp (first %d bytes):\n%.*s\n",
+               phase, name, dump, dump, slave_buf);
+    }
+
+    return equal;
+}
+
 static void master_slave_rbtree_test(const char *master_ip, int master_port,
                                      const char *slave_ip, int slave_port) {
     int master_fd = connect_tcpserver(master_ip, master_port);
@@ -1404,25 +1494,10 @@ static void master_slave_rbtree_test(const char *master_ip, int master_port,
         return;
     }
 
-    int equal = 0;
-    if (master_len == slave_len &&
-        memcmp(master_resp, slave_resp, master_len) == 0) {
-        equal = 1;
-    }
-
-    printf("rbtree master-slave pipeline [SET] compare: keys %d, "
-           "master_len %zu, slave_len %zu, %s\n",
-           count, master_len, slave_len,
-           equal ? "SYNC OK" : "SYNC MISMATCH");
-
-    if (!equal) {
-        int dump = (int)((master_len < 256) ? master_len : 256);
-        printf("[SET] rbtree master_resp (first %d bytes):\n%.*s\n",
-               dump, dump, master_resp);
-        dump = (int)((slave_len < 256) ? slave_len : 256);
-        printf("[SET] rbtree slave_resp (first %d bytes):\n%.*s\n",
-               dump, dump, slave_resp);
-    }
+    // rbtree SET 阶段：按 value 序列比较主从
+    compare_resp_value_sequences(master_resp, master_len,
+                                 slave_resp, slave_len,
+                                 "rbtree", "SET", count, -1);
 
     free(master_resp);
     free(slave_resp);
@@ -1467,25 +1542,10 @@ static void master_slave_rbtree_test(const char *master_ip, int master_port,
     gettimeofday(&tv_end, NULL);
     int time_used = TIME_SUB_MS(tv_end, tv_begin);
 
-    equal = 0;
-    if (master_len == slave_len &&
-        memcmp(master_resp, slave_resp, master_len) == 0) {
-        equal = 1;
-    }
-
-    printf("rbtree master-slave pipeline [MOD/DEL] compare: keys %d, "
-           "time_used %d ms, master_len %zu, slave_len %zu, %s\n",
-           count, time_used, master_len, slave_len,
-           equal ? "SYNC OK" : "SYNC MISMATCH");
-
-    if (!equal) {
-        int dump = (int)((master_len < 256) ? master_len : 256);
-        printf("[MOD/DEL] rbtree master_resp (first %d bytes):\n%.*s\n",
-               dump, dump, master_resp);
-        dump = (int)((slave_len < 256) ? slave_len : 256);
-        printf("[MOD/DEL] rbtree slave_resp (first %d bytes):\n%.*s\n",
-               dump, dump, slave_resp);
-    }
+    // rbtree MOD/DEL 阶段：按 value 序列比较主从
+    compare_resp_value_sequences(master_resp, master_len,
+                                 slave_resp, slave_len,
+                                 "rbtree", "MOD/DEL", count, time_used);
 
     free(get_pipeline);
     free(master_resp);
@@ -1544,25 +1604,10 @@ static void master_slave_hash_test(const char *master_ip, int master_port,
         return;
     }
 
-    int equal = 0;
-    if (master_len == slave_len &&
-        memcmp(master_resp, slave_resp, master_len) == 0) {
-        equal = 1;
-    }
-
-    printf("hash master-slave pipeline [SET] compare: keys %d, "
-           "master_len %zu, slave_len %zu, %s\n",
-           count, master_len, slave_len,
-           equal ? "SYNC OK" : "SYNC MISMATCH");
-
-    if (!equal) {
-        int dump = (int)((master_len < 256) ? master_len : 256);
-        printf("[SET] hash master_resp (first %d bytes):\n%.*s\n",
-               dump, dump, master_resp);
-        dump = (int)((slave_len < 256) ? slave_len : 256);
-        printf("[SET] hash slave_resp (first %d bytes):\n%.*s\n",
-               dump, dump, slave_resp);
-    }
+    // hash SET 阶段：按 value 序列比较主从
+    compare_resp_value_sequences(master_resp, master_len,
+                                 slave_resp, slave_len,
+                                 "hash", "SET", count, -1);
 
     free(master_resp);
     free(slave_resp);
@@ -1607,25 +1652,10 @@ static void master_slave_hash_test(const char *master_ip, int master_port,
     gettimeofday(&tv_end, NULL);
     int time_used = TIME_SUB_MS(tv_end, tv_begin);
 
-    equal = 0;
-    if (master_len == slave_len &&
-        memcmp(master_resp, slave_resp, master_len) == 0) {
-        equal = 1;
-    }
-
-    printf("hash master-slave pipeline [MOD/DEL] compare: keys %d, "
-           "time_used %d ms, master_len %zu, slave_len %zu, %s\n",
-           count, time_used, master_len, slave_len,
-           equal ? "SYNC OK" : "SYNC MISMATCH");
-
-    if (!equal) {
-        int dump = (int)((master_len < 256) ? master_len : 256);
-        printf("[MOD/DEL] hash master_resp (first %d bytes):\n%.*s\n",
-               dump, dump, master_resp);
-        dump = (int)((slave_len < 256) ? slave_len : 256);
-        printf("[MOD/DEL] hash slave_resp (first %d bytes):\n%.*s\n",
-               dump, dump, slave_resp);
-    }
+    // hash MOD/DEL 阶段：按 value 序列比较主从
+    compare_resp_value_sequences(master_resp, master_len,
+                                 slave_resp, slave_len,
+                                 "hash", "MOD/DEL", count, time_used);
 
     free(get_pipeline);
     free(master_resp);
@@ -1684,25 +1714,9 @@ static void master_slave_skiptable_test(const char *master_ip, int master_port,
         return;
     }
 
-    int equal = 0;
-    if (master_len == slave_len &&
-        memcmp(master_resp, slave_resp, master_len) == 0) {
-        equal = 1;
-    }
-
-    printf("skiptable master-slave pipeline [SET] compare: keys %d, "
-           "master_len %zu, slave_len %zu, %s\n",
-           count, master_len, slave_len,
-           equal ? "SYNC OK" : "SYNC MISMATCH");
-
-    if (!equal) {
-        int dump = (int)((master_len < 256) ? master_len : 256);
-        printf("[SET] skiptable master_resp (first %d bytes):\n%.*s\n",
-               dump, dump, master_resp);
-        dump = (int)((slave_len < 256) ? slave_len : 256);
-        printf("[SET] skiptable slave_resp (first %d bytes):\n%.*s\n",
-               dump, dump, slave_resp);
-    }
+        compare_resp_value_sequences(master_resp, master_len,
+                         slave_resp, slave_len,
+                         "skiptable", "SET", count, -1);
 
     free(master_resp);
     free(slave_resp);
@@ -1747,25 +1761,9 @@ static void master_slave_skiptable_test(const char *master_ip, int master_port,
     gettimeofday(&tv_end, NULL);
     int time_used = TIME_SUB_MS(tv_end, tv_begin);
 
-    equal = 0;
-    if (master_len == slave_len &&
-        memcmp(master_resp, slave_resp, master_len) == 0) {
-        equal = 1;
-    }
-
-    printf("skiptable master-slave pipeline [MOD/DEL] compare: keys %d, "
-           "time_used %d ms, master_len %zu, slave_len %zu, %s\n",
-           count, time_used, master_len, slave_len,
-           equal ? "SYNC OK" : "SYNC MISMATCH");
-
-    if (!equal) {
-        int dump = (int)((master_len < 256) ? master_len : 256);
-        printf("[MOD/DEL] skiptable master_resp (first %d bytes):\n%.*s\n",
-               dump, dump, master_resp);
-        dump = (int)((slave_len < 256) ? slave_len : 256);
-        printf("[MOD/DEL] skiptable slave_resp (first %d bytes):\n%.*s\n",
-               dump, dump, slave_resp);
-    }
+        compare_resp_value_sequences(master_resp, master_len,
+                         slave_resp, slave_len,
+                         "skiptable", "MOD/DEL", count, time_used);
 
     free(get_pipeline);
     free(master_resp);

@@ -198,312 +198,6 @@ void resp_parser_reset(resp_parser_t *parser) {
     }
 }
 
-//讲清楚 问题 原理 解决方案 测试完结果
-#if 0
-//解析RESP协议
-int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
-    const char *ptr = buffer;
-    const char *end = buffer + length;
-    size_t parsed = 0;
-    int negative = 0;
-    long long tmp_len = 0;
-    size_t need = 0;
-    size_t avail = 0;
-
-    // 如果解析器已经完成解析，重置状态
-    if (parser->state == RESP_PARSE_COMPLETE) {
-        resp_parser_reset(parser);
-    }
-
-    while (ptr < end) {
-        switch (parser->state) {
-            case RESP_PARSE_INIT:
-                // 查找数组起始符'*'
-                // while (ptr < end && *ptr != '*') {
-                //     ptr++;
-                //     parsed++;
-                // }
-                
-                // if (ptr >= end) {
-                //     return parsed; // 需要更多数据
-                // }
-
-                // 现在要求 buffer[0] 就是 '*'，不再在这里乱扫 不应该由解析器去“猜测”哪里是命令边界
-                if (*ptr != '*') {
-                    // 上层应该保证从 '*' 开始，如果不是，认为协议错误
-                    return -1;
-                }
-                
-                parser->state = RESP_PARSE_ARRAY_LEN;
-                parser->array_len = 0;
-                ptr++; // 跳过'*'
-                parsed++;
-                break;
-
-            case RESP_PARSE_ARRAY_LEN:
-                // 读取数组长度数字
-                while (ptr < end && isdigit(*ptr)) {
-                    // 防止整数溢出
-                    if (parser->array_len > (INT_MAX - (*ptr - '0')) / 10) {
-                        return -1; // 整数溢出
-                    }
-                    parser->array_len = parser->array_len * 10 + (*ptr - '0');
-                    ptr++;
-                    parsed++;
-                }
-                
-                if (ptr >= end) {
-                    fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                    return parsed; // 需要更多数据
-                }
-
-                // 检查数组长度是否合理
-                if (parser->array_len < 0 || parser->array_len > MAX_ARRAY_LENGTH) {
-                    return -1; // 无效的数组长度
-                }
-                
-                // 检查CRLF
-                if (*ptr == '\r') {
-                    if (ptr + 1 >= end) {
-                        fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                        return parsed; // 需要更多数据
-                    }
-                    
-                    if (*(ptr + 1) == '\n') {
-                        ptr += 2;
-                        parsed += 2;
-                        
-                        // 分配tokens数组
-                        if (parser->array_len > 0) {
-                            // 如果之前没有分配或者大小不够，重新分配
-                            if (!parser->tokens || parser->array_len_allocated < parser->array_len) {
-                                if (parser->tokens) {
-                                    kvs_free(parser->tokens);
-                                }
-                                parser->tokens = (char **)kvs_malloc(parser->array_len * sizeof(char *));
-                                if (!parser->tokens) {
-                                    return -1;
-                                }
-                                memset(parser->tokens, 0, parser->array_len * sizeof(char *));
-                                parser->array_len_allocated = parser->array_len;
-                            }
-                        }
-                        
-                        parser->arg_index = 0;
-                        parser->state = RESP_PARSE_BULK_LEN;
-                    } else {
-                        return -1; // 格式错误
-                    }
-                } else {
-                    return -1; // 格式错误
-                }
-                break;
-
-            case RESP_PARSE_BULK_LEN:
-                // 查找批量字符串起始符'$'
-                // while (ptr < end && *ptr != '$') {
-                //     ptr++;
-                //     parsed++;
-                // }
-                
-                // 现在要求当前位置就是 '$'
-                if (ptr >= end) {
-                    fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                    return parsed; // 需要更多数据
-                }
-                if (*ptr != '$') {
-                    return -1;  // 协议错误，不再瞎扫描
-                }
-                
-                ptr++; // 跳过'$'
-                parsed++;
-                parser->bulk_len = 0;
-                parser->state = RESP_PARSE_BULK_LEN_NUM;
-                break;
-                
-            case RESP_PARSE_BULK_LEN_NUM:
-                // int negative = 0;
-
-                tmp_len = 0;
-                
-                fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                if(ptr >= end) {
-                    // 一个字节都没读到，不能前进
-                    return 0;
-                }
-
-                const char *start = ptr;
-
-                //允许 -1 123
-                if(*ptr == '-'){
-                    negative = 1;
-                    ptr++;
-                    parsed++;
-                    if(ptr >= end || !isdigit(*ptr)){
-                       // 只收到了一个 '-'，长度行不完整
-                        return 0;
-                    }
-                }
-
-                if(!isdigit(*ptr)){
-                    return -1;//长度必须以数字开头
-                }
-
-                parser->bulk_len = 0;
-
-                while (ptr < end && isdigit(*ptr)) {
-                    if(parser->bulk_len > (INT_MAX - (*ptr - '0')) / 10){
-                        return -1;//整数溢出
-                    }
-                    tmp_len = tmp_len * 10 + (*ptr - '0');
-
-                    // parser->bulk_len = parser->bulk_len * 10 + (*ptr - '0');
-                    ptr++;
-                    // parsed++;
-                }
-
-
-                // if (negative) {
-                //     parser->bulk_len = -parser->bulk_len;
-                // }
-
-                if (ptr >= end) {
-                    fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                    return 0; // 需要更多数据
-                }
-
-                // 检查CRLF
-                if (*ptr != '\r') {
-                    return -1;
-                }
-
-                if (ptr + 1 >= end) {
-                    fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                    return 0; // 需要更多数据
-                }
-
-                if (*(ptr + 1) != '\n') {
-                    return -1;
-                }
-
-                // 至此，整行 "$<len>\r\n" 已经完全在 buffer 里
-                // 可以安全更新 parser->bulk_len、state，并返回 parsed
-                if (negative) tmp_len = -tmp_len;
-                if (tmp_len < -1 || tmp_len > MAX_BULK_LENGTH) {
-                    return -1;
-                }
-
-                parser->bulk_len = (int)tmp_len;
-
-                //parsed增量 整个长度行的字符数
-                size_t line_bytes = (size_t)(ptr + 2 - start);
-                ptr += 2;
-                parsed += line_bytes;
-
-                // 检查批量长度范围
-                // if (parser->bulk_len < -1 || parser->bulk_len > MAX_BULK_LENGTH) {
-                //     return -1;
-                // }
-
-                if (parser->bulk_len == -1) {
-                    // NULL bulk string
-                    if (parser->arg_index < parser->array_len) {
-                        parser->tokens[parser->arg_index] = NULL;
-                        parser->arg_index++;
-                    }
-                    parser->state = (parser->arg_index < parser->array_len)
-                                    ? RESP_PARSE_BULK_LEN
-                                    : RESP_PARSE_COMPLETE;
-                } else {
-                    parser->state = RESP_PARSE_BULK_DATA;
-                }
-                break;
-
-            case RESP_PARSE_BULK_DATA:
-                // 需要 bulk_len 字节内容 + "\r\n" 两个字节
-                need = (size_t)parser->bulk_len + 2;
-                avail = (size_t)(end - ptr);
-
-                if (avail < need) {
-                    // 数据不够，不能吃任何字节
-                    return 0;
-                }
-
-
-                // // 检查是否有足够的数据
-                // if ((end - ptr) < (parser->bulk_len + 2)) {
-                //     fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                //     return 0; // 需要更多数据
-                // }
-
-                // 验证CRLF结束符
-                if (ptr[parser->bulk_len] != '\r' || ptr[parser->bulk_len + 1] != '\n') {
-                    return -1; // 格式错误
-                }
-                
-                // 分配空间并复制数据
-                if (parser->arg_index < parser->array_len) {
-                    parser->tokens[parser->arg_index] = kvs_malloc(parser->bulk_len + 1);
-                    if (!parser->tokens[parser->arg_index]) {
-                        return -1;
-                    }
-                    memcpy(parser->tokens[parser->arg_index], ptr, parser->bulk_len);
-                    parser->tokens[parser->arg_index][parser->bulk_len] = '\0';
-                    parser->arg_index++;
-                }
-                
-                // ptr += parser->bulk_len;
-                // parsed += parser->bulk_len;
-
-                // 前进 ptr 和 parsed：body+CRLF 共 bulk_len+2 字节
-                ptr    += parser->bulk_len + 2;
-                parsed += parser->bulk_len + 2;
-                
-                // 检查结束符
-                // if (*ptr == '\r' && *(ptr + 1) == '\n') {
-                //     ptr += 2;
-                //     parsed += 2;
-                    
-                //     // 如果还有更多参数，继续解析
-                //     if (parser->arg_index < parser->array_len) {
-                //         parser->state = RESP_PARSE_BULK_LEN;
-                //     } else {
-                //         // 解析完成
-                //         parser->state = RESP_PARSE_COMPLETE;
-                //         fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                //         return parsed;
-                //     }
-                // } else {
-                //     return -1; // 格式错误
-                // }
-                if (parser->arg_index < parser->array_len) {
-                    parser->state = RESP_PARSE_BULK_LEN;
-                } else {
-                    parser->state = RESP_PARSE_COMPLETE;
-                    return parsed;
-                }
-
-                break;
-                
-            case RESP_PARSE_COMPLETE:
-                // 已经完成解析，应该重置状态
-                fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-                return parsed;
-                
-            default:
-                return -1; // 未知状态
-        }
-    }
-    fprintf(stderr, "resp_parser partial return state=%d, parsed=%zu, length=%zu, first bytes: ...\n", parser->state, parsed, length);
-    return parsed; // 返回已解析的字节数
-}
-#else
-
-/*
-任何时候只要 ptr 相对本次 buffer 前进过，就不能返回 0，而应返回 ptr - buffer；
-只有完全没前进（ptr == buffer）才返回 0；
-< 0 只表示真正的协议错误。
-*/
 int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
     const char *ptr = buffer;
     const char *end = buffer + length;
@@ -544,17 +238,6 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
                 return -1;
             }
 
-            // 读数字
-            // while (ptr < end && isdigit((unsigned char)*ptr)) {
-            //     if (parser->array_len > (INT_MAX - (*ptr - '0')) / 10) {
-            //         fprintf(stderr, "ARRAY_LEN error: overflow\n");
-            //         return -1;
-            //     }
-            //     parser->array_len = parser->array_len * 10 + (*ptr - '0');
-            //     ptr++; 
-            //     // local_parsed++;
-            // }
-            // 读数字到 tmp_len（只用局部变量，不改 parser->array_len）
             while (ptr < end && isdigit((unsigned char)*ptr)) {
                 if (tmp_len > (INT_MAX - (*ptr - '0')) / 10) {
                     fprintf(stderr, "ARRAY_LEN error: overflow\n");
@@ -578,14 +261,7 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
             if (*(ptr + 1) != '\n') return -1;
 
             ptr += 2;
-            // local_parsed += 2;
 
-            // if (parser->array_len < 0 || parser->array_len > MAX_ARRAY_LENGTH) {
-            //     fprintf(stderr, "ARRAY_LEN error: out of range %d\n", parser->array_len);
-            //     return -1;
-            // }
-
-            // 到这里，"*<number>\r\n" 整行已经完整，才真正更新 parser->array_len
             if (tmp_len < 0 || tmp_len > MAX_ARRAY_LENGTH) {
                 fprintf(stderr, "ARRAY_LEN error: out of range %lld\n", tmp_len);
                 return -1;
@@ -813,61 +489,6 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
 
             break;
 
-
-            // if (avail < need) {
-            //     // 这里不能简单返回 0，因为在本次 resp_parser 调用中，ptr 之前那一大段
-            //     // （比如 SET 和 key 的 bulk）已经被吃掉了，必须告诉上层“这些字节已消费”
-            //     size_t consumed = (size_t)(ptr - buffer);
-            //     fprintf(stderr,
-            //             "BULK_DATA half packet: bulk_len=%d, avail=%zu, need=%zu, consumed=%zu\n",
-            //             parser->bulk_len, avail, need, consumed);
-            //     return (int)consumed;
-            // }
-
-            // // 调试：打印 body 和末尾两个字节的 ASCII 可视内容
-            // fprintf(stderr, "BULK_DATA check: bulk_len=%d, first body bytes: ", parser->bulk_len);
-            // int dbg = parser->bulk_len < 16 ? parser->bulk_len : 16;
-            // for (int i = 0; i < dbg; ++i) {
-            //     unsigned char ch = (unsigned char)ptr[i];
-            //     if (ch >= 32 && ch <= 126) fputc(ch, stderr);
-            //     else if (ch == '\r') fputs("\\r", stderr);
-            //     else if (ch == '\n') fputs("\\n", stderr);
-            //     else fprintf(stderr, "\\x%02X", ch);
-            // }
-            // fprintf(stderr, ", tail2=%02X %02X\n",
-            //         (unsigned char)ptr[parser->bulk_len],
-            //         (unsigned char)ptr[parser->bulk_len+1]);
-
-            // if (ptr[parser->bulk_len] != '\r' ||
-            //     ptr[parser->bulk_len + 1] != '\n') {
-            //     fprintf(stderr, "BULK_DATA error: missing CRLF, state=%d\n", parser->state);
-            //     DUMP_NEARBY(ptr, end);
-            //     return -1;
-            // }
-
-            // if (parser->arg_index < parser->array_len) {
-            //     char *p = (char *)kvs_malloc((size_t)parser->bulk_len + 1);
-            //     if (!p) {
-            //         fprintf(stderr, "BULK_DATA error: kvs_malloc failed\n");
-            //         return -1;
-            //     }
-            //     memcpy(p, ptr, (size_t)parser->bulk_len);
-            //     p[parser->bulk_len] = '\0';
-            //     parser->tokens[parser->arg_index] = p;
-            //     parser->arg_index++;
-            // }
-
-            // ptr    += need;
-            // // parsed += need;
-
-            // if (parser->arg_index < parser->array_len) {
-            //     parser->state = RESP_PARSE_BULK_LEN;
-            // } else {
-            //     parser->state = RESP_PARSE_COMPLETE;
-            //     parsed = (size_t)(ptr - buffer);
-            //     return (int)parsed;
-            // }
-            // break;
         }
 
         case RESP_PARSE_COMPLETE: {
@@ -883,7 +504,7 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
     parsed = (size_t)(ptr - buffer);
     return (int)parsed;
 }
-#endif
+
 //释放解释器分配的内存
 void resp_parser_free(resp_parser_t *parser) {
     if (parser->tokens) {
@@ -901,17 +522,39 @@ void resp_parser_free(resp_parser_t *parser) {
 }
 
 //生成RESP响应
-//简单字符串
+//简单字符串 +<msg>\r\n
 int resp_generate_simple_string(char *response, const char *str){
-    return sprintf(response, "+%s\r\n", str);
+    int mlen = (int)strlen(str);
+    int total_len = mlen + 3; // + \r\n
+
+    if(!response) return total_len;
+
+    response[0] = '+';
+    memcpy(response + 1, str, (size_t)mlen);
+    memcpy(response + 1 + mlen, "\r\n", 2);
+    return total_len;
 }
 //错误信息
 int resp_generate_error(char *response, const char *err){
-    return sprintf(response, "-%s\r\n", err);
+    if(!err) err = "";
+    int mlen = (int)strlen(err);
+    int total = mlen + 3; // - + \r\n
+
+    if(!response) return total;
+
+    response[0] = '-';
+    memcpy(response + 1, err, (size_t)mlen);
+    memcpy(response + 1 + mlen, "\r\n", 2);
+    return total;
 }
 //整数类型
 int resp_generate_integer(char *response, int num){
-    return sprintf(response, ":%d\r\n", num);
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), ":%d\r\n", num);
+    if (n <= 0) return -1;
+    if (!response) return n;
+    memcpy(response, buf, (size_t)n);
+    return n;
 }
 
 // 估算简单字符串/错误/整数/批量字符串的 RESP 长度（不实际写入）
@@ -942,24 +585,40 @@ size_t resp_estimate_bulk_string_len(const char *str) {
     return 1 + (size_t)n + 2 + slen + 2; // "$" + len + "\r\n" + body + "\r\n"
 }
 
+//批量字符串 $<length>\r\n<string>\r\n
 int resp_generate_bulk_string(char *response, const char *str){
-    if(str){
-        return sprintf(response, "$%zu\r\n%s\r\n", strlen(str), str);
-    }else{
+    if(!str){
+        //空值
+        if(!response) return 5; // "$-1\r\n"
         return sprintf(response, "$-1\r\n");
     }
+
+    int slen = (int)strlen(str);
+    char header[64];
+    int hlen = snprintf(header, sizeof(header), "$%d\r\n", slen);
+    int total = hlen + slen + 2; // header + body + \r\n
+
+    if(!response) return total;
+
+    char *p = response;
+    memcpy(p, header, (size_t)hlen); p += hlen;
+    memcpy(p, str,   (size_t)slen);  p += slen;
+    memcpy(p, "\r\n", 2);
+    return total;
+
 }
+//空数组开头 *<count>\r\n
 int resp_generate_array_start(char *response, int count){
-    return sprintf(response, "*%d\r\n", count);
+    char header[64];
+    int hlen = snprintf(header, sizeof(header), "*%d\r\n", count);
+    if(!response) return hlen;
+
+    memcpy(response, header, (size_t)hlen);
+    return hlen;
 }
+//数组元素 复用批量字符串
 int resp_generate_array_item(char *response, const char *str){
     return resp_generate_bulk_string(response, str);
-}
-
-//处理RESP协议命令
-int resp_process_command(char **tokens, int count, char *response){
-    //调用原有的命令处理函数
-    return kvs_filter_protocol(tokens, count, response);
 }
 
 //简单辅助函数

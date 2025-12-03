@@ -38,8 +38,10 @@ int get_sync_context() {
 	return sync_context;
 }
 
+
 int kvs_filter_protocol(char **tokens, int count, char *response){
-	if (tokens[0] == NULL || count == 0 || response == NULL) {
+
+	if (tokens[0] == NULL || count == 0) {
         return resp_generate_error(response, "Invalid command");
     }
 
@@ -64,7 +66,6 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		return resp_generate_error(response, "Invalid arguments");
 	}
 
-
     int ret = cmd->handler(&ctx, response);
 
 	//命令执行成功后记录写命令
@@ -73,17 +74,20 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		aof_append(count, tokens);
 		#endif
 
+		#if 1
 		// 主节点需要将命令分发给从节点
 		if (global_dist_config.role == ROLE_MASTER) {
 			// 无论 TCP 还是 eBPF 模式，依然通过 master_sync_command 发送；
 			// eBPF 模式下，内核通过 kprobe/tcp_sendmsg 抓该同步端口上的数据包。
 			master_sync_command(tokens[0], tokens[1], (count > 2) ? tokens[2] : NULL);
 		}
+		#endif
 	}
 
 	return ret;
 
 }
+
 
 int init_kvengine(void) {
 
@@ -135,7 +139,10 @@ void dest_kvengine(void) {
 #endif
 
 	mem_destroy();  // 清理内存管理组件
+	#if 1
 	distributed_shutdown(); //关闭分布式系统
+	#endif
+
 
 	#if ENABLE_AOF
 	aof_free();
@@ -143,14 +150,13 @@ void dest_kvengine(void) {
 
 }
 
-//存入论文 标题key 内容value 图片链接 /博客
 
 
 extern kvs_config_t g_cfg;
 
 // 信号处理函数
 void handle_signal(int sig) {
-    g_shutdown_flag = 1;
+	g_shutdown_flag = 1;
 }
 
 #if 1
@@ -176,6 +182,8 @@ int main(int argc, char *argv[]) {
 	kvs_config_apply_cmdline(&g_cfg, argc, argv, NULL);
 
 	// 注册信号处理函数，使Ctrl+C也能保存数据
+		// 注册信号处理函数：Ctrl+C / kill TERM 触发优雅退出，USR1 打印内存统计
+		signal(SIGUSR1, handle_signal);
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
@@ -198,8 +206,6 @@ int main(int argc, char *argv[]) {
 	//先加载RDB文件
 	#if ENABLE_RDB
 		kvs_rdb_load(g_cfg.rdb_filename);
-	#else
-		kvs_load_all(g_cfg.dump_filename);
 	#endif
 
 	
@@ -214,7 +220,7 @@ int main(int argc, char *argv[]) {
 		aof_load(g_cfg.aof_filename);
 	}
 
-
+	#if 1
 	// 分布式初始化
 	if (g_cfg.role == KVS_ROLE_SLAVE) {
 		if (g_cfg.master_ip[0] == '\0' || g_cfg.master_port == 0) {
@@ -235,14 +241,7 @@ int main(int argc, char *argv[]) {
 		printf("AOF enabled: %s (%d), fsync mode: %d\n",
 		       g_cfg.aof_filename, g_cfg.enable_aof, g_cfg.aof_fsync_mode);
 	}
-	
-// #if (NETWORK_SELECT == NETWORK_REACTOR)
-// 	reactor_start(g_cfg.port, kvs_filter_protocol);  
-// #elif (NETWORK_SELECT == NETWORK_NTYCO)
-// 	ntyco_start(g_cfg.port, kvs_filter_protocol); 
-// #elif (NETWORK_SELECT == NETWORK_PROACTOR)
-// 	proactor_start(g_cfg.port, kvs_filter_protocol); //kvs_protocol
-// #endif
+	#endif
 
     int mode = g_cfg.network_mode;
 
@@ -253,10 +252,9 @@ int main(int argc, char *argv[]) {
 		printf("Starting in PROACTOR mode on port %d\n", g_cfg.port);
         proactor_start(g_cfg.port, kvs_filter_protocol);
     } else if(mode == NETWORK_REACTOR){
-		printf("Starting in PROACTOR mode on port %d\n", g_cfg.port);
+		printf("Starting in REACTOR mode on port %d\n", g_cfg.port);
         reactor_start(g_cfg.port, kvs_filter_protocol);
     }else {
-		// 无网络模式：既不启动监听，也直接走保存流程退出
 		printf("network_mode=%d, no network listener started (offline mode)\n", mode);
 	}
        
@@ -269,8 +267,6 @@ int main(int argc, char *argv[]) {
 
 #if ENABLE_RDB
 	kvs_rdb_save(g_cfg.rdb_filename);
-#else
-	kvs_save_all(g_cfg.dump_filename);
 #endif
 	printf("Data saved. Exiting.\n");
     dest_kvengine();

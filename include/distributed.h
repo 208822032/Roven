@@ -4,6 +4,8 @@
 #include <pthread.h>
 #include <netinet/in.h>
 
+#define MAX_SLAVES 20
+
 //节点角色
 typedef enum {
     ROLE_MASTER, //可读可写

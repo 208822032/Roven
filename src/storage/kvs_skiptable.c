@@ -11,26 +11,36 @@ kvs_skiptable_t global_skiptable;
 Node* create_node(int level, const char* key, const char* value) {
     // 计算节点总大小（结构体 + 指针数组）
     size_t node_size = sizeof(Node) + (level + 1) * sizeof(Node*);
-    Node* node = kvs_malloc(node_size);//mem_alloc
+    Node* node = kvs_malloc(node_size); //mem_alloc
     if (!node) return NULL;
-    // 初始化节点数据
-    strncpy(node->key, key, KEY_SIZE);
-    node->key[KEY_SIZE-1] = '\0';
-    strncpy(node->value, value, VALUE_SIZE);
-    node->value[VALUE_SIZE-1] = '\0';
+
     node->level = level;
-    
-    // 初始化所有指针为NULL
     for (int i = 0; i <= level; i++) {
         node->forward[i] = NULL;
     }
-    
+
+    size_t klen = strlen(key);
+    size_t vlen = strlen(value);
+
+    node->key = kvs_malloc(klen + 1);
+    node->value = kvs_malloc(vlen + 1);
+    if (!node->key || !node->value) {
+        if (node->key) kvs_free(node->key);
+        if (node->value) kvs_free(node->value);
+        kvs_free(node);
+        return NULL;
+    }
+    memcpy(node->key, key, klen + 1);
+    memcpy(node->value, value, vlen + 1);
     return node;
 }
 
 // 销毁节点（使用内存池）
 void free_node(Node* node) {
-    if (node) kvs_free(node);//mem_free
+    if (!node) return;
+    if (node->key) kvs_free(node->key);
+    if (node->value) kvs_free(node->value);
+    kvs_free(node);
 }
 
 int kvs_skiptable_create(kvs_skiptable_t *table) {
@@ -98,8 +108,12 @@ int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     
     // 如果键已存在，更新值
     if (current && strcmp(current->key, key) == 0) {
-        strncpy(current->value, value, VALUE_SIZE);
-        current->value[VALUE_SIZE-1] = '\0';
+        size_t vlen = strlen(value);
+        char *new_value = kvs_malloc(vlen + 1);
+        if (!new_value) return -1;
+        memcpy(new_value, value, vlen + 1);
+        if (current->value) kvs_free(current->value);
+        current->value = new_value;
         return 1;  // 表示更新
     }
     
@@ -164,7 +178,12 @@ int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value) {
     node = node->forward[0];
     
     if (node && strcmp(node->key, key) == 0) {
-        strncpy(node->value, value, VALUE_SIZE);
+        size_t vlen = strlen(value);
+        char *new_value = kvs_malloc(vlen + 1);
+        if (!new_value) return -1;
+        memcpy(new_value, value, vlen + 1);
+        if (node->value) kvs_free(node->value);
+        node->value = new_value;
         return 0;
     }
     

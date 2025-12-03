@@ -34,6 +34,18 @@ void kvs_array_destory(kvs_array_t *inst) {
 	if (!inst) return ;
 
 	if (inst->table) {
+        // 先释放每个元素的 key/value
+        for (int i = 0; i < inst->total; i++) {
+            if (inst->table[i].key) {
+                kvs_free(inst->table[i].key);
+                inst->table[i].key = NULL;
+            }
+            if (inst->table[i].value) {
+                kvs_free(inst->table[i].value);
+                inst->table[i].value = NULL;
+            }
+        }
+
 		kvs_free(inst->table);
         inst->table = NULL;
 	}

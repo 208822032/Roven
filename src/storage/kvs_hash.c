@@ -32,6 +32,13 @@ int kvs_hash_create(kvs_hash_t *hash) {
     if (!hash->nodes) return -1;
 
     memset(hash->nodes, 0, sz);
+    for (int i = 0; i < hash->max_slots; ++i) {
+        hash->nodes[i].used = 0;
+        hash->nodes[i].klen = 0;
+        hash->nodes[i].vlen = 0;
+        hash->nodes[i].key = NULL;
+        hash->nodes[i].value = NULL;
+    }
     return 0;
 }
 
@@ -39,6 +46,16 @@ int kvs_hash_create(kvs_hash_t *hash) {
 void kvs_hash_destory(kvs_hash_t *hash) {
     if (!hash || !hash->nodes) return;
 
+    // 释放每个槽位的 key/value
+    for (int i = 0; i < hash->max_slots; ++i) {
+        hashnode_t *slot = &hash->nodes[i];
+        if (slot->used != 0) {
+            if (slot->key) kvs_free(slot->key);
+            if (slot->value) kvs_free(slot->value);
+            slot->key = NULL;
+            slot->value = NULL;
+        }
+    }
     kvs_free(hash->nodes);
     hash->nodes     = NULL;
     hash->max_slots = 0;
@@ -77,8 +94,8 @@ int kvs_hash_set(kvs_hash_t *hash, char *key, char *value) {
 
     int key_len = (int)strlen(key);
     int val_len = (int)strlen(value);
-    if (key_len <= 0 || key_len >= MAX_KEY_LEN)   return -2;
-    if (val_len <  0 || val_len >= MAX_VALUE_LEN) return -3;
+    if (key_len <= 0)   return -2;
+    if (val_len <  0)   return -3;
 
     int cap    = hash->max_slots;
     unsigned int h = _hash_str(key);
@@ -94,24 +111,31 @@ int kvs_hash_set(kvs_hash_t *hash, char *key, char *value) {
                 slot = &hash->nodes[first_tombstone];
                 idx  = first_tombstone;
             }
+
+            char *kcopy = kvs_malloc((size_t)key_len + 1);
+            char *vcopy = kvs_malloc((size_t)val_len + 1);
+            if (!kcopy || !vcopy) {
+                if (kcopy) kvs_free(kcopy);
+                if (vcopy) kvs_free(vcopy);
+                return -4;
+            }
+            memcpy(kcopy, key, (size_t)key_len + 1);
+            memcpy(vcopy, value, (size_t)val_len + 1);
+
             slot->used = 1;
-            slot->klen = (unsigned char)key_len;
-            slot->vlen = (unsigned short)val_len;
-
-            memcpy(slot->key, key, (size_t)key_len);
-            slot->key[key_len] = '\0';
-
-            memcpy(slot->value, value, (size_t)val_len);
-            slot->value[val_len] = '\0';
+            slot->klen = (unsigned short)key_len;
+            slot->vlen = (unsigned int)val_len;
+            slot->key = kcopy;
+            slot->value = vcopy;
 
             hash->count++;
             return 0;
         } else if (slot->used == 1) {
             // 已占用，检查是否同 key
             if (slot->klen == (unsigned char)key_len &&
-                memcmp(slot->key, key, (size_t)key_len) == 0) {
-                // 按现有语义：已存在返回 1，不覆盖
-                return 1;
+	            memcmp(slot->key, key, (size_t)key_len) == 0) {
+				// 按现有语义：已存在返回 1，不覆盖
+				return 1;
             }
         } else if (slot->used == 2) {
             // tombstone，记录第一个
@@ -142,11 +166,15 @@ int kvs_hash_mod(kvs_hash_t *hash, char *key, char *value) {
 
     hashnode_t *slot = &hash->nodes[idx];
     int val_len = (int)strlen(value);
-    if (val_len < 0 || val_len >= MAX_VALUE_LEN) return -2;
+    if (val_len < 0) return -2;
 
-    slot->vlen = (unsigned short)val_len;
-    memcpy(slot->value, value, (size_t)val_len);
-    slot->value[val_len] = '\0';
+    char *vcopy = kvs_malloc((size_t)val_len + 1);
+    if (!vcopy) return -2;
+    memcpy(vcopy, value, (size_t)val_len + 1);
+
+    if (slot->value) kvs_free(slot->value);
+    slot->value = vcopy;
+    slot->vlen = (unsigned int)val_len;
     return 0;
 }
 
@@ -158,6 +186,17 @@ int kvs_hash_del(kvs_hash_t *hash, char *key) {
     if (idx < 0) return -1;
 
     hashnode_t *slot = &hash->nodes[idx];
+    // 标记 tombstone，并释放已有 key/value
+    if (slot->key) {
+        kvs_free(slot->key);
+        slot->key = NULL;
+    }
+    if (slot->value) {
+        kvs_free(slot->value);
+        slot->value = NULL;
+    }
+    slot->klen = 0;
+    slot->vlen = 0;
     slot->used = 2;     // tombstone
     hash->count--;
     return 0;
