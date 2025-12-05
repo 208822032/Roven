@@ -42,6 +42,10 @@ void kvs_config_init_default(kvs_config_t *cfg) {
 
     // 默认允许较大 Value，可通过配置覆盖或关闭限制
     cfg->max_value_size = 512 * 1024; // 512KB
+
+    //初始化 同步模式默认选择TCP
+    cfg->sync_mode = KVS_SYNC_TCP;
+    snprintf(cfg->ebpf_conf, sizeof(cfg->ebpf_conf), "%s", "config/ebpf_sync.conf");
 }
 
 static int parse_bool(const char *v, int def) {
@@ -125,6 +129,11 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             long long v = atoll(val);
             if (v < 0) v = 0; // 负数按 0 处理，表示不限制
             cfg->max_value_size = (size_t)v;
+        } else if (strcasecmp(key, "sync_mode") == 0) {
+            if (strcasecmp(val, "tcp") == 0) cfg->sync_mode = KVS_SYNC_TCP;
+            else if (strcasecmp(val, "ebpf") == 0) cfg->sync_mode = KVS_SYNC_EBPF;
+        } else if (strcasecmp(key, "ebpf_conf") == 0) {
+            snprintf(cfg->ebpf_conf, sizeof(cfg->ebpf_conf), "%s", val);
         }
     }
 

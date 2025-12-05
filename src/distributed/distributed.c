@@ -48,65 +48,6 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
-#if (SYNC_MODE == SYNC_MODE_EBPF)
-
-//黑洞服务器 只接受连接并读取数据后丢弃 保证三次握手和send正常执行
-void* ebpf_dummy_server(void *arg){
-    
-    (void)arg;
-
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if(server_fd < 0){
-        perror("[EBPF_SYNC] dummy server socket");
-        return NULL;
-    }
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);//只监听回环地址
-    addr.sin_port = htons(global_dist_config.sync_port+1);
-
-    if(bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0){
-        perror("[EBPF_SYNC] dummy server bind");
-        close(server_fd);
-        return NULL;
-    }
-
-    if(listen(server_fd, 10) < 0){
-        perror("[EBPF_SYNC] dummy server listen");
-        close(server_fd);
-        return NULL;
-    }
-
-    // printf("[EBPF_SYNC] Dummy server listening on loopback:%d\n", global_dist_config.sync_port+1);
-
-    while(1){
-        int client_fd = accept(server_fd, NULL, NULL);
-        if(client_fd < 0){
-            perror("[EBPF_SYNC] dummy server accept");
-            continue;
-        }
-
-        //读取数据丢弃
-        char buffer[1024];
-        while(1){
-            ssize_t n = recv(client_fd, buffer, sizeof(buffer), 0);
-            if(n <= 0){
-                break;
-            }
-        }
-        close(client_fd);
-    }
-
-    close(server_fd);
-    return NULL;
-}
-
-#endif
-
 #if ENABLE_AOF
 // 将 master-slave 协议 op 映射为用户命令字符串，并写入 AOF（RESP）
 static void slave_append_aof_from_op(ms_op_t op, const char *key, const char *val)
@@ -209,69 +150,6 @@ void* slave_sync_thread(void *arg){
         current = current->forward[0];
     }
 #endif
-
-    // printf("[DIST] Full sync completed for slave %s:%d\n",
-    //        inet_ntoa(slave->addr.sin_addr),
-    //        ntohs(slave->addr.sin_port));
-
-    // 增量同步
-#if (SYNC_MODE == SYNC_MODE_TCP)
-    
-    // while(g_sync_running){
-    //     void* item = NULL;
-    //     int r = msg_queue_pop(&g_sync_queue, &item);
-    //     if(r != 0){
-    //         //队列关闭或出错
-    //         break;
-    //     }
-    //     if(!item){
-    //         continue;
-    //     }
-
-    //     sync_msg_t *msg = (sync_msg_t*)item;
-    //     ssize_t n = send(sockfd, msg->data, msg->len, MSG_NOSIGNAL);
-    //     if(n < 0){
-    //         int err = errno;
-    //         fprintf(stderr, "[DIST] send to slave %s:%d failed: %s\n",
-    //                 inet_ntoa(slave->addr.sin_addr),
-    //                 ntohs(slave->addr.sin_port),
-    //                 strerror(err));
-    //         free(msg);
-    //         if(err == EPIPE || err == ECONNRESET || err == ETIMEDOUT){
-    //             //连接断开，退出线程
-    //             break;
-    //         }
-    //         continue;
-    //     }
-    //     free(msg);
-        char tmp[16];
-        while (1) {
-            ssize_t n = recv(sockfd, tmp, sizeof(tmp), 0);
-            if (n <= 0) {
-                break;
-            }
-        }
-    
-
-    
-#elif (SYNC_MODE == SYNC_MODE_EBPF)
-    // eBPF 模式：不再直接从 g_sync_queue 读取增量，
-    // 所有增量同步由 ebpf_sync_dispatcher 完成。
-    // 这里仅保持与 slave 的 TCP 连接存在，方便 dispatcher 使用 sockfd 发送。
-    char tmp[16];
-    while (1) {
-        ssize_t n = recv(sockfd, tmp, sizeof(tmp), 0);
-        if (n <= 0) {
-            // 主动断开或错误
-            break;
-        }
-        // 不使用收到的数据，仅用于检测连接存活
-    }
-#endif
-
-    // printf("[DIST] Slave sync thread exit %s:%d\n",
-    //        inet_ntoa(slave->addr.sin_addr),
-    //        ntohs(slave->addr.sin_port));
 
     close(sockfd);
 
@@ -435,21 +313,6 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
 
         // printf("[DISTRIBUTED] Running as MASTER, sync port: %d", sync_port);
 
-#if (SYNC_MODE == SYNC_MODE_EBPF)
-            // 初始化 eBPF 同步
-            if (ebpf_sync_init(sync_port+1) != 0) {
-                fprintf(stderr, "Failed to initialize eBPF sync, fallback disabled\n");
-                //回退到 TCP 模式
-                // return -1;
-            }else{
-                printf("[DISTRIBUTED] Running as MASTER, sync port: %d, mode: EBPF\n", sync_port+1);
-                
-                //启动本地黑洞服务器 接收回环数据包
-                pthread_t dummy_thread;
-                extern void* ebpf_dummy_server(void *arg);
-                pthread_create(&dummy_thread, NULL, ebpf_dummy_server, NULL);
-            }
-#endif
     }else{
         //从节点
         strncpy(global_dist_config.master_ip, master_ip, sizeof(global_dist_config.master_ip)-1);

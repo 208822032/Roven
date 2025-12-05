@@ -20,9 +20,6 @@ NTYCO_OBJS := \
 	$(NTYCO_DIR)/objs/nty_epoll.o \
 	$(NTYCO_DIR)/objs/nty_schedule.o
 
-# 提前固定好目录
-BPF_DIR := $(SRC_DIST)
-
 JEMALLOC_DIR := jemalloc
 JEMALLOC_INCLUDE := $(JEMALLOC_DIR)/include
 JEMALLOC_LIB := $(JEMALLOC_DIR)/lib/libjemalloc.a
@@ -50,31 +47,14 @@ BASE_SRCS = \
 	$(SRC_UTILS)/master_slave_proto.c \
 
 
-ifeq ($(SYNC_MODE),1)
-SRCS = $(BASE_SRCS) \
-		$(SRC_DIST)/ebpf_sync.c \
-		$(SRC_DIST)/sync_backend_ebpf.c \
-
-# BPF_DIR = $(SRC_DIST)
-BPF_SRC = $(BPF_DIR)/ebpf_sync.bpf.c
-BPF_OBJ = $(BPF_DIR)/ebpf_sync.bpf.o
-EXTRA_LIBS = -lbpf -lelf -lz
-else
 SRCS = $(BASE_SRCS) \
 		$(SRC_DIST)/sync_backend_tcp.c
-BPF_OBJ =
-EXTRA_LIBS =
-endif
 
 CFLAGS = -I ./NtyCo/core/ -I ./include -I ./src -I $(JEMALLOC_INCLUDE) -DSYNC_MODE=$(SYNC_MODE) -g
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl $(EXTRA_LIBS)  $(JEMALLOC_LIB)
 
 TARGET = kvstore
 OBJS = $(SRCS:.c=.o)
-
-# =====================
-# Tests configuration
-# =====================
 
 TEST_DIR := tests
 
@@ -106,7 +86,7 @@ $(NTYCO_DIR)/objs/%.o: $(NTYCO_CORE_DIR)/%.c | $(NTYCO_DIR)/objs
 $(NTYCO_LIB): $(NTYCO_OBJS)
 	ar rcs $@ $^
 
-$(TARGET): $(OBJS) $(BPF_OBJ)
+$(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
 # 单元/集成测试可执行文件规则
@@ -140,28 +120,17 @@ $(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(MEMPOOL_OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-UNAME_M := $(shell uname -m)
-ifeq ($(UNAME_M),x86_64)
-BPF_ARCH_MACRO = __TARGET_ARCH_x86
-else ifeq ($(UNAME_M),aarch64)
-BPF_ARCH_MACRO = __TARGET_ARCH_arm64
-else
-BPF_ARCH_MACRO = __TARGET_ARCH_x86
-endif
+# UNAME_M := $(shell uname -m)
+# ifeq ($(UNAME_M),x86_64)
+# BPF_ARCH_MACRO = __TARGET_ARCH_x86
+# else ifeq ($(UNAME_M),aarch64)
+# BPF_ARCH_MACRO = __TARGET_ARCH_arm64
+# else
+# BPF_ARCH_MACRO = __TARGET_ARCH_x86
+# endif
 
-$(BPF_OBJ): $(BPF_SRC) $(BPF_DIR)/vmlinux.h
-	clang -O2 -g -target bpf -D$(BPF_ARCH_MACRO) \
-	        -I/usr/include -I/usr/include/bpf -I. -I$(BPF_DIR) \
-			-DEBPF_KVS_MAX_RESPONSE_SIZE=$(KVS_MAX_RESPONSE_SIZE) \
-        -c $< -o $@
-
-$(BPF_DIR)/vmlinux.h:
-	@if [ ! -f $(BPF_DIR)/vmlinux.h ]; then \
-        echo "Generate vmlinux.h"; \
-	        bpftool btf dump file /sys/kernel/btf/vmlinux format c > $(BPF_DIR)/vmlinux.h; \
-	fi
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(BPF_OBJ) src/distributed/vmlinux.h $(TEST_BINARIES) $(SRC_DIST)/*.o
+	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 .PHONY: all clean

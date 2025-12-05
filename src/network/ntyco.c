@@ -39,6 +39,8 @@ typedef struct {
 	int processing;          //是否正在处理中
 
     int first_packet_checked;//是否做过对齐检查
+
+    int is_replication;//是否是复制连接
 } conn_context_t;
 
 // 初始化大缓冲区

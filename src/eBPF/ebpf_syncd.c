@@ -1,0 +1,584 @@
+//解析配置文件 得到主从ip:port
+//加载ebpf_kern.o 写入cfg_map 的master ip和port
+//建立从节点连接
+//从ringbuf中取数据 将其按照原样发送给从节点
+#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <stdint.h>
+#include <errno.h>
+
+#include "msg_queue.h"
+#include <pthread.h>
+
+//消息队列成员
+typedef struct ebpf_sync_msg {
+    size_t len;
+    unsigned char data[];
+} ebpf_sync_msg_t;
+
+#define EBPFSYNC_QUEUE_CAPACITY 65535
+#define MAX_SLAVES   10
+
+typedef struct slave_conf {
+    char ip[64];
+    int port;
+} slave_conf_t;
+
+/*
+gcc -O2 -g ebpf_syncd.c ../utils/msg_queue.c  -o ebpf_syncd -lbpf -lelf -lz -lpthread -I ../../include
+*/
+
+#define MAX_PAYLOAD 65535 //1MB
+#define CHUNK_SIZE 2048
+
+struct event {
+    __u32 pid;
+    __u32 len;
+    __u32 saddr;
+    __u32 daddr;
+    __u16 sport;
+    __u16 dport;
+    __u32 chunk_idx; //当前tcp_sendmsg调用的分片索引
+    __u8 data[CHUNK_SIZE]; //固定大小
+};
+
+//配置map 通过用户态写入 master的ip和port
+struct config_t {
+    __u32 master_ip;
+    __u16 master_port;
+};
+
+static volatile sig_atomic_t stop = 0;
+
+typedef struct daemon_conf{
+    char master_ip[64];
+    int master_port;
+    char slave_ip[64];
+    int slave_port;
+    int max_payload;
+
+    int slave_count;
+    slave_conf_t slaves[MAX_SLAVES];
+} daemon_conf_t;
+
+//每个slave 对应一个ctx 独立fd + 队列 + 线程
+typedef struct slave_ctx {
+    int id;
+    char ip[64];
+    int port;
+    int fd;
+
+    msg_queue_t queue;
+    pthread_t worker;
+    volatile int running;
+} slave_ctx_t;
+
+
+//全局状态
+static volatile sig_atomic_t g_stop = 0; //进程若初标记
+static volatile int          g_running = 1; //逻辑退出标记
+
+static slave_ctx_t g_slaves[MAX_SLAVES];
+static int g_slave_count = 0;
+
+//信号处理
+static void handle_sigint(int sig){
+    (void)sig;
+    g_stop = 1;
+    g_running = 0;
+}
+
+static int load_daemon_conf(const char* path, daemon_conf_t* conf){
+    
+    FILE* fp = fopen(path, "r");
+    if(!fp){
+        perror("fopen");
+        return -1;
+    }
+
+    memset(conf, 0, sizeof(*conf));
+    conf->max_payload = 4096;
+
+    char line[256];
+    while(fgets(line, sizeof(line), fp)){
+        char key[64], val[128];
+        if(sscanf(line, " %63[^=]=%127s ", key, val) != 2){
+            continue;
+        }
+        if(strcmp(key, "master_ip") == 0){
+            strncpy(conf->master_ip, val, sizeof(conf->master_ip));
+        }else if(strcmp(key, "master_port") == 0){
+            conf->master_port = atoi(val);
+        }else if(strcmp(key, "max_payload") == 0){
+            conf->max_payload = atoi(val);
+        } else if(strcmp(key , "slave_count") == 0){
+            conf->slave_count = atoi(val);
+            if(conf->slave_count < 0) conf->slave_count = 0;
+            if(conf->slave_count > MAX_SLAVES) conf->slave_count = MAX_SLAVES;
+        }else if(strcmp(key, "slave_ip") == 0 ){
+            if(conf->slave_count == 0) conf->slave_count = 1;
+            strncpy(conf->slaves[0].ip, val, sizeof(conf->slaves[0].ip));
+        }else if(strcmp(key, "slave_port") == 0){
+            if(conf->slave_count == 0) conf->slave_count = 1;
+            conf->slaves[0].port = atoi(val);
+        }else{
+            int idx = 0;
+            if(sscanf(key, "slave%d_ip", &idx) == 1){
+                if(idx >= 1 && idx <= MAX_SLAVES){
+                    int i = idx - 1;
+                    strncpy(conf->slaves[i].ip, val, sizeof(conf->slaves[i].ip));
+                    if(conf->slave_count < idx) conf->slave_count = idx;
+                }
+            }else if(sscanf(key, "slave%d_port", &idx) == 1){
+                if(idx >= 1 && idx <= MAX_SLAVES){
+                    int i = idx - 1;
+                    conf->slaves[i].port = atoi(val);
+                    if(conf->slave_count < idx) conf->slave_count = idx;
+                }
+            }
+        }
+    }
+
+    fclose(fp);
+    if(conf->max_payload <= 0){
+        conf->max_payload = 4096; //默认4096
+    }
+
+    if(conf->master_ip[0] == '\0' || conf->master_port == 0){
+        fprintf(stderr, "Incomplete daemon configuration\n");
+        return -1;
+    }
+
+    if(conf->slave_count == 0){
+        fprintf(stderr, "No slave configured\n");
+        return -1;
+    }
+
+    for(int i = 0;i < conf->slave_count; i++){
+        if(conf->slaves[i].ip[0] == '\0' || conf->slaves[i].port == 0){
+            fprintf(stderr, "Incomplete slave %d configuration\n", i+1);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+
+//发送握手命令
+static int send_replsync_handshake(int slave_fd){
+
+    const char* cmd = "*1\r\n$8\r\nREPLSYNC\r\n";
+    ssize_t sent = send(slave_fd, cmd, strlen(cmd), MSG_NOSIGNAL);
+    if(sent < 0){
+        perror("send REPLSYNC");
+        return -1;
+    }
+
+    //简单读回一个响应
+    char buf[128];
+    int ret = recv(slave_fd, buf, sizeof(buf)-1, 0);
+    if(ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK){
+        perror("recv REPLSYNC response");
+        return -1;
+    }
+    return 0;
+}
+
+//要求发送必须保证完整发送
+static int send_all(int fd, const void* buf, size_t len){
+    const char* p = buf;
+    size_t left = len;
+
+    while(left > 0){
+        ssize_t sent = send(fd, p, left, MSG_NOSIGNAL);
+        if(sent < 0){
+            if(errno == EINTR) continue;
+            if(errno == EAGAIN || errno == EWOULDBLOCK){
+                //非阻塞情况下无法发送更多
+                usleep(1000); //稍等
+                continue;
+            }
+            return -1;
+        }
+        if(sent == 0){
+            //连接关闭
+            return -1;
+        }
+        p += sent;
+        left -= sent;
+    }
+    return 0;
+}
+
+//为slave建立TCP连接并发送REPLSYNC
+static int connect_sand_handshake_slave(slave_ctx_t* ctx){
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if(fd < 0){
+        perror("socket");
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(ctx->port);
+    if(inet_pton(AF_INET, ctx->ip, &addr.sin_addr) <= 0){
+        perror("inet_pton");
+        close(fd);
+        return -1;
+    }
+    if(connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0){
+        perror("connect");
+        close(fd);
+        return -1;
+    }
+
+    printf("Connected to slave %s:%d\n", ctx->ip, ctx->port);
+
+    if(send_replsync_handshake(fd) < 0){
+        printf("Failed to send REPLSYNC to slave %s:%d\n", ctx->ip, ctx->port);
+        close(fd);
+        return -1;
+    }
+
+    printf("REPLSYNC handshake sent to slave %s:%d\n", ctx->ip, ctx->port);
+
+    ctx->fd = fd;
+
+    return 0;
+}
+
+//发送线程 每个slave对应一个
+static void* slave_sender_worker(void* arg){
+    slave_ctx_t* ctx = (slave_ctx_t* )arg;
+
+    //建立连接
+    if(ctx->fd < 0){
+        connect_sand_handshake_slave(ctx);
+    }
+
+    while(g_running && ctx->running){
+        void* item = NULL;
+
+        if(msg_queue_pop(&ctx->queue, &item) != 0){
+            //队列可能暂时为空
+            usleep(1000);
+            continue;
+        }
+
+        ebpf_sync_msg_t* msg = (ebpf_sync_msg_t*)item;
+        if(!msg) continue;  
+
+        //确保连接可用
+        if(ctx->fd < 0){
+            if(connect_sand_handshake_slave(ctx) < 0){
+                //连接失败，丢弃消息
+                free(msg);
+                continue;
+            }
+        }
+
+        if(send_all(ctx->fd, msg->data, msg->len) < 0){
+            perror("send_all to slave");
+            close(ctx->fd);
+            ctx->fd = -1;
+        }
+
+        free(msg);
+    }
+
+    //退出前清理队列剩余数据
+    void* item = NULL;
+    while(msg_queue_pop(&ctx->queue, &item) == 0){
+        ebpf_sync_msg_t* msg = (ebpf_sync_msg_t*)item;
+        if(msg) free(msg);
+    }
+
+    return NULL;
+}
+
+//建立与从节点的连接
+static int connect_slave(const struct daemon_conf* conf){
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if(fd < 0){
+        perror("socket");
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(conf->slave_port);
+    if(inet_pton(AF_INET, conf->slave_ip, &addr.sin_addr) <= 0){
+        perror("inet_pton");
+        close(fd);
+        return -1;
+    }
+    if(connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0){
+        perror("connect");
+        close(fd);
+        return -1;
+    }
+    printf("Connected to slave %s:%d\n", conf->slave_ip, conf->slave_port);
+    return fd;
+}
+
+//ringbuf事件处理回调
+static int handle_event(void* ctx, void* data, size_t data_sz){
+    (void)ctx;
+    const struct event* e = data;
+
+    if(data_sz < sizeof(struct event)){
+        fprintf(stderr, "Invalid event size: %zu\n", data_sz);
+        return -1;
+    }
+
+    size_t header_size = offsetof(struct event, data);
+    size_t payload_sz = data_sz - header_size;
+
+    size_t len = e->len;
+    if(len > payload_sz){
+        len = payload_sz;
+    }
+    if(len == 0) return 0;
+
+    //为每个slave复制一份消息 并入队到其对应的队列中
+    for(int i = 0;i < g_slave_count;i ++){
+        slave_ctx_t* s = &g_slaves[i];
+        if(!s->running) continue;
+
+        //分配消息
+        ebpf_sync_msg_t* msg = (ebpf_sync_msg_t* )malloc(sizeof(ebpf_sync_msg_t) + len);
+        if(!msg){
+            fprintf(stderr, "Failed to allocate ebpf_sync_msg_t for slave %d\n",
+                    s->id);
+            continue;//内存不足
+        }
+
+        msg->len = len;
+        memcpy(msg->data, e->data, len);
+
+        //入队
+        if(msg_queue_push(&s->queue, msg) != 0){
+            fprintf(stderr, "msg_queue_push failed for slave %d\n", s->id);
+            free(msg);
+            //当前队列已满
+        }
+    }
+
+    return 0;
+}
+
+int main(int argc, char** argv){
+
+    const char* conf_path = "../../config/ebpf_sync.conf";
+    if(argc > 1) conf_path = argv[1];
+
+    printf("[ebpf_syncd] start, conf_path=%s\n", conf_path); // DEBUG
+
+    struct daemon_conf conf = {0};
+    if(load_daemon_conf(conf_path, &conf) != 0){
+        fprintf(stderr, "Failed to load daemon config\n");
+        return 1;
+    }
+
+    printf("[ebpf_syncd] conf loaded: master=%s:%d, slave=%s:%d\n",
+           conf.master_ip, conf.master_port, conf.slave_ip, conf.slave_port); // DEBUG
+    for(int i = 0;i < conf.slave_count;i ++){
+        printf("  slave %d: %s:%d\n", i+1, conf.slaves[i].ip, conf.slaves[i].port);
+    }
+
+    libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+    signal(SIGINT, handle_sigint);
+    signal(SIGTERM, handle_sigint);
+
+    printf("[ebpf_syncd] before ebpf_kern__open_and_load\n"); // DEBUG
+
+    const char* obj_path = "ebpf_kern.o";
+    struct bpf_object* obj = bpf_object__open_file(obj_path, NULL);
+    if(libbpf_get_error(obj)){
+        int err = -libbpf_get_error(obj);
+        fprintf(stderr, "Failed to open BPF object file: %s, err=%d\n", obj_path, err);
+        return 1;
+    }
+
+    //加载BPF对象
+    int err = bpf_object__load(obj);
+    if(err){
+        fprintf(stderr, "Failed to load BPF object: %d\n", err);
+        bpf_object__close(obj);
+        return 1;
+    }
+
+    printf("[ebpf_syncd] BPF object loaded\n"); // DEBUG
+
+    //配置map 写入 master ip和port
+    struct bpf_map* config_map = bpf_object__find_map_by_name(obj, "config_map");
+    if(!config_map){
+        fprintf(stderr, "Failed to find config_map\n");
+        bpf_object__close(obj);
+        return 1;
+    }
+
+    int cfg_map_fd = bpf_map__fd(config_map);
+    if(cfg_map_fd < 0){
+        fprintf(stderr, "Invalid config_map fd\n");
+        bpf_object__close(obj);
+        return 1;
+    }
+    printf("[ebpf_syncd] config_map fd=%d\n", cfg_map_fd); // DEBUG
+
+    //填写配置
+    __u32 key = 0;
+    struct config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    if(inet_pton(AF_INET, conf.master_ip, &cfg.master_ip) <= 0){
+        fprintf(stderr, "Invalid master IP: %s\n", conf.master_ip);
+        bpf_object__close(obj);
+        return 1;
+    }
+    cfg.master_port = conf.master_port;
+
+    if(bpf_map_update_elem(cfg_map_fd, &key, &cfg, BPF_ANY) != 0){
+        perror("bpf_map_update_elem");
+        bpf_object__close(obj);
+        return 1;
+    }
+    printf("[ebpf_syncd] config_map updated: master_ip=0x%x, master_port=%d\n",
+           cfg.master_ip, cfg.master_port); // DEBUG
+        
+    struct bpf_map* events_map = bpf_object__find_map_by_name(obj, "events");
+    if(!events_map){
+        fprintf(stderr, "Failed to find events map\n");
+        bpf_object__close(obj);
+        return 1;
+    }
+    int events_map_fd = bpf_map__fd(events_map);
+    if(events_map_fd < 0){
+        fprintf(stderr, "Invalid events map fd\n");
+        bpf_object__close(obj);
+        return 1;
+    }
+    printf("[ebpf_syncd] events map fd=%d\n", events_map_fd); // DEBUG
+
+    struct bpf_program* prog = bpf_object__find_program_by_name(obj, "kprobe_tcp_sendmsg");
+    if(!prog){
+        fprintf(stderr, "Failed to find program tcp_sendmsg\n");
+        bpf_object__close(obj);
+        return 1;
+    }
+    struct bpf_link* link = bpf_program__attach(prog);
+    if(libbpf_get_error(link)){
+        int err = -libbpf_get_error(link);
+        fprintf(stderr, "Failed to attach program: %d\n", err);
+        bpf_object__close(obj);
+        return 1;
+    }
+
+    printf("[ebpf_syncd] Program attached\n"); // DEBUG
+
+    //初始化slave_ctx + 启动发送线程
+    g_slave_count = conf.slave_count;
+    if(g_slave_count > MAX_SLAVES){
+        g_slave_count = MAX_SLAVES;
+    }
+
+    for(int i = 0;i < g_slave_count;i++){
+        slave_ctx_t* slave = &g_slaves[i];
+        memset(slave, 0, sizeof(*slave));
+        slave->id = i;
+        slave->fd = -1;
+        slave->port = conf.slaves[i].port;
+        strncpy(slave->ip, conf.slaves[i].ip, sizeof(slave->ip)-1);
+        slave->ip[sizeof(slave->ip)-1] = '\0';
+        slave->running = 1;
+
+        if(msg_queue_init(&slave->queue, EBPFSYNC_QUEUE_CAPACITY) != 0){
+            fprintf(stderr, "msg_queue_init failed for slave %d\n", i);
+            slave->running = 0;
+
+            g_slave_count = i;
+            g_running = 0;
+            goto cleanup;
+        }
+
+        if(pthread_create(&slave->worker, NULL, slave_sender_worker, slave) != 0){
+            perror("pthread_create for slave sender");
+            msg_queue_destroy(&slave->queue);
+            slave->running = 0;
+
+            g_slave_count = i + 1;
+            g_running = 0;
+            goto cleanup;
+        }
+    }
+
+    //创建ringbuffer
+    struct ring_buffer* ringbuf = 
+        ring_buffer__new(events_map_fd, handle_event, NULL, NULL);
+    if(libbpf_get_error(ringbuf)){
+        int err = -libbpf_get_error(ringbuf);
+        fprintf(stderr, "Failed to create ring buffer: %d\n", err);
+        g_running = 0;
+    }else{
+        printf("[ebpf_syncd] Ring buffer created\n"); // DEBUG
+        while(!stop && g_running){
+            int pret = ring_buffer__poll(ringbuf, 100 /* timeout ms */);
+            if(pret < 0 && pret != -EINTR){
+                fprintf(stderr, "Error polling ring buffer: %d\n", pret);
+                break;
+            }
+            // else pret == 0: timeout, just continue
+        }
+    }
+
+
+    printf("[ebpf_syncd] Ring buffer created, entering main loop\n"); // DEBUG
+
+
+    printf("[ebpf_syncd] Shutting down...\n"); // DEBUG
+    
+    g_running = 0;
+
+cleanup:
+    //释放ringbuffer
+    if(ringbuf && !libbpf_get_error(ringbuf)){
+        ring_buffer__free(ringbuf);
+    }
+
+    //停止所有slave sender线程
+    for(int i = 0;i < g_slave_count;i++){
+        slave_ctx_t* slave = &g_slaves[i];
+        slave->running = 0;
+    }
+
+    for(int i = 0;i < g_slave_count;i++){
+        slave_ctx_t* slave = &g_slaves[i];
+        if(slave->worker){
+            pthread_join(slave->worker, NULL);
+            slave->worker = 0;
+        }
+        if(slave->fd >= 0){
+            close(slave->fd);
+            slave->fd = -1;
+        }
+        msg_queue_destroy(&slave->queue);
+    }
+
+    bpf_link__destroy(link);
+    bpf_object__close(obj);
+
+    printf("[ebpf_syncd] Exited cleanly\n");
+    return 0;
+}

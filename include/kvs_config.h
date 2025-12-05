@@ -47,6 +47,12 @@ typedef enum {
 	KVS_MEM_BACKEND_JEMALLOC = 2 // jemalloc 内存池
 } kvs_mem_backend_t;
 
+// 主从同步模式
+typedef enum{
+	KVS_SYNC_TCP = 0,    // 通过 TCP 同步
+	KVS_SYNC_EBPF = 1    // 通过 eBPF 同步
+} kvs_sync_mode_t;
+
 // 全局配置结构
 typedef struct kvs_config {
 	int   port;                     // 服务端口
@@ -76,6 +82,10 @@ typedef struct kvs_config {
 
 	// 逻辑上 value 最大长度（0 表示不限制，由编译期常量决定）
 	size_t max_value_size;
+
+	//同步模式选择
+	kvs_sync_mode_t sync_mode;
+	char ebpf_conf[256];          // eBPF 配置文件路径
 } kvs_config_t;
 
 // 默认配置初始化

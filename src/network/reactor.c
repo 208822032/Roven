@@ -20,6 +20,7 @@
 #include "server.h"
 #include "kvs_api.h"
 #include "resp_protocol.h"
+#include "distributed.h"
 
 
 #define CONNECTION_SIZE			1024 // 1024 * 1024
@@ -44,6 +45,8 @@ typedef struct{
     int processing;  //是否正在处理中
     struct iovec *iovecs;//用于分散/聚集IO
     int iovec_count;  //iovec数量
+
+    int is_replication;//是否是复制连接
 } conn_extension_t;
 
 //全局连接扩展数组
@@ -246,6 +249,8 @@ int accept_cb(int fd) {
 		printf("accept errno: %d --> %s\n", errno, strerror(errno));
 		return -1;
 	}
+
+    
 	
 	event_register(clientfd, EPOLLIN);  // | EPOLLET
 
@@ -362,6 +367,67 @@ int process_received_data(int fd) {
             event_unregister(fd);
             return -1;
         }
+        
+        //获得一条完整命令
+        char* cmd_name = c->parser.tokens[0];
+        if(!cmd_name){
+            printf("Empty command name for fd %d\n", fd);
+            ext->processing = 0;
+            event_unregister(fd);
+            return -1;
+        }
+        
+        //单独处理REPLSYNC命令
+        if(strcasecmp(cmd_name, "REPLSYNC") == 0){
+            //获取全局角色信息
+            extern distributed_config_t global_dist_config;
+
+            const char* ok_resp = "+OK\r\n";
+            const char* err_resp = "-ERR REPLSYNC not allowed in current role\r\n";
+
+            if(global_dist_config.role == ROLE_SLAVE){
+                //将该连接标记为复制连接
+                ext->is_replication = 1;
+
+                //回复+OK
+                size_t ok_len = strlen(ok_resp);
+                if(ext->send_buf.size + ok_len > ext->send_buf.capacity){
+                    if(expand_large_buffer(&ext->send_buf, ext->send_buf.size + ok_len) < 0){
+                        ext->processing = 0;
+                        event_unregister(fd);
+                        return -1;
+                    }
+                }
+                memcpy(ext->send_buf.data + ext->send_buf.size, ok_resp, ok_len);
+                ext->send_buf.size += ok_len;
+            }else{
+                //只允许从节点接收 REPLSYNC
+                size_t err_len = strlen(err_resp);
+                if(ext->send_buf.size + err_len > ext->send_buf.capacity){
+                    if(expand_large_buffer(&ext->send_buf, ext->send_buf.size + err_len) < 0){
+                        ext->processing = 0;
+                        event_unregister(fd);
+                        return -1;
+                    }
+                }
+                memcpy(ext->send_buf.data + ext->send_buf.size, err_resp, err_len);
+                ext->send_buf.size += err_len;
+            }
+
+        //该命令处理结束
+        parsed_total += (size_t)cmd_len;
+        resp_parser_reset(&c->parser);
+        continue;
+        }
+        
+        
+        // 除开上述命令之外的命令
+        int old_ctx = get_sync_context();
+        if(ext->is_replication){
+            set_sync_context(2);//复制连接上下文
+        }else{
+            set_sync_context(0);//普通连接上下文
+        }
 
         char* response_buf = (char* )kvs_malloc(KVS_MAX_RESPONSE_LENGTH);
         if(!response_buf){
@@ -379,6 +445,7 @@ int process_received_data(int fd) {
             return -1;
         }
 
+        set_sync_context(old_ctx);
 
         // 4. 把响应 append 到 send_buf
         if (ext->send_buf.size + (size_t)resp_len > ext->send_buf.capacity) {

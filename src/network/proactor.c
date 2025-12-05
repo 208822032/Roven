@@ -47,6 +47,8 @@ typedef struct conn_info{
     //当前是否有还在发送过程中的 READ/WRITE SQE
     int read_in_flight;
     int write_in_flight;
+
+    int is_replication;//是否是复制连接
 } conn_extension_t;
 
 typedef struct{

@@ -23,12 +23,12 @@
 //     char data[KVS_MAX_RESPONSE_SIZE];
 // };
 
-#if (SYNC_MODE == SYNC_MODE_EBPF)
+// #if (SYNC_MODE == SYNC_MODE_EBPF)
 
 // eBPF 模式接口：初始化/清理
-int ebpf_sync_init(int sync_port);
-void ebpf_sync_cleanup(void);
+// int ebpf_sync_init(int sync_port);
+// void ebpf_sync_cleanup(void);
 
-#endif
+// #endif
 
 #endif
