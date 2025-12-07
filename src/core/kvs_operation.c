@@ -1,12 +1,24 @@
 #include "kvs_api.h"
 #include "kvs_globals.h"
 #include "resp_protocol.h"
+#include "distributed.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 extern aof_state_t aof_state;
+extern distributed_config_t global_dist_config;
 
+//四个数据结构
+extern kvs_array_t global_array;
+extern kvs_rbtree_t global_rbtree;
+extern kvs_hash_t global_hash;
+extern kvs_skiptable_t global_skiptable;
+
+//rbtree回调遍历函数
+void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node,
+                                    void (*callback)(rbtree_node *, void *),
+                                    void *userdata);
 const char *command[] = {
     "SET", "GET", "DEL", "MOD", "EXIST","RANGE","SORT",
     "RSET", "RGET", "RDEL", "RMOD", "REXIST","RRANGE","RSORT",
@@ -14,6 +26,7 @@ const char *command[] = {
     "SSET", "SGET", "SDEL", "SMOD", "SEXIST","SRANGE","SSORT",
     "PAPERSET", "PAPERGET", "PAPERDEL",
     "QUIT",
+    "FULLDUMP",
 };
 
 const command_info command_table[] = {
@@ -61,6 +74,7 @@ const command_info command_table[] = {
 
     // Special commands
     {"QUIT",   handle_quit,   1, 0, -1},
+    {"FULLDUMP", handle_fulldump, 1, 0, -1},
 
     {NULL, NULL, 0, 0, -1} // 结束标记
 };
@@ -144,6 +158,9 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
         ctx->data_structure = DATA_STRUCTURE_RBTREE; // Paper 使用 RBTree 存储大 value
     }else if(cmd == KVS_CMD_QUIT){
         //QUIT命令不需要额外参数
+        return 0;
+    }else if(cmd == KVS_CMD_FULLDUMP){
+        //FULLDUMP命令不需要额外参数
         return 0;
     }else{
         return -1; //未知命令 
@@ -520,4 +537,163 @@ int handle_sort(command_context_t *ctx, char *response){
 int handle_quit(command_context_t *ctx, char *response){
     g_shutdown_flag = 1;
     return resp_generate_simple_string(response, "Server shutting down...");
+}
+
+//安全地往 response[] 末尾追加数据
+static int fulldump_append_raw(char* resp, 
+                                int max_len, 
+                                int* off,
+                                const char* data, 
+                                int len)
+{
+    if(*off + len > max_len){
+        return -1; // 超出缓冲区
+    }
+    memcpy(resp + *off, data, len);
+    *off += len;
+    return 0;
+}
+// 追加 "*<n>\r\n"
+static int fulldump_append_array_header(char *resp, 
+                                        int max_len, 
+                                        int *off, 
+                                        int count) 
+{
+
+    char tmp[64];
+    int n = snprintf(tmp, sizeof(tmp), "*%d\r\n", count);
+    if (n < 0) return -1;
+    return fulldump_append_raw(resp, max_len, off, tmp, n);
+}
+
+// 追加 "$<len>\r\n<buf>\r\n"
+static int fulldump_append_bulk(char *resp, int max_len, int *off,
+                                const char *data, int len) {
+    char tmp[64];
+    int n = snprintf(tmp, sizeof(tmp), "$%d\r\n", len);
+    if (n <= 0) return -1;
+    if (fulldump_append_raw(resp, max_len, off, tmp, n) < 0) return -1;
+    if (fulldump_append_raw(resp, max_len, off, data, len) < 0) return -1;
+    if (fulldump_append_raw(resp, max_len, off, "\r\n", 2) < 0) return -1;
+    return 0;
+}
+
+// 追加一条简单的 3 参数命令：CMD key value
+static int fulldump_append_cmd3(char *resp, int max_len, int *off,
+                                const char *cmd,
+                                const char *key, const char *val) {
+    int cmdlen = (int)strlen(cmd);
+    int klen   = (int)strlen(key);
+    int vlen   = (int)strlen(val);
+
+    if (fulldump_append_array_header(resp, max_len, off, 3) < 0) return -1;
+    if (fulldump_append_bulk(resp, max_len, off, cmd, cmdlen)   < 0) return -1;
+    if (fulldump_append_bulk(resp, max_len, off, key, klen)     < 0) return -1;
+    if (fulldump_append_bulk(resp, max_len, off, val, vlen)     < 0) return -1;
+    return 0;
+}
+
+int handle_fulldump(command_context_t* ctx, char* response){
+    (void)ctx;
+
+    //只允许在主节点执行
+    if(global_dist_config.role != ROLE_MASTER){
+        return resp_generate_error(response, "ERR FULLDUMP allowed only on master node");
+    }
+
+    int off = 0;
+    const int max_len = KVS_MAX_RESPONSE_LENGTH;
+
+    //遍历生成
+#if ENABLE_ARRAY
+    {
+        extern kvs_array_t global_array; // 已在头部声明，这里只是强调一下
+        if (global_array.table && global_array.total > 0) {
+            for (int i = 0; i < global_array.total; i++) {
+                kvs_array_item_t *it = &global_array.table[i];
+                if (!it->key || !it->value) continue;
+
+                if (fulldump_append_cmd3(response, max_len, &off,
+                                         "SET", it->key, it->value) < 0) {
+                    // 缓冲区满了，直接停止，返回已填充长度
+                    return off;
+                }
+            }
+        }
+    }
+#endif
+#if ENABLE_HASH
+    {
+        extern kvs_hash_t global_hash;
+        if (global_hash.nodes && global_hash.max_slots > 0) {
+            for (int i = 0; i < global_hash.max_slots; ++i) {
+                hashnode_t *slot = &global_hash.nodes[i];
+                if (slot->used != 1 || !slot->key || !slot->value) {
+                    continue;
+                }
+                if (fulldump_append_cmd3(response, max_len, &off,
+                                         "HSET",
+                                         slot->key,
+                                         slot->value) < 0) {
+                    return off;
+                }
+            }
+        }
+    }
+#endif
+#if ENABLE_RBTREE
+    struct rbtree_dump_ctx {
+        char *resp;
+        int   max_len;
+        int  *off;
+        int   overflow;
+    } rbt_ctx = { response, max_len, &off, 0 };
+
+    void rbtree_dump_cb(rbtree_node *node, void *ud) {
+        struct rbtree_dump_ctx *c = (struct rbtree_dump_ctx *)ud;
+        if (c->overflow) return;
+        if (!node->key || !node->value) return;
+
+        if (fulldump_append_cmd3(c->resp, c->max_len, c->off,
+                                 "RSET",
+                                 (const char *)node->key,
+                                 (const char *)node->value) < 0) {
+            c->overflow = 1;
+        }
+    }
+
+    rbtree_traversal_with_callback((rbtree *)&global_rbtree,
+                                   global_rbtree.root,
+                                   rbtree_dump_cb,
+                                   &rbt_ctx);
+    if (rbt_ctx.overflow) {
+        return off;
+    }
+#endif
+#if ENABLE_SKIPTABLE
+    {
+        extern kvs_skiptable_t global_skiptable;
+        if (global_skiptable.header) {
+            Node *cur = global_skiptable.header->forward[0];
+            while (cur) {
+                if (cur->key && cur->value) {
+                    if (fulldump_append_cmd3(response, max_len, &off,
+                                             "SSET",
+                                             cur->key,
+                                             cur->value) < 0) {
+                        return off;
+                    }
+                }
+                cur = cur->forward[0];
+            }
+        }
+    }
+#endif
+
+    if(off == 0){
+        //没有数据，返回空数组
+        return resp_generate_array_start(response, 0);
+    }
+
+    return off;
 }

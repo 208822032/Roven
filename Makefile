@@ -40,12 +40,14 @@ BASE_SRCS = \
 	$(SRC_NETWORK)/reactor.c \
     $(SRC_NETWORK)/proactor.c \
     $(SRC_NETWORK)/ntyco.c \
+	$(SRC_NETWORK)/net_session.c \
 	$(SRC_PERSIST)/kvs_rdb.c \
 	$(SRC_PERSIST)/kvs_aof.c \
 	$(SRC_PERSIST)/kvs_aof_rewrite.c \
 	$(SRC_UTILS)/msg_queue.c \
 	$(SRC_UTILS)/master_slave_proto.c \
-
+	$(SRC_UTILS)/netbuf.c
+	
 
 SRCS = $(BASE_SRCS) \
 		$(SRC_DIST)/sync_backend_tcp.c

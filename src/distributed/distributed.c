@@ -17,15 +17,7 @@
 #include "sync_backend.h"
 #include <stdint.h>
 
-
-
 distributed_config_t global_dist_config;
-
-//同步队列中存放二进制消息
-// typedef struct sync_msg {
-//     size_t len;
-//     char data[KVS_MAX_RESPONSE_SIZE];
-// } sync_msg_t;
 
 typedef struct sync_msg {
     size_t len;

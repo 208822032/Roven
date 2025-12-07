@@ -74,7 +74,7 @@ int recv_msg(int connfd, char *msg, int length) {
 
 }
 
-// 提前声明，供 recv_full_resp 使用
+// 提前声明，供 recv_full_resp / recv_pipeline_resps 使用
 static int parse_resp_object(const char *buf, int len, int *consumed);
 
 // 阻塞读取，直到完整读到一条简单 RESP 或 bulk string
@@ -118,6 +118,80 @@ static int recv_full_resp(int connfd, char *buf, int buflen) {
     }
 
     return -1;
+}
+
+// 精确解析 pipeline 响应：按 RESP 语义解析 expected_cmds 个对象
+// out_raw / out_raw_cap 可选，仅在需要做字节级比对时使用
+static int recv_pipeline_resps(int connfd,
+                               int expected_cmds,
+                               char *out_raw,
+                               int  out_raw_cap)
+{
+    char buf[4096];
+    int  buf_len    = 0;
+    int  resp_count = 0;
+    int  raw_len    = 0;
+
+    if (expected_cmds <= 0) return -1;
+
+    while (resp_count < expected_cmds) {
+        // 1. 先尽量多收一点数据
+        if (buf_len < (int)sizeof(buf) - 1) {
+            int n = recv(connfd, buf + buf_len,
+                         (int)sizeof(buf) - 1 - buf_len, 0);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                perror("recv_pipeline_resps recv");
+                return -1;
+            } else if (n == 0) {
+                fprintf(stderr,
+                        "recv_pipeline_resps: connection closed, resp_count=%d, expected=%d\n",
+                        resp_count, expected_cmds);
+                return -1;
+            }
+            buf_len += n;
+
+            if (out_raw && raw_len < out_raw_cap - n - 1) {
+                memcpy(out_raw + raw_len, buf + buf_len - n, n);
+                raw_len += n;
+            }
+        }
+
+        // 2. 在 buf 中尽量多地解析 RESP 对象
+        int offset = 0;
+        while (offset < buf_len && resp_count < expected_cmds) {
+            int consumed = 0;
+            int ret = parse_resp_object(buf + offset,
+                                        buf_len - offset,
+                                        &consumed);
+            if (ret == 1) {
+                resp_count++;
+                offset += consumed;
+            } else if (ret == 0) {
+                // 数据不够一个完整对象，跳出等待更多数据
+                break;
+            } else {
+                fprintf(stderr,
+                        "recv_pipeline_resps: parse_resp_object error (ret=%d)\n",
+                        ret);
+                return -1;
+            }
+        }
+
+        if (offset > 0 && offset < buf_len) {
+            memmove(buf, buf + offset, buf_len - offset);
+        }
+        buf_len -= offset;
+    }
+
+    if (out_raw) {
+        if (raw_len >= out_raw_cap) raw_len = out_raw_cap - 1;
+        out_raw[raw_len] = '\0';
+    }
+
+    return 0;
 }
 
 // 生成针对 count 个 MSA_key_%06d 的 GET pipeline
@@ -217,7 +291,7 @@ static int recv_all_with_timeout(int connfd, char **out_buf, size_t *out_len) {
     size_t total = 0;
 
     struct timeval tv;
-    tv.tv_sec = 2;
+    tv.tv_sec = 5;
     tv.tv_usec = 0;
     setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
 
@@ -324,28 +398,15 @@ void array_pipeline_testcase(int connfd) {
     // 发送pipeline请求
     send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
 
-    // 接收响应缓冲区
-    char response[2048] = {0};
-    int total_received = 0;
-    int expected_responses = 9; // 我们发送了9个命令
-
-    // 接收所有响应（可能需要多次recv）
-    while (total_received < sizeof(response) - 1) {
-        int n = recv(connfd, response + total_received, 
-                    sizeof(response) - total_received - 1, 0);
-        if (n <= 0) break;
-        total_received += n;
-        
-        // 检查是否收到全部响应（按\r\n计数）
-        int response_count = 0;
-        for (int i = 0; i < total_received; i++) {
-            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
-                response_count++;
-            }
-        }
-        if (response_count >= expected_responses) break;
+    // 使用 RESP 精确解析 15 个响应
+    char response[4096] = {0};
+    int commands_per_pipeline = 15;
+    if (recv_pipeline_resps(connfd,
+                            commands_per_pipeline,
+                            response, sizeof(response)) != 0) {
+        printf("==> FAILED -> array pipeline RESP parse error\n");
+        exit(1);
     }
-    response[total_received] = '\0';
 
     // 验证响应内容
     const char *expected_response = 
@@ -423,28 +484,14 @@ void rbtree_pipeline_testcase(int connfd) {
     // 发送pipeline请求
     send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
 
-    // 接收响应缓冲区
-    char response[2048] = {0};
-    int total_received = 0;
-    int expected_responses = 9; // 我们发送了9个命令
-
-    // 接收所有响应（可能需要多次recv）
-    while (total_received < sizeof(response) - 1) {
-        int n = recv(connfd, response + total_received, 
-                    sizeof(response) - total_received - 1, 0);
-        if (n <= 0) break;
-        total_received += n;
-        
-        // 检查是否收到全部响应（按\r\n计数）
-        int response_count = 0;
-        for (int i = 0; i < total_received; i++) {
-            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
-                response_count++;
-            }
-        }
-        if (response_count >= expected_responses) break;
+    char response[4096] = {0};
+    int commands_per_pipeline = 15;
+    if (recv_pipeline_resps(connfd,
+                            commands_per_pipeline,
+                            response, sizeof(response)) != 0) {
+        printf("==> FAILED -> rbtree pipeline RESP parse error\n");
+        exit(1);
     }
-    response[total_received] = '\0';
 
     // 验证响应内容
     const char *expected_response = 
@@ -525,28 +572,14 @@ void hash_pipeline_testcase(int connfd) {
     // 发送pipeline请求
     send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
 
-    // 接收响应缓冲区
-    char response[2048] = {0};
-    int total_received = 0;
-    int expected_responses = 9; // 我们发送了9个命令
-
-    // 接收所有响应（可能需要多次recv）
-    while (total_received < sizeof(response) - 1) {
-        int n = recv(connfd, response + total_received, 
-                    sizeof(response) - total_received - 1, 0);
-        if (n <= 0) break;
-        total_received += n;
-        
-        // 检查是否收到全部响应（按\r\n计数）
-        int response_count = 0;
-        for (int i = 0; i < total_received; i++) {
-            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
-                response_count++;
-            }
-        }
-        if (response_count >= expected_responses) break;
+    char response[4096] = {0};
+    int commands_per_pipeline = 15;
+    if (recv_pipeline_resps(connfd,
+                            commands_per_pipeline,
+                            response, sizeof(response)) != 0) {
+        printf("==> FAILED -> hash pipeline RESP parse error\n");
+        exit(1);
     }
-    response[total_received] = '\0';
 
     // 验证响应内容
    const char *expected_response = 
@@ -626,28 +659,14 @@ void skiptable_pipeline_testcase(int connfd) {
     // 发送pipeline请求
     send_msg(connfd, (char *)pipeline_cmd, strlen(pipeline_cmd));
 
-    // 接收响应缓冲区
-    char response[2048] = {0};
-    int total_received = 0;
-    int expected_responses = 9; // 我们发送了9个命令
-
-    // 接收所有响应（可能需要多次recv）
-    while (total_received < sizeof(response) - 1) {
-        int n = recv(connfd, response + total_received, 
-                    sizeof(response) - total_received - 1, 0);
-        if (n <= 0) break;
-        total_received += n;
-        
-        // 检查是否收到全部响应（按\r\n计数）
-        int response_count = 0;
-        for (int i = 0; i < total_received; i++) {
-            if (response[i] == '\n' && (i > 0 && response[i-1] == '\r')) {
-                response_count++;
-            }
-        }
-        if (response_count >= expected_responses) break;
+    char response[4096] = {0};
+    int commands_per_pipeline = 15;
+    if (recv_pipeline_resps(connfd,
+                            commands_per_pipeline,
+                            response, sizeof(response)) != 0) {
+        printf("==> FAILED -> skiptable pipeline RESP parse error\n");
+        exit(1);
     }
-    response[total_received] = '\0';
 
     // 验证响应内容
     const char *expected_response = 

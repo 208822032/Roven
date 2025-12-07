@@ -45,7 +45,7 @@ enum {
 	KVS_CMD_PAPERMOD,
 	// quit
 	KVS_CMD_QUIT,
-	KVS_CMD_COUNT,
+	KVS_CMD_FULLDUMP,
 };
 
 // 数据结构类型

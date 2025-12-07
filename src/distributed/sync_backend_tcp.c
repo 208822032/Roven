@@ -11,12 +11,6 @@
 #include <stdio.h>
 #include "kvs_memory.h"
 
-
-// 同步队列元素
-// typedef struct sync_msg {
-//     size_t len;
-//     char data[KVS_MAX_RESPONSE_SIZE];
-// } sync_msg_t;
 typedef struct sync_msg {
     size_t len;
     uint8_t payload[];

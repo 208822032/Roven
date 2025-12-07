@@ -13,6 +13,8 @@
 #include <signal.h>
 #include <stdint.h>
 #include <errno.h>
+#include <fcntl.h>
+
 
 #include "msg_queue.h"
 #include <pthread.h>
@@ -306,6 +308,35 @@ static void* slave_sender_worker(void* arg){
     return NULL;
 }
 
+//广播函数
+static void broadcast_to_all_slaves(const void* data, size_t len){
+
+    if(!data || len == 0) return;
+
+    for(int i = 0;i < g_slave_count;i++){
+        slave_ctx_t* s = &g_slaves[i];
+        if(!s->running) continue;
+
+        ebpf_sync_msg_t* msg = 
+            (ebpf_sync_msg_t* )malloc(sizeof(ebpf_sync_msg_t) + len);
+        if(!msg){
+            fprintf(stderr, "Failed to allocate ebpf_sync_msg_t for slave %d\n",
+                    s->id);
+            continue;//内存不足
+        }
+
+        msg->len = len;
+        memcpy(msg->data, data, len);
+
+        if(msg_queue_push(&s->queue, msg) != 0){
+            fprintf(stderr, "msg_queue_push failed for slave %d\n", s->id);
+            free(msg);
+            //当前队列已满
+        }
+    }
+
+}
+
 //建立与从节点的连接
 static int connect_slave(const struct daemon_conf* conf){
 
@@ -333,7 +364,7 @@ static int connect_slave(const struct daemon_conf* conf){
     return fd;
 }
 
-//ringbuf事件处理回调
+//ringbuf事件处理回调 增量同步
 static int handle_event(void* ctx, void* data, size_t data_sz){
     (void)ctx;
     const struct event* e = data;
@@ -352,30 +383,135 @@ static int handle_event(void* ctx, void* data, size_t data_sz){
     }
     if(len == 0) return 0;
 
-    //为每个slave复制一份消息 并入队到其对应的队列中
-    for(int i = 0;i < g_slave_count;i ++){
-        slave_ctx_t* s = &g_slaves[i];
-        if(!s->running) continue;
+    //统一广播函数
+    broadcast_to_all_slaves(e->data, len);
 
-        //分配消息
-        ebpf_sync_msg_t* msg = (ebpf_sync_msg_t* )malloc(sizeof(ebpf_sync_msg_t) + len);
-        if(!msg){
-            fprintf(stderr, "Failed to allocate ebpf_sync_msg_t for slave %d\n",
-                    s->id);
-            continue;//内存不足
-        }
+    return 0;
+}
 
-        msg->len = len;
-        memcpy(msg->data, e->data, len);
-
-        //入队
-        if(msg_queue_push(&s->queue, msg) != 0){
-            fprintf(stderr, "msg_queue_push failed for slave %d\n", s->id);
-            free(msg);
-            //当前队列已满
-        }
+//从主节点做一次全量同步
+//连接主节点
+//发送 "*1\r\n$8\r\nFULLDUMP\r\n"
+//接收数据并发送给所有从节点
+//  4. 循环 recv：
+//      - n > 0  : 收到数据，广播给所有 slave
+//      - n == 0 : master 主动关闭连接，认为 FULLDUMP 结束
+//      - n < 0 && errno == EAGAIN：
+//          - 如果之前还没收到过任何数据：说明 FULLDUMP 还没开始发，稍微 sleep 后重试
+//          - 如果已经收到过数据：说明当前数据已经全部读完，认为 FULLDUMP 完成，退出循环
+//      - 其他错误：视为失败，返回 -1
+static int do_fullsync_from_master(const daemon_conf_t* conf){
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if(fd < 0){
+        perror("socket");
+        return -1;
     }
 
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(conf->master_port);
+    if(inet_pton(AF_INET, conf->master_ip, &addr.sin_addr)
+        <= 0){
+        perror("inet_pton");
+        close(fd);
+        return -1;
+    }
+
+    if(connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0){
+        perror("connect");
+        close(fd);
+        return -1;
+    }
+
+    printf("Connected to master %s:%d for FULLDUMP\n",
+           conf->master_ip,  conf->master_port);
+
+    //发送 FULLDUMP 命令
+    const char* cmd = "*1\r\n$8\r\nFULLDUMP\r\n";
+    size_t total = strlen(cmd);
+    ssize_t off = 0;
+    while(off < total){
+        ssize_t w = send(fd, cmd + off, total - off, MSG_NOSIGNAL);
+        if(w < 0){
+            if(errno == EINTR) continue;
+            perror("send FULLDUMP");
+            close(fd);
+            return -1;
+        }
+        if(w == 0){
+            fprintf(stderr, "Connection closed while sending FULLDUMP\n");
+            close(fd);
+            return -1;
+        }
+        off += w;
+    }
+
+    // 把 socket 设成非阻塞
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        perror("[fullsync] fcntl(F_GETFL)");
+        close(fd);
+        return -1;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        perror("[fullsync] fcntl(F_SETFL, O_NONBLOCK)");
+        close(fd);
+        return -1;
+    }
+
+    //接收数据并广播
+    int buf_size = conf->max_payload > 0 ? conf->max_payload : MAX_PAYLOAD;
+    unsigned char *buffer = (unsigned char *)malloc(buf_size);
+    if (!buffer) {
+        fprintf(stderr, "[fullsync] malloc(%d) failed\n", buf_size);
+        close(fd);
+        return -1;
+    }
+
+    int received_any = 0;
+
+    while(!g_stop){
+        ssize_t n = recv(fd, buffer, buf_size, 0);
+        if (n > 0) {
+            // 收到 FULLDUMP 的一块数据，广播给所有 slave
+            received_any = 1;
+            broadcast_to_all_slaves(buffer, (size_t)n);
+            continue;
+        }
+
+        if (n == 0) {
+            // master 主动关闭连接：认为 FULLDUMP 完成
+            printf("Master closed connection during FULLDUMP\n");
+            break;
+        }
+
+        // n < 0
+        if (errno == EINTR) {
+            continue;
+        }
+
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (!received_any) {
+                // 还没收到任何数据，可能 master 正在准备 FULLDUMP，等一会儿再试
+                usleep(1000);
+                continue;
+            } else {
+                // 已经收到过数据了，现在 socket 暂时无数据可读：
+                // 认为 FULLDUMP 的这一批数据已经发完，结束全量同步
+                printf("FULLDUMP recv finished (no more data from master)\n");
+                break;
+            }
+        }
+
+        // 其他错误：视为 FULLDUMP 失败
+        perror("[fullsync] recv FULLDUMP data");
+        free(buffer);
+        close(fd);
+        return -1;
+    }
+    free(buffer);
+    close(fd);
     return 0;
 }
 
@@ -403,6 +539,51 @@ int main(int argc, char** argv){
     signal(SIGTERM, handle_sigint);
 
     printf("[ebpf_syncd] before ebpf_kern__open_and_load\n"); // DEBUG
+
+    //初始化 slave_ctx + sender 线程
+    g_slave_count = conf.slave_count;
+    if(g_slave_count > MAX_SLAVES){
+        g_slave_count = MAX_SLAVES;
+    }
+
+    for(int i = 0;i < g_slave_count;i++){
+        slave_ctx_t* slave = &g_slaves[i];
+        memset(slave, 0, sizeof(*slave));
+        slave->id = i;
+        slave->fd = -1;
+        slave->port = conf.slaves[i].port;
+        strncpy(slave->ip, conf.slaves[i].ip, sizeof(slave->ip)-1);
+        slave->ip[sizeof(slave->ip)-1] = '\0';
+        slave->running = 1;
+
+        if(msg_queue_init(&slave->queue, EBPFSYNC_QUEUE_CAPACITY) != 0){
+            fprintf(stderr, "msg_queue_init failed for slave %d\n", i);
+            slave->running = 0;
+
+            g_slave_count = i;
+            g_running = 0;
+            goto cleanup;
+        }
+
+        if(pthread_create(&slave->worker, NULL, slave_sender_worker, slave) != 0){
+            perror("pthread_create for slave sender");
+            msg_queue_destroy(&slave->queue);
+            slave->running = 0;
+
+            g_slave_count = i + 1;
+            g_running = 0;
+            goto cleanup;
+        }
+    }
+
+    //先做一次全量同步
+    if(do_fullsync_from_master(&conf) != 0){
+        fprintf(stderr, "do_fullsync_from_master failed\n");
+        g_running = 0;
+        goto cleanup;
+    }
+
+    printf("[ebpf_syncd] Fullsync from master completed\n"); // DEBUG
 
     const char* obj_path = "ebpf_kern.o";
     struct bpf_object* obj = bpf_object__open_file(obj_path, NULL);
@@ -487,42 +668,6 @@ int main(int argc, char** argv){
     }
 
     printf("[ebpf_syncd] Program attached\n"); // DEBUG
-
-    //初始化slave_ctx + 启动发送线程
-    g_slave_count = conf.slave_count;
-    if(g_slave_count > MAX_SLAVES){
-        g_slave_count = MAX_SLAVES;
-    }
-
-    for(int i = 0;i < g_slave_count;i++){
-        slave_ctx_t* slave = &g_slaves[i];
-        memset(slave, 0, sizeof(*slave));
-        slave->id = i;
-        slave->fd = -1;
-        slave->port = conf.slaves[i].port;
-        strncpy(slave->ip, conf.slaves[i].ip, sizeof(slave->ip)-1);
-        slave->ip[sizeof(slave->ip)-1] = '\0';
-        slave->running = 1;
-
-        if(msg_queue_init(&slave->queue, EBPFSYNC_QUEUE_CAPACITY) != 0){
-            fprintf(stderr, "msg_queue_init failed for slave %d\n", i);
-            slave->running = 0;
-
-            g_slave_count = i;
-            g_running = 0;
-            goto cleanup;
-        }
-
-        if(pthread_create(&slave->worker, NULL, slave_sender_worker, slave) != 0){
-            perror("pthread_create for slave sender");
-            msg_queue_destroy(&slave->queue);
-            slave->running = 0;
-
-            g_slave_count = i + 1;
-            g_running = 0;
-            goto cleanup;
-        }
-    }
 
     //创建ringbuffer
     struct ring_buffer* ringbuf = 
