@@ -125,118 +125,38 @@ static int safe_write(int fd, const char *buf, size_t count){
     return 0;
 }
 
-//写入数据结构到文件 子进程专用
-#if 0
-static int write_data_to_tempfile(int fd){
-    //设置子进程信号处理
-    struct sigaction sa;
-    sa.sa_handler = child_signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
+//分块写入命令 
+static int write_command_parts(int fd, const char *cmd_type, const char *key, const char *value){
 
-    int total_commands = 0;
-    time_t start_time = time(NULL);
+    char buf[64];
+    size_t key_len = strlen(key);
+    size_t value_len = strlen(value);
+    size_t cmd_len = strlen(cmd_type);
 
-    printf("Child process: Starting data snapshot write...\n");
-
-    #if ENABLE_ARRAY
-    // 创建数组的本地副本以避免 COW 失效
-    kvs_array_t array_snapshot;
-    memcpy(&array_snapshot, &global_array, sizeof(kvs_array_t));
-    //使用内存映射来安全访问数组
-    for(int i = 0;i < array_snapshot.total; i++){
-        //检查是否收到终止信号
-        if(aof_state.stop) break;
-
-        if(array_snapshot.table[i].key && array_snapshot.table[i].value){
-            char cmd[2048];
-            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                            strlen(array_snapshot.table[i].key), array_snapshot.table[i].key,
-                            strlen(array_snapshot.table[i].value), array_snapshot.table[i].value);
-            if (safe_write(fd, cmd, len) == -1) {
-                perror("Failed to write array data to temp file");
-                return -1;
-            }
-            total_commands++;
-        }
-    }
-    #endif
-
-    #if ENABLE_RBTREE
-    //使用迭代方式非递归 避免栈溢出
-    if(global_rbtree.root != global_rbtree.nil){
-        rbtree_node *stack[1024];
-        int stack_ptr = 0;
-        rbtree_node *current = global_rbtree.root;
-
-        while (current != global_rbtree.nil || stack_ptr > 0) {
-            while (current != global_rbtree.nil) {
-                stack[stack_ptr++] = current;
-                current = current->left;
-            }
-            current = stack[--stack_ptr];
-
-            char cmd[2048];
-            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nRSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                            strlen(current->key), current->key,
-                            strlen((char*)current->value), (char*)current->value);
-            if (safe_write(fd, cmd, len) == -1) {
-                perror("Failed to write rbtree data to temp file");
-                return -1;
-            }
-            total_commands++;
-
-            current = current->right;
-        }  
-    }
-    #endif
-
-    #if ENABLE_HASH
-    for (int i = 0; i < global_hash.max_slots; i++) {
-        if (aof_state.stop) break;
-        
-        hashnode_t *node = global_hash.nodes[i];
-        while (node) {
-            char cmd[2048];
-            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nHSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                            strlen(node->key), node->key,
-                            strlen(node->value), node->value);
-            
-            if (safe_write(fd, cmd, len) == -1) {
-                perror("Failed to write hash data to temp file");
-                return -1;
-            }
-            total_commands++;
-            node = node->next;
-        }
-    }
-    #endif
-
-    #if ENABLE_SKIPTABLE
-    Node *current = global_skiptable.header->forward[0];
-    while (current) {
-        if (aof_state.stop) break;
-        
-        char cmd[2048];
-        int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                        strlen(current->key), current->key,
-                        strlen(current->value), current->value);
-        
-        if (safe_write(fd, cmd, len) == -1) {
-            perror("Failed to write skiplist data to temp file");
-            return -1;
-        }
-        total_commands++;
-        current = current->forward[0];
-    }
-    #endif
-
-    printf("AOF rewrite: wrote %d commands from data structures\n", total_commands);
-    return total_commands;
+    // 1. 写入数组头: *3\r\n
+    if (safe_write(fd, "*3\r\n", 4) == -1) return -1;
+    
+    // 2. 写入命令: $<cmd_len>\r\n<cmd>\r\n
+    int n = snprintf(buf, sizeof(buf), "$%zu\r\n%s\r\n", cmd_len, cmd_type);
+    if (safe_write(fd, buf, n) == -1) return -1;
+    
+    // 3. 写入 Key: $<key_len>\r\n<key>\r\n
+    n = snprintf(buf, sizeof(buf), "$%zu\r\n", key_len);
+    if (safe_write(fd, buf, n) == -1) return -1;
+    if (safe_write(fd, key, key_len) == -1) return -1; // 直接写入 Key 内容
+    if (safe_write(fd, "\r\n", 2) == -1) return -1;
+    
+    // 4. 写入 Value: $<value_len>\r\n<value>\r\n
+    n = snprintf(buf, sizeof(buf), "$%zu\r\n", value_len);
+    if (safe_write(fd, buf, n) == -1) return -1;
+    if (safe_write(fd, value, value_len) == -1) return -1; // 直接写入 Value 内容
+    if (safe_write(fd, "\r\n", 2) == -1) return -1;
+    
+    return 0;
 }
-#else
+
+
+//写入数据结构到文件 子进程专用
 static int write_data_to_tempfile(int fd) {
     // 设置子进程信号处理
     struct sigaction sa;
@@ -302,19 +222,12 @@ static int write_data_to_tempfile(int fd) {
             break;
         }
         
-        size_t key_len = strlen(array_snapshot[i].key);
-        size_t value_len = strlen(array_snapshot[i].value);
-        
-        char cmd[2048];
-        int len = snprintf(cmd, sizeof(cmd), "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                          key_len, array_snapshot[i].key,
-                          value_len, array_snapshot[i].value);
-        
-        if (safe_write(fd, cmd, len) == -1) {
+        if(write_command_parts(fd, "SET", array_snapshot[i].key, array_snapshot[i].value) == -1){
             perror("Failed to write array data to temp file");
-            if (array_snapshot) kvs_free(array_snapshot);
+            if(array_snapshot) kvs_free(array_snapshot);
             return -1;
         }
+
         total_commands++;
     }
     
@@ -322,10 +235,7 @@ static int write_data_to_tempfile(int fd) {
     //printf("Child process: Wrote %d array commands\n", valid_count);
 #endif
 
-#if ENABLE_RBTREE
-    // 红黑树快照处理（使用非递归遍历避免栈溢出）
-    //printf("Child process: Processing rbtree snapshot...\n");
-    
+#if ENABLE_RBTREE 
     if (global_rbtree.root != global_rbtree.nil) {
         // 使用栈进行非递归中序遍历
         rbtree_node *stack[1024];
@@ -357,12 +267,8 @@ static int write_data_to_tempfile(int fd) {
                 char *value_ptr = __atomic_load_n(&current->value, __ATOMIC_ACQUIRE);
                 
                 if (key_ptr && value_ptr) {
-                    char cmd[2048];
-                    int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nRSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                                      strlen(key_ptr), key_ptr,
-                                      strlen(value_ptr), value_ptr);
-                    
-                    if (safe_write(fd, cmd, len) == -1) {
+                    // 使用 write_command_parts 替代原有的 snprintf
+                    if (write_command_parts(fd, "RSET", key_ptr, value_ptr) == -1) {
                         perror("Failed to write rbtree data to temp file");
                         return -1;
                     }
@@ -380,50 +286,6 @@ static int write_data_to_tempfile(int fd) {
 #if ENABLE_HASH
     //printf("Child process: Processing hash table snapshot...\n");
     int hash_commands = 0;
-#if 0
-    for (int i = 0; i < global_hash.max_slots; i++) {
-        // 超时检查
-        if (time(NULL) - start_time > 290) {
-            fprintf(stderr, "Child process: Rewrite timeout approaching during hash processing\n");
-            break;
-        }
-        
-        // 原子读取链表头指针
-        hashnode_t *node = __atomic_load_n(&global_hash.nodes[i], __ATOMIC_ACQUIRE);
-        
-        while (node) {
-            // 原子读取当前节点的键值
-            // char *key_ptr = __atomic_load_n(&node->key, __ATOMIC_ACQUIRE);
-            // char *value_ptr = __atomic_load_n(&node->value, __ATOMIC_ACQUIRE);
-
-            char key_buf[MAX_KEY_LEN];
-            char value_buf[MAX_VALUE_LEN];
-
-            memcpy(key_buf, node->key, MAX_KEY_LEN);
-            key_buf[MAX_KEY_LEN - 1] = '\0';
-
-            memcpy(value_buf, node->value, MAX_VALUE_LEN);
-            value_buf[MAX_VALUE_LEN - 1] = '\0';
-            
-            if (key_buf[0] != '\0' && value_buf[0] != '\0') {
-                char cmd[2048];
-                int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nHSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                                  strlen(key_buf), key_buf,
-                                  strlen(value_buf), value_buf);
-                
-                if (safe_write(fd, cmd, len) == -1) {
-                    perror("Failed to write hash data to temp file");
-                    return -1;
-                }
-                hash_commands++;
-                total_commands++;
-            }
-            
-            // 原子读取下一个节点
-            node = __atomic_load_n(&node->next, __ATOMIC_ACQUIRE);
-        }
-    }
-#else
     for (int i = 0; i < global_hash.max_slots; i++) {
         if (time(NULL) - start_time > 290) {
             // fprintf(stderr, "Child process: Rewrite timeout approaching during hash processing\n");
@@ -435,23 +297,13 @@ static int write_data_to_tempfile(int fd) {
             continue; // 只处理有效槽
         }
 
-        char key_buf[MAX_KEY_LEN];
-        char value_buf[MAX_VALUE_LEN];
+        // 直接使用 slot 中的指针/数组，避免拷贝到栈上的固定大小缓冲区
+        // 这样可以支持任意长度的 Key/Value (前提是 slot->key/value 是合法的 C 字符串)
+        char *key_ptr = slot->key;
+        char *value_ptr = slot->value;
 
-        memcpy(key_buf, slot->key, MAX_KEY_LEN);
-        key_buf[MAX_KEY_LEN - 1] = '\0';
-
-        memcpy(value_buf, slot->value, MAX_VALUE_LEN);
-        value_buf[MAX_VALUE_LEN - 1] = '\0';
-
-        if (key_buf[0] != '\0' && value_buf[0] != '\0') {
-            char cmd[2048];
-            int len = snprintf(cmd, sizeof(cmd),
-                               "*3\r\n$4\r\nHSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                               strlen(key_buf), key_buf,
-                               strlen(value_buf), value_buf);
-
-            if (safe_write(fd, cmd, len) == -1) {
+        if (key_ptr && value_ptr && key_ptr[0] != '\0' && value_ptr[0] != '\0') {
+            if (write_command_parts(fd, "HSET", key_ptr, value_ptr) == -1) {
                 perror("Failed to write hash data to temp file");
                 return -1;
             }
@@ -461,7 +313,7 @@ static int write_data_to_tempfile(int fd) {
     }
 #endif
     //printf("Child process: Wrote %d hash commands\n", hash_commands);
-#endif
+
 
 #if ENABLE_SKIPTABLE
     //printf("Child process: Processing skiplist snapshot...\n");
@@ -478,14 +330,10 @@ static int write_data_to_tempfile(int fd) {
                 break;
             }
             
-            // 直接访问节点的键值（数组，不需要原子操作）
-            if (current->key[0] != '\0' && current->value[0] != '\0') {
-                char cmd[2048];
-                int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                                  strlen(current->key), current->key,
-                                  strlen(current->value), current->value);
-                
-                if (safe_write(fd, cmd, len) == -1) {
+            // 直接访问节点的键值
+            if (current->key && current->value && current->key[0] != '\0' && current->value[0] != '\0') {
+                // 使用 write_command_parts 替代原有的 snprintf
+                if (write_command_parts(fd, "SSET", current->key, current->value) == -1) {
                     perror("Failed to write skiplist data to temp file");
                     return -1;
                 }
@@ -510,7 +358,7 @@ static int write_data_to_tempfile(int fd) {
     
     return total_commands;
 }
-#endif
+
 
 //等待子进程完成 包含超时机制
 static int wait_for_child_with_timeout(pid_t pid, int timeout_secondes){
@@ -587,6 +435,34 @@ static int atomic_replace_file(const char *temp_file, const char *final_file){
 
     // 删除备份文件
     unlink(backup_file);
+    return 0;
+}
+
+
+// 重写完成后：关闭旧 fp 并重新打开新 AOF 文件（否则可能继续写到旧 inode，重启丢增量）
+// 需要在持有 aof_state.mutex 的情况下调用
+static int aof_reopen_after_rewrite_locked(void){
+    if(aof_state.fp){
+        fflush(aof_state.fp);
+        fclose(aof_state.fp);
+        aof_state.fp = NULL;
+    }
+
+    aof_state.fp = fopen(aof_state.filename, "a");
+    if(!aof_state.fp){
+        perror("Failed to reopen AOF file after rewrite");
+        return -1;
+    }
+
+    fseek(aof_state.fp, 0, SEEK_END);
+    long pos = ftell(aof_state.fp);
+    if(pos < 0){
+        perror("ftell after reopen AOF");
+        return -1;
+    }
+
+    aof_state.current_size = (off_t)pos;
+    aof_state.rewrite_base_size = aof_state.current_size;
     return 0;
 }
 
@@ -772,7 +648,8 @@ void aof_rewrite_background(void){
         // 原子替换文件
         if (atomic_replace_file(aof_state.temp_filename, aof_state.filename) == 0) {
             pthread_mutex_lock(&aof_state.mutex);
-            aof_state.rewrite_base_size = aof_state.current_size;
+            // aof_state.rewrite_base_size = aof_state.current_size;
+            (void)aof_reopen_after_rewrite_locked(); // 重新打开新文件
             pthread_mutex_unlock(&aof_state.mutex);
             // printf("AOF rewrite completed successfully (thread mode)\n");
         } else {
@@ -871,7 +748,8 @@ void aof_rewrite_background(void){
             if (atomic_replace_file(aof_state.temp_filename, aof_state.filename) == 0) {
                 //更新基准大小
                 pthread_mutex_lock(&aof_state.mutex);
-                aof_state.rewrite_base_size = aof_state.current_size;
+                // aof_state.rewrite_base_size = aof_state.current_size;
+                (void)aof_reopen_after_rewrite_locked(); // 重新打开新文件
                 pthread_mutex_unlock(&aof_state.mutex);
 
                 // printf("AOF rewrite completed successfully\n");

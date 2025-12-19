@@ -42,6 +42,8 @@ typedef struct{
     conn_extension_t* ctx;// 对于 ACCEPT，ctx 只存 fd；对于 READ/WRITE，是连接上下文
 } io_uring_op_t;
 
+extern kvs_config_t g_cfg;
+
 //工具函数
 static int p_set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -123,7 +125,7 @@ static int proactor_session_handler(resp_parser_t* parser,
     char* cmd_name = parser->tokens[0];
 
     // 单独处理 REPLSYNC
-    if (strcasecmp(cmd_name, "REPLSYNC") == 0) {
+    if (g_cfg.sync_mode == KVS_SYNC_EBPF && strcasecmp(cmd_name, "REPLSYNC") == 0) {
         extern distributed_config_t global_dist_config;
 
         const char *ok_resp  = "+OK\r\n";

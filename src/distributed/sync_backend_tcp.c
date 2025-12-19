@@ -23,8 +23,105 @@ static pthread_t   g_tcp_thread;
 
 extern distributed_config_t global_dist_config;
 
+typedef struct {
+    int sockfd;
+    struct sockaddr_in addr;
+} slave_target_t;
 
+#if 1
 // TCP 后端广播线程：从 g_tcp_queue 取出消息，发给所有 slave
+static void *tcp_backend_worker(void *arg)
+{
+    (void)arg;
+    // printf("[SYNC_TCP] backend worker started\n");
+
+    while (g_tcp_running) {
+        void *item = NULL;
+        int r = msg_queue_pop(&g_tcp_queue, &item);
+        if (r != 0) {
+            //队列关闭或出错
+            usleep(10);
+            continue;
+        }
+        if (!item) continue;
+
+        sync_msg_t *msg = (sync_msg_t*)item;
+
+        int slave_count_snapshot = 0;
+        slave_target_t* slaves_snapshot = NULL;
+        pthread_mutex_lock(&global_dist_config.slave_mutex);
+        if (global_dist_config.slave_count > 0) {
+            slave_count_snapshot = global_dist_config.slave_count;
+            slaves_snapshot = (slave_target_t *)kvs_malloc(
+                sizeof(slave_target_t) * slave_count_snapshot);
+
+            if (slaves_snapshot) {
+                for (int i = 0; i < slave_count_snapshot; ++i) {
+                    slave_info_t *slave = &global_dist_config.slaves[i];
+                    slaves_snapshot[i].sockfd = slave->sockfd;
+                    slaves_snapshot[i].addr   = slave->addr; // sockaddr_in 直接拷贝
+                }
+            } else {
+                fprintf(stderr,
+                        "[SYNC_TCP] WARNING: alloc slaves_snapshot failed, "
+                        "fallback to dropping this msg\n");
+            }
+        }
+        pthread_mutex_unlock(&global_dist_config.slave_mutex);
+
+        /* ========= 2. 在锁外向各个 slave 发送数据 ========= */
+        for (int i = 0; i < slave_count_snapshot; ++i) {
+            slave_target_t *t = &slaves_snapshot[i];
+
+            size_t total_sent = 0;
+            while (total_sent < msg->len) {
+                ssize_t n = send(t->sockfd,
+                                 msg->payload + total_sent,
+                                 msg->len - total_sent,
+                                 MSG_NOSIGNAL);
+
+                if (n < 0) {
+                    int err = errno;
+                    fprintf(stderr,
+                            "[SYNC_TCP] send to slave %s:%d failed after "
+                            "%zu/%zu bytes: %s\n",
+                            inet_ntoa(t->addr.sin_addr),
+                            ntohs(t->addr.sin_port),
+                            total_sent, msg->len,
+                            strerror(err));
+                    // 出错就放弃该 slave，本线程不做清理，交给其它逻辑处理
+                    break;
+                }
+
+                if (n == 0) {
+                    fprintf(stderr,
+                            "[SYNC_TCP] send returned 0 to slave %s:%d "
+                            "(sent=%zu/%zu), closing stream\n",
+                            inet_ntoa(t->addr.sin_addr),
+                            ntohs(t->addr.sin_port),
+                            total_sent, msg->len);
+                    break;
+                }
+
+                total_sent += (size_t)n;
+            }
+
+            // 需要的话可以在这里加统计或 debug 日志
+            // fprintf(stderr, "[SYNC_TCP] worker sent %zu/%zu bytes to slave %s:%d\n",
+            //         total_sent, msg->len,
+            //         inet_ntoa(t->addr.sin_addr),
+            //         ntohs(t->addr.sin_port));
+        }
+
+        kvs_free(slaves_snapshot);
+
+        kvs_free(msg);
+    }
+
+    // printf("[SYNC_TCP] backend worker stopped\n");
+    return NULL;
+}
+#else
 static void *tcp_backend_worker(void *arg)
 {
     (void)arg;
@@ -92,11 +189,13 @@ static void *tcp_backend_worker(void *arg)
     return NULL;
 }
 
+#endif
+
 // sync_backend 接口（TCP 版本）
 int sync_backend_init(int sync_port){
     (void)sync_port; // TCP backend 不需要额外端口配置
 
-    if (msg_queue_init(&g_tcp_queue, 4096) != 0) {
+    if (msg_queue_init(&g_tcp_queue, 1048576) != 0) {
         fprintf(stderr, "[SYNC_TCP] msg_queue_init failed\n");
         return -1;
     }

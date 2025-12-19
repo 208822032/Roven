@@ -14,10 +14,19 @@
 #include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/tcp.h>
+#include <netinet/tcp.h>
+#include <stdatomic.h>
+#include <time.h>
 
 
 #include "msg_queue.h"
+#include "tx_batcher.h"
+#include "kvs_memory.h"
+#include "kvs_config.h"
 #include <pthread.h>
+extern kvs_config_t g_cfg;
+
 
 //消息队列成员
 typedef struct ebpf_sync_msg {
@@ -39,6 +48,10 @@ gcc -O2 -g ebpf_syncd.c ../utils/msg_queue.c  -o ebpf_syncd -lbpf -lelf -lz -lpt
 
 #define MAX_PAYLOAD 65535 //1MB
 #define CHUNK_SIZE 2048
+
+#define TX_BUF_SIZE (128 * 1024)
+// #define FLUSH_NS (300ull * 1000ull)
+#define FLUSH_NS (10ull * 1000ull * 1000ull)   // 10ms
 
 struct event {
     __u32 pid;
@@ -80,6 +93,9 @@ typedef struct slave_ctx {
     msg_queue_t queue;
     pthread_t worker;
     volatile int running;
+
+    struct tx_batcher txb;
+    unsigned char tx_buf[TX_BUF_SIZE];
 } slave_ctx_t;
 
 
@@ -96,6 +112,53 @@ static void handle_sigint(int sig){
     g_stop = 1;
     g_running = 0;
 }
+
+struct send_stats {
+    atomic_ulong send_calls;      // send() 调用次数（含 send_all 内部每次）
+    atomic_ulong send_bytes;      // send() 实际发出的字节数累计
+    atomic_ulong send_all_calls;  // send_all() 被调用次数
+    atomic_ulong send_all_bytes;  // send_all() 期望发送的字节数累计
+    atomic_ulong eagain_cnt;      // EAGAIN/EWOULDBLOCK 次数
+    atomic_ulong eintr_cnt;       // EINTR 次数
+    atomic_ulong retry_loops;     // send_all while 循环迭代次数累计
+    atomic_ulong fail_cnt;        // send 失败（非EINTR/EAGAIN）次数
+};
+
+static struct send_stats g_stats;
+
+static inline unsigned long atomic_xchg_ul(atomic_ulong *v, unsigned long nv) {
+    return atomic_exchange(v, nv);
+}
+
+static void* stats_printer_thread(void* arg) {
+    (void)arg;
+    while (1) {
+        sleep(1);
+
+        unsigned long sc  = atomic_xchg_ul(&g_stats.send_calls, 0);
+        unsigned long sb  = atomic_xchg_ul(&g_stats.send_bytes, 0);
+        unsigned long sac = atomic_xchg_ul(&g_stats.send_all_calls, 0);
+        unsigned long sab = atomic_xchg_ul(&g_stats.send_all_bytes, 0);
+        unsigned long ea  = atomic_xchg_ul(&g_stats.eagain_cnt, 0);
+        unsigned long ei  = atomic_xchg_ul(&g_stats.eintr_cnt, 0);
+        unsigned long rl  = atomic_xchg_ul(&g_stats.retry_loops, 0);
+        unsigned long fc  = atomic_xchg_ul(&g_stats.fail_cnt, 0);
+
+        double avg_send = sc ? (double)sb / (double)sc : 0.0;
+        double avg_all  = sac ? (double)sab / (double)sac : 0.0;
+
+        fprintf(stderr,
+            "[stats] send_all: calls=%lu bytes=%lu avg=%.1f | "
+            "send(): calls=%lu bytes=%lu avg=%.1f | "
+            "EAGAIN=%lu EINTR=%lu loops=%lu fail=%lu\n",
+            sac, sab, avg_all,
+            sc, sb, avg_send,
+            ea, ei, rl, fc
+        );
+    }
+    return NULL;
+}
+
 
 static int load_daemon_conf(const char* path, daemon_conf_t* conf){
     
@@ -195,6 +258,7 @@ static int send_replsync_handshake(int slave_fd){
 }
 
 //要求发送必须保证完整发送
+#if 0
 static int send_all(int fd, const void* buf, size_t len){
     const char* p = buf;
     size_t left = len;
@@ -218,6 +282,58 @@ static int send_all(int fd, const void* buf, size_t len){
         left -= sent;
     }
     return 0;
+}
+#else
+static int send_all(int fd, const void* buf, size_t len) {
+    atomic_fetch_add(&g_stats.send_all_calls, 1);
+    atomic_fetch_add(&g_stats.send_all_bytes, (unsigned long)len);
+
+    const char* p = (const char*)buf;
+    size_t left = len;
+
+    while (left > 0) {
+        atomic_fetch_add(&g_stats.retry_loops, 1);
+
+        ssize_t sent = send(fd, p, left, MSG_NOSIGNAL);
+        if (sent < 0) {
+            if (errno == EINTR) {
+                atomic_fetch_add(&g_stats.eintr_cnt, 1);
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                atomic_fetch_add(&g_stats.eagain_cnt, 1);
+                // 如果是阻塞 socket，这里一般不会出现；出现说明你 socket 可能被设成非阻塞了
+                usleep(1000);
+                continue;
+            }
+            atomic_fetch_add(&g_stats.fail_cnt, 1);
+            return -1;
+        }
+        if (sent == 0) {
+            atomic_fetch_add(&g_stats.fail_cnt, 1);
+            return -1;
+        }
+
+        atomic_fetch_add(&g_stats.send_calls, 1);
+        atomic_fetch_add(&g_stats.send_bytes, (unsigned long)sent);
+
+        p += sent;
+        left -= (size_t)sent;
+    }
+    return 0;
+}
+#endif
+
+static inline uint64_t now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static int txb_send_fn(void *ctx, const void *buf, size_t len) {
+    slave_ctx_t *s = (slave_ctx_t *)ctx;
+    if (s->fd < 0) return -1;
+    return send_all(s->fd, buf, len);
 }
 
 //为slave建立TCP连接并发送REPLSYNC
@@ -244,6 +360,34 @@ static int connect_sand_handshake_slave(slave_ctx_t* ctx){
         return -1;
     }
 
+    int mss = 1460;
+    // 设置 TCP MSS
+    if (setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss, sizeof(mss)) < 0) {
+        perror("Failed to set TCP_MAXSEG");
+        return -1;
+    }
+
+    int enable = 1;
+    
+    // 开启 TCP_NODELAY（禁用 Nagle 算法）
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+        perror("Failed to set TCP_NODELAY");
+    }
+
+    // 3) 验证真实 MSS
+    int mss_cur = -1;
+    socklen_t sl = sizeof(mss_cur);
+    if (getsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss_cur, &sl) < 0) {
+        perror("getsockopt TCP_MAXSEG");
+    }
+
+    // 4) 验证 TCP_NODELAY
+    int nd = 0;
+    sl = sizeof(nd);
+    if (getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, &sl) == 0) {
+        fprintf(stderr, "[slave] TCP_NODELAY=%d\n", nd);
+    }
+
     printf("Connected to slave %s:%d\n", ctx->ip, ctx->port);
 
     if(send_replsync_handshake(fd) < 0){
@@ -259,6 +403,7 @@ static int connect_sand_handshake_slave(slave_ctx_t* ctx){
     return 0;
 }
 
+#if 0
 //发送线程 每个slave对应一个
 static void* slave_sender_worker(void* arg){
     slave_ctx_t* ctx = (slave_ctx_t* )arg;
@@ -295,7 +440,7 @@ static void* slave_sender_worker(void* arg){
             ctx->fd = -1;
         }
 
-        free(msg);
+        // free(msg);
     }
 
     //退出前清理队列剩余数据
@@ -307,6 +452,86 @@ static void* slave_sender_worker(void* arg){
 
     return NULL;
 }
+#else
+static void* slave_sender_worker(void* arg){
+    slave_ctx_t* ctx = (slave_ctx_t*)arg;
+
+    // 确保连接
+    if (ctx->fd < 0) {
+        if (connect_sand_handshake_slave(ctx) < 0) {
+            // 连接失败也别退出线程：后面继续尝试重连
+            ctx->fd = -1;
+        }
+    }
+
+    // 初始化 batcher（buf 由 ctx 提供，无 malloc）
+    tx_batcher_init(&ctx->txb,
+                    ctx->tx_buf, sizeof(ctx->tx_buf),
+                    FLUSH_NS,
+                    txb_send_fn, ctx);
+    
+    int idle = 0;
+
+    while (g_running && ctx->running) {
+        void* item = NULL;
+
+        if (msg_queue_pop(&ctx->queue, &item) != 0) {
+            idle++;
+
+            // 队列空时，降频检查 flush（避免把小尾巴刷得太勤）
+            if ((idle & 0xF) == 0) { // 每16次空转检查一次
+                if (ctx->fd >= 0) {
+                    if (tx_batcher_maybe_flush(&ctx->txb) < 0) {
+                        close(ctx->fd);
+                        ctx->fd = -1;
+                    }
+                }
+            }
+            usleep(0); // 空转别太猛
+            continue;
+        }
+
+        idle = 0;
+
+        ebpf_sync_msg_t* msg = (ebpf_sync_msg_t*)item;
+        if (!msg) continue;
+
+        // 确保连接：重连不成功就别丢 msg，拿着它等下一轮
+        while ((g_running && ctx->running) && ctx->fd < 0) {
+            if (connect_sand_handshake_slave(ctx) == 0) break;
+            usleep(500); // backoff
+        }
+        // 确保连接可用
+        if (ctx->fd < 0) {
+            kvs_free(msg);
+            break;
+        }
+
+        // 只做字节聚合（不解析）
+        if (tx_batcher_append(&ctx->txb, msg->data, msg->len) < 0) {
+            // 发送失败：断开，等待重连
+            perror("tx_batcher_append/send");
+            close(ctx->fd);
+            ctx->fd = -1;
+        }
+
+        kvs_free(msg);
+    }
+
+    // 退出前尽量发掉尾巴（可选重连）
+    if (ctx->fd < 0) (void)connect_sand_handshake_slave(ctx);
+    if (ctx->fd >= 0) (void)tx_batcher_flush(&ctx->txb);
+
+    // 清理队列剩余消息
+    void* item = NULL;
+    while (msg_queue_pop(&ctx->queue, &item) == 0) {
+        ebpf_sync_msg_t* msg = (ebpf_sync_msg_t*)item;
+        if (msg) kvs_free(msg);
+    }
+    return NULL;
+}
+
+#endif
 
 //广播函数
 static void broadcast_to_all_slaves(const void* data, size_t len){
@@ -318,7 +543,7 @@ static void broadcast_to_all_slaves(const void* data, size_t len){
         if(!s->running) continue;
 
         ebpf_sync_msg_t* msg = 
-            (ebpf_sync_msg_t* )malloc(sizeof(ebpf_sync_msg_t) + len);
+            (ebpf_sync_msg_t* )kvs_malloc(sizeof(ebpf_sync_msg_t) + len);
         if(!msg){
             fprintf(stderr, "Failed to allocate ebpf_sync_msg_t for slave %d\n",
                     s->id);
@@ -330,7 +555,7 @@ static void broadcast_to_all_slaves(const void* data, size_t len){
 
         if(msg_queue_push(&s->queue, msg) != 0){
             fprintf(stderr, "msg_queue_push failed for slave %d\n", s->id);
-            free(msg);
+            kvs_free(msg);
             //当前队列已满
         }
     }
@@ -338,6 +563,7 @@ static void broadcast_to_all_slaves(const void* data, size_t len){
 }
 
 //建立与从节点的连接
+#if 0
 static int connect_slave(const struct daemon_conf* conf){
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -360,15 +586,45 @@ static int connect_slave(const struct daemon_conf* conf){
         close(fd);
         return -1;
     }
+    int mss = 1460;
+    // 设置 TCP MSS
+    if (setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss, sizeof(mss)) < 0) {
+        perror("Failed to set TCP_MAXSEG");
+        return -1;
+    }
+
+    int enable = 1;
+    
+    // 开启 TCP_NODELAY（禁用 Nagle 算法）
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) < 0) {
+        perror("Failed to set TCP_NODELAY");
+    }
+
+    // 3) 验证真实 MSS
+    int mss_cur = -1;
+    socklen_t sl = sizeof(mss_cur);
+    if (getsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss_cur, &sl) < 0) {
+        perror("getsockopt TCP_MAXSEG");
+    }
+
+    // 4) 验证 TCP_NODELAY
+    int nd = 0;
+    sl = sizeof(nd);
+    if (getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, &sl) == 0) {
+        fprintf(stderr, "[slave] TCP_NODELAY=%d\n", nd);
+    }
+
     printf("Connected to slave %s:%d\n", conf->slave_ip, conf->slave_port);
     return fd;
 }
+#endif
 
 //ringbuf事件处理回调 增量同步
+#if 0
 static int handle_event(void* ctx, void* data, size_t data_sz){
     (void)ctx;
     const struct event* e = data;
-
+    
     if(data_sz < sizeof(struct event)){
         fprintf(stderr, "Invalid event size: %zu\n", data_sz);
         return -1;
@@ -388,6 +644,34 @@ static int handle_event(void* ctx, void* data, size_t data_sz){
 
     return 0;
 }
+#else
+static int handle_event(void* ctx, void* data, size_t data_sz){
+    (void)ctx;
+
+    const size_t header_size = offsetof(struct event, data);
+    if (data_sz < header_size) {
+        fprintf(stderr, "Invalid event size (no header): %zu\n", data_sz);
+        return 0; // 不要返回 -1，避免 ring_buffer__poll 直接失败退出
+    }
+
+    const struct event* e = (const struct event*)data;
+
+    size_t payload_sz = data_sz - header_size;
+    if (payload_sz > CHUNK_SIZE)
+        payload_sz = CHUNK_SIZE;
+
+    size_t len = (size_t)e->len;
+    if (len > payload_sz)
+        len = payload_sz;
+
+    if (len == 0)
+        return 0;
+
+    // 直接原样广播（RESP 粘包/拆包由 slave 端解析器处理）
+    broadcast_to_all_slaves(e->data, len);
+    return 0;
+}
+#endif
 
 //从主节点做一次全量同步
 //连接主节点
@@ -462,7 +746,7 @@ static int do_fullsync_from_master(const daemon_conf_t* conf){
 
     //接收数据并广播
     int buf_size = conf->max_payload > 0 ? conf->max_payload : MAX_PAYLOAD;
-    unsigned char *buffer = (unsigned char *)malloc(buf_size);
+    unsigned char *buffer = (unsigned char *)kvs_malloc(buf_size);
     if (!buffer) {
         fprintf(stderr, "[fullsync] malloc(%d) failed\n", buf_size);
         close(fd);
@@ -506,16 +790,19 @@ static int do_fullsync_from_master(const daemon_conf_t* conf){
 
         // 其他错误：视为 FULLDUMP 失败
         perror("[fullsync] recv FULLDUMP data");
-        free(buffer);
+        kvs_free(buffer);
         close(fd);
         return -1;
     }
-    free(buffer);
+    kvs_free(buffer);
     close(fd);
     return 0;
 }
 
 int main(int argc, char** argv){
+    // 初始化全局配置为默认值（g_cfg 在 kvs_globals.c 中定义）
+	kvs_config_init_default(&g_cfg);
+    mem_init();
 
     const char* conf_path = "../../config/ebpf_sync.conf";
     if(argc > 1) conf_path = argv[1];
@@ -585,7 +872,17 @@ int main(int argc, char** argv){
 
     printf("[ebpf_syncd] Fullsync from master completed\n"); // DEBUG
 
+
     const char* obj_path = "ebpf_kern.o";
+
+    // 增加路径自动查找逻辑：
+    // 如果当前目录下找不到，尝试去 src/eBPF 下找（适配从项目根目录运行的情况）
+    if (access(obj_path, F_OK) != 0) {
+        if (access("src/eBPF/ebpf_kern.o", F_OK) == 0) {
+            obj_path = "src/eBPF/ebpf_kern.o";
+        }
+    }
+
     struct bpf_object* obj = bpf_object__open_file(obj_path, NULL);
     if(libbpf_get_error(obj)){
         int err = -libbpf_get_error(obj);
@@ -669,6 +966,10 @@ int main(int argc, char** argv){
 
     printf("[ebpf_syncd] Program attached\n"); // DEBUG
 
+    // pthread_t tid_stats;
+    // pthread_create(&tid_stats, NULL, stats_printer_thread, NULL);
+    // pthread_detach(tid_stats);
+
     //创建ringbuffer
     struct ring_buffer* ringbuf = 
         ring_buffer__new(events_map_fd, handle_event, NULL, NULL);
@@ -679,12 +980,11 @@ int main(int argc, char** argv){
     }else{
         printf("[ebpf_syncd] Ring buffer created\n"); // DEBUG
         while(!stop && g_running){
-            int pret = ring_buffer__poll(ringbuf, 100 /* timeout ms */);
+            int pret = ring_buffer__poll(ringbuf, 0);
             if(pret < 0 && pret != -EINTR){
                 fprintf(stderr, "Error polling ring buffer: %d\n", pret);
                 break;
             }
-            // else pret == 0: timeout, just continue
         }
     }
 
@@ -723,6 +1023,7 @@ cleanup:
 
     bpf_link__destroy(link);
     bpf_object__close(obj);
+    mem_destroy();
 
     printf("[ebpf_syncd] Exited cleanly\n");
     return 0;

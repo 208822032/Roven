@@ -171,12 +171,15 @@ int aof_init(const char *filename, int fsync_mode){
 
         // 标记为已初始化
         aof_state.initialized = 1;
+        aof_state.loading = 0;
         return 0;
 }
 
 //追加函数
 void aof_append(int argc, char **argv){
     if(!aof_state.fp) return;
+    if(!aof_state.initialized) return;
+    if(aof_state.loading) return; //正在加载AOF时不记录
 
     // Proactor 模式下禁用 COW 保护机制，避免阻塞异步 I/O
     #if (NETWORK_SELECT != NETWORK_PROACTOR)
@@ -223,29 +226,37 @@ void aof_append(int argc, char **argv){
 
     /* 如果单条命令过大，直接写入文件，绕过内存缓冲区 */
     if (estimated_len > aof_state.buf_size / 2) {
-        FILE *fp = aof_state.fp;
-        if (!fp) return;
-
-        /* 先把现有缓冲区刷盘，以保证顺序 */
+        //先刷盘
         aof_fsync(0);
+
+        pthread_mutex_lock(&aof_state.mutex);
+        FILE *fp = aof_state.fp;
+        if (!fp) {
+            pthread_mutex_unlock(&aof_state.mutex);
+            return;
+        }
 
         /* 直接向文件写 RESP 编码，避免占用大缓冲区 */
         if (fprintf(fp, "*%d\r\n", argc) < 0) {
             perror("Failed to write big AOF command header");
+            pthread_mutex_unlock(&aof_state.mutex);
             return;
         }
         for (int i = 0; i < argc; i++) {
             size_t arglen = strlen(argv[i]);
             if (fprintf(fp, "$%zu\r\n", arglen) < 0) {
                 perror("Failed to write big AOF arg header");
+                pthread_mutex_unlock(&aof_state.mutex);
                 return;
             }
             if (fwrite(argv[i], 1, arglen, fp) != arglen) {
                 perror("Failed to write big AOF arg body");
+                pthread_mutex_unlock(&aof_state.mutex);
                 return;
             }
             if (fwrite("\r\n", 1, 2, fp) != 2) {
                 perror("Failed to write big AOF arg CRLF");
+                pthread_mutex_unlock(&aof_state.mutex);
                 return;
             }
         }
@@ -259,6 +270,7 @@ void aof_append(int argc, char **argv){
         }
 
         aof_state.current_size += (off_t)estimated_len;
+        pthread_mutex_unlock(&aof_state.mutex);
         return;
     }
 
@@ -290,7 +302,7 @@ void aof_append(int argc, char **argv){
     //有无重写 对加载的时间
     int should_rewrite = 0;
     off_t growth = aof_state.current_size - aof_state.rewrite_base_size;
-    if(aof_state.current_size >= AOF_REWRITE_MIN_SIZE &&
+    if(!aof_state.loading && !aof_state.pause_rewrite && aof_state.current_size >= AOF_REWRITE_MIN_SIZE &&
         growth >= AOF_REWRITE_MIN_GROWTH &&
         growth >= (aof_state.rewrite_base_size * AOF_REWRITE_PERCENTAGE/100)&&
         !aof_state.rewrite_in_progress){
@@ -367,6 +379,10 @@ int aof_load(const char *filename){
         perror("Failed to open AOF file for reading");
         return -1;
     }
+
+    //进入load状态
+    aof_state.loading = 1;
+    aof_state.pause_rewrite = 1;
 
     resp_parser_t parser;
     resp_parser_init(&parser);
@@ -520,6 +536,24 @@ int aof_load(const char *filename){
     if (buf) kvs_free(buf);
     resp_parser_free(&parser);
 
+    //退出load状态 对齐aof状态
+    // 由于 load 期不会再 append，current_size 应该仍等于 init 时的真实文件大小
+    // 但为了防御未来代码改动，最好重新 stat 一次对齐：
+    // off_t real_size = get_file_size(filename);
+    struct stat st;
+    off_t real_size = 0;
+    if (stat(filename, &st) == 0) {
+        real_size = st.st_size;
+    }
+
+    pthread_mutex_lock(&aof_state.mutex);
+    aof_state.current_size = real_size;
+    aof_state.rewrite_base_size = real_size;  //  启动后不应立刻 rewrite
+    pthread_mutex_unlock(&aof_state.mutex);
+
+    aof_state.loading = 0;
+    aof_state.pause_rewrite = 0;
+
     set_sync_context(0);
     return 0;
 }
@@ -544,10 +578,13 @@ void aof_free(void){
     //最后进行一次同步
     aof_fsync(1);
 
+    //关闭 fp也必须在同一mutex下
+    pthread_mutex_lock(&aof_state.mutex);
     if (aof_state.fp) {
         fclose(aof_state.fp);
         aof_state.fp = NULL;
     }
+    pthread_mutex_unlock(&aof_state.mutex);
 
     if (aof_state.filename) {
         free(aof_state.filename);
@@ -608,5 +645,7 @@ void aof_background_fsync(void *arg){
     }
 }
 
-
+int aof_is_loading(void){
+    return aof_state.loading;
+}
 

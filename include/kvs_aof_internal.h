@@ -26,6 +26,9 @@ typedef struct aof_state_s {
     pthread_t bgthread;        // 后台线程ID
     volatile int stop;         // 停止标志
 
+    int loading; //正在AOF load/replay
+    int pause_rewrite; //暂停rewrite触发
+
     // 重写相关字段
     int rewrite_in_progress;   // 重写进行中标志
     pid_t rewrite_child_pid;   // 重写子进程ID

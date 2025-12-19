@@ -143,6 +143,14 @@ void* slave_sync_thread(void *arg){
     }
 #endif
 
+    char tmp[16];
+    while (1) {
+        ssize_t n = recv(sockfd, tmp, sizeof(tmp), 0);
+        if (n <= 0) {
+            break;
+        }
+    }
+
     close(sockfd);
 
     // 从全局 slave 列表中移除
@@ -303,7 +311,7 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
             return -1;
         }
 
-        // printf("[DISTRIBUTED] Running as MASTER, sync port: %d", sync_port);
+        printf("[DISTRIBUTED] Running as MASTER, sync port: %d\n", sync_port);
 
     }else{
         //从节点
@@ -437,7 +445,7 @@ void slave_connect_master(){
 
             set_sync_context(1); // 标记这是主从同步写，避免回写 master
 
-    //         printf("[SLAVE] decoded msg: op=%d key_len=%zu val_len=%zu\n",
+            // printf("[SLAVE] decoded msg: op=%d key_len=%zu val_len=%zu\n",
     //    op, klen, vlen);
 
             switch(op){

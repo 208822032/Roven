@@ -1,63 +1,97 @@
-#include "nty_coroutine.h"
+// ntyco_server.c
 
-#include <arpa/inet.h>
-#include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#include <netinet/tcp.h>
+#include <stdlib.h>
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <fcntl.h>
+#include <poll.h>
+
+#include "nty_coroutine.h"   
+#include "net_session.h"     
 #include "kvs_api.h"
 #include "resp_protocol.h"
 #include "distributed.h"
-#include "net_session.h" // 通用会话层
 
-// 单次发送上限：防止一轮循环把时间都耗在 send 上
-#define NTYCO_MAX_SEND_CHUNK   (64 * 1024)
-// 发送缓冲的“未发送”数据上限：简单背压策略
-#define NTYCO_MAX_OUTBUF       (16 * 1024 * 1024)
-
-static nty_coroutine *co = NULL;
+extern int g_shutdown_flag;  
 
 typedef int (*msg_handler)(char **tokens, int count, char *response);
-static msg_handler kvs_handler;
+static msg_handler kvs_handler = NULL;
 
-extern int g_shutdown_flag;
+// 每个连接的上下文
+typedef struct ntyco_conn_ctx {
+    int fd;
 
-// 管理每个连接的解析状态
-typedef struct {
-    int fd;                     // 连接描述符
-    net_session_t session;      // 通用会话层：封装 recv/send 缓冲区和 RESP 解析器
-    size_t send_offset;         // 发送偏移量
-    int is_replication;         // 是否是复制连接
+    net_session_t session;   // 通用会话：含 recv_buf / send_buf / resp_parser
+    size_t send_offset;      // send_buf 当前发送偏移
+    int is_replication;      // 是否是复制连接（REPLSYNC 之后置 1）
+} ntyco_conn_ctx_t;
 
-    int resp_handshake_done;    // 是否完成 REPLSYNC 响应握手
+extern kvs_config_t g_cfg;
 
-    // 统计字段
-    unsigned long long total_recv_bytes;
-    unsigned long long total_send_bytes;
-    unsigned long long total_cmd_count;
-} conn_context_t;
 
-// 工具函数：设置 TCP 选项
-static void set_tcp_options(int fd) {
+// 设置 TCP_NODELAY
+static int ntyco_set_tcp_nodelay(int fd) {
     int yes = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-    int buf_size = 1024 * 1024;
-    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
-    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+    return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 }
 
-// net_session 的 handler
+// 设置 TCP 缓冲区
+static int ntyco_set_tcp_buffer_size(int fd, int rcv, int snd) {
+    if (rcv > 0) {
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
+    }
+    if (snd > 0) {
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof(snd));
+    }
+    return 0;
+}
+
+
+static int ntyco_init_conn_ctx(ntyco_conn_ctx_t *ctx, int fd) {
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->fd = fd;
+    ctx->send_offset = 0;
+    ctx->is_replication = 0;
+
+    // 会话层缓冲区：给一个 8MB recv / 8MB send（和 reactor 保持类似级别）:contentReference[oaicite:5]{index=5}
+    if (net_session_init(&ctx->session,
+                         8 * 1024 * 1024,
+                         8 * 1024 * 1024) < 0) {
+        return -1;
+    }
+
+    // TCP 优化
+    ntyco_set_tcp_nodelay(fd);
+    ntyco_set_tcp_buffer_size(fd,
+                              8 * 1024 * 1024,
+                              8 * 1024 * 1024);
+    return 0;
+}
+
+static void ntyco_free_conn_ctx(ntyco_conn_ctx_t *ctx) {
+    if (!ctx) return;
+
+    net_session_free(&ctx->session);
+
+    if (ctx->fd >= 0) {
+        nty_close(ctx->fd);  
+        ctx->fd = -1;
+    }
+
+    kvs_free(ctx);
+}
+
 static int ntyco_session_handler(resp_parser_t *parser,
                                  char *response_buf,
                                  size_t response_buf_cap,
                                  void *user_data) {
-
-    conn_context_t *ctx = (conn_context_t *)user_data;
+    ntyco_conn_ctx_t *ctx = (ntyco_conn_ctx_t *)user_data;
 
     if (!parser || parser->arg_index <= 0 || !parser->tokens[0]) {
         const char *err = "-ERR invalid command\r\n";
@@ -69,24 +103,18 @@ static int ntyco_session_handler(resp_parser_t *parser,
 
     char *cmd_name = parser->tokens[0];
 
-    // 单独处理 REPLSYNC 命令
-    if (strcasecmp(cmd_name, "REPLSYNC") == 0) {
+    // 单独处理 REPLSYNC
+    if (g_cfg.sync_mode == KVS_SYNC_EBPF && strcasecmp(cmd_name, "REPLSYNC") == 0) {
         extern distributed_config_t global_dist_config;
 
         const char *ok_resp  = "+OK\r\n";
         const char *err_resp = "-ERR REPLSYNC not allowed in current role\r\n";
 
-        // printf("[ntyco] REPLSYNC received on fd=%d, current role=%d\n",
-        //        ctx ? ctx->fd : -1, global_dist_config.role);
-
         if (global_dist_config.role == ROLE_SLAVE) {
-            // 将该连接标记为复制连接
             ctx->is_replication = 1;
-
             size_t ok_len = strlen(ok_resp);
             if (ok_len > response_buf_cap) ok_len = response_buf_cap;
             memcpy(response_buf, ok_resp, ok_len);
-            printf("REPLSYNC command received, marked connection as replication\n");
             return (int)ok_len;
         } else {
             size_t err_len = strlen(err_resp);
@@ -96,17 +124,17 @@ static int ntyco_session_handler(resp_parser_t *parser,
         }
     }
 
-    // 其它命令：根据 is_replication 切换同步上下文
     int old_ctx = get_sync_context();
     if (ctx->is_replication) {
-        set_sync_context(2);   // 复制连接上下文
+        set_sync_context(2); // 复制上下文
     } else {
-        set_sync_context(0);   // 普通上下文
+        set_sync_context(0); // 普通上下文
     }
 
     int resp_len = kvs_handler(parser->tokens,
                                parser->arg_index,
                                response_buf);
+
     set_sync_context(old_ctx);
 
     if (resp_len < 0 || (size_t)resp_len > response_buf_cap) {
@@ -120,272 +148,239 @@ static int ntyco_session_handler(resp_parser_t *parser,
     return resp_len;
 }
 
-// 每个连接的协程
-void server_reader(void *arg) {
-    extern distributed_config_t global_dist_config;
 
-    int fd = (int)(intptr_t)arg;
-    conn_context_t ctx;
+static int ntyco_process_received_data(ntyco_conn_ctx_t *ctx) {
+    return net_session_process_resp(ctx->fd,
+                                    &ctx->session,
+                                    ntyco_session_handler,
+                                    ctx);
+}
 
-    memset(&ctx, 0, sizeof(conn_context_t));
-    ctx.fd = fd;
-    ctx.send_offset = 0;
-    ctx.is_replication = 0;
-    ctx.resp_handshake_done = 0;
+static void ntyco_conn_routine(void *arg) {
+    ntyco_conn_ctx_t *ctx = (ntyco_conn_ctx_t *)arg;
+    netbuf_t *recv_buf = &ctx->session.recv_buf;
+    netbuf_t *send_buf = &ctx->session.send_buf;
 
-    // 初始化会话层
-    if (net_session_init(&ctx.session,
-                         1024 * 1024,
-                         1024 * 1024) < 0) {
-        close(fd);
-        return;
-    }
-
-    set_tcp_options(fd);
+    struct pollfd pfd;
+    pfd.fd = ctx->fd;
+    // events 在循环内动态设置
 
     while (!g_shutdown_flag) {
+        // 1. 准备监听事件
+        pfd.events = POLLIN; // 始终关注可读
+        if (send_buf->size > 0) {
+            pfd.events |= POLLOUT; // 有数据才关注可写
+        }
 
-        netbuf_t *recv_buf = &ctx.session.recv_buf;
+        // 2. 使用标准 poll 等待事件 (替代原来的单向逻辑)
+        int ret = poll(&pfd, 1, -1);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
 
-        // 1) 确保接收缓冲区有空间
-        size_t min_space = 4096;
-        if (recv_buf->size + min_space > recv_buf->capacity) {
-            if (netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0) {
-                fprintf(stderr,
-                        "Failed to reserve space in recv buffer for fd %d\n",
-                        fd);
-                goto out;
+        if (pfd.revents & (POLLERR | POLLHUP)) {
+            break;
+        }
+
+        // 3. 处理发送 (如果可写且有数据)
+        if ((pfd.revents & POLLOUT) && send_buf->size > 0) {
+            size_t bytes_left = send_buf->size - ctx->send_offset;
+
+            size_t to_try = bytes_left;
+
+            ssize_t sent = send(ctx->fd,
+                                send_buf->data + ctx->send_offset,
+                                to_try, 0);
+            if (sent > 0) {
+                ctx->send_offset += (size_t)sent;
+                if (ctx->send_offset == send_buf->size) {
+                    ctx->send_offset = 0;
+                    send_buf->size = 0;
+                }
+            } else if (sent < 0) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    // 缓冲区满，下次循环再试
+                } else {
+                    break; // 真正的错误
+                }
             }
+            
         }
 
-        size_t remaining = recv_buf->capacity - recv_buf->size;
-        if (remaining == 0) {
-            // 理论上不会发生
-            goto out;
-        }
+        // 4. 处理接收 (如果可读)
+        if (pfd.revents & POLLIN) {
+            // 扩容检查-
+            size_t min_space = 64 * 1024;
+            if (recv_buf->capacity - recv_buf->size < min_space) {
+                if (netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0) {
+                    fprintf(stderr, "Failed to reserve recv buffer for fd %d\n", ctx->fd);
+                    break;
+                }
+            }
 
-        // 2) 使用 nty_recv（协程友好版本）
-        ssize_t n = nty_recv(fd,
+            size_t remaining = recv_buf->capacity - recv_buf->size;
+            if (remaining == 0) {
+                fprintf(stderr, "No recv buffer remaining for fd %d\n", ctx->fd);
+                break;
+            }
+
+            // 使用原生 recv
+            ssize_t n = recv(ctx->fd,
                              recv_buf->data + recv_buf->size,
                              remaining,
                              0);
+            if (n > 0) {
+                recv_buf->size += (size_t)n;
 
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue; // 重试
-            }
-            perror("recv");
-            goto out;
-        } else if (n == 0) {
-            // 对端关闭
-            goto out;
-        }
-
-        recv_buf->size += (size_t)n;
-        ctx.total_recv_bytes += (unsigned long long)n;
-
-        // 3) 通用会话层解析数据生成响应
-        int cmd_cnt = net_session_process_resp(
-            fd,
-            &ctx.session,
-            ntyco_session_handler,
-            &ctx);
-
-        // printf("[ntyco][fd=%d] cmd_cnt=%d, recv_buf.size=%zu, "
-        //        "is_replication=%d, role=%d\n, total_recv_bytes=%llu, total_cmd_count=%llu",
-        //        fd, cmd_cnt, ctx.session.recv_buf.size,
-        //        ctx.is_replication, global_dist_config.role,
-        //        ctx.total_recv_bytes, ctx.total_cmd_count);
-
-        if (cmd_cnt < 0) {
-            // 解析 / 业务错误，关闭连接
-            goto out;
-        }
-
-        if (cmd_cnt == 0) {
-            // 没有完整命令，继续接收
-            continue;
-        }
-        if (cmd_cnt > 0) {
-            ctx.total_cmd_count += (unsigned long long)cmd_cnt;
-        }
-
-        // 4) 发送当前所有待发送数据
-        netbuf_t *send_buf = &ctx.session.send_buf;
-
-        if (ctx.is_replication) {
-            // printf("[ntyco][fd=%d] replication send, cmd_cnt=%d, send_buf.size=%zu, role=%d\n",
-            //        fd, cmd_cnt, ctx.session.send_buf.size, global_dist_config.role);
-
-            // 对于复制连接：完成 REPLSYNC 握手后，不再返回任何响应
-            if (!ctx.resp_handshake_done) {
-                // 第一次发送：把 REPLSYNC 的 +OK\r\n 发出去
-                size_t sent_total = 0;
-                while (sent_total < send_buf->size) {
-                    ssize_t wn = nty_send(fd,
-                                          send_buf->data + sent_total,
-                                          send_buf->size - sent_total,
-                                          0);
-                    if (wn < 0) {
-                        if (errno == EINTR) {
-                            continue;
-                        }
-                        perror("ntyco send REPLSYNC");
+                while(1) {
+                    int cmd_cnt = ntyco_process_received_data(ctx);
+                    if (cmd_cnt < 0) {
+                        fprintf(stderr, "[ntyco] process error\n");
                         goto out;
-                    } else if (wn == 0) {
-                        goto out; // 对端关闭
+                    } else if (cmd_cnt == 0) {
+                        break;
                     }
-                    sent_total += (size_t)wn;
                 }
-
-                if (sent_total > 0) {
-                    ctx.total_send_bytes += (unsigned long long)sent_total;
-                    // printf("[ntyco][fd=%d] sent_total=%zu, total_send_bytes=%llu\n",
-                    //        fd, sent_total, ctx.total_send_bytes);
-                    send_buf->size = 0;
-                }
-
-                ctx.resp_handshake_done = 1;
-                // fprintf(stderr,
-                //         "[ntyco] REPLSYNC handshake response sent on fd=%d, "
-                //         "enter replication no-response mode\n",
-                //         fd);
+            } else if (n == 0) {
+                // 对端关闭
+                break;
             } else {
-                // 之后所有来自 ebpf_syncd 的命令都只在本地执行，不返回响应
-                send_buf->size = 0;
-                // printf("[ntyco][fd=%d] replication no-response mode, send_buf.size=%zu\n",
-                //        fd, ctx.session.send_buf.size);
-            }
-
-        } else {
-            // printf("[ntyco][fd=%d] normal send, cmd_cnt=%d, send_buf.size=%zu, role=%d\n",
-            //        fd, cmd_cnt, ctx.session.send_buf.size, global_dist_config.role);
-
-            // 普通连接：按 offset + 限制单轮发送长度的方式发送
-
-            // 当前还有多少“未发送”的数据
-            size_t outstanding = 0;
-            if (send_buf->size > ctx.send_offset) {
-                outstanding = send_buf->size - ctx.send_offset;
-            }
-
-            // 简单背压：未发送数据过大则直接关闭连接
-            if (outstanding > NTYCO_MAX_OUTBUF) {
-                // fprintf(stderr,
-                //         "[ntyco][fd=%d] send buffer too large (%zu), close connection\n",
-                //         fd, outstanding);
-                goto out;
-            }
-
-            if (outstanding > 0) {
-                size_t to_send = outstanding;
-                if (to_send > NTYCO_MAX_SEND_CHUNK) {
-                    to_send = NTYCO_MAX_SEND_CHUNK;
-                }
-
-                ssize_t wn = nty_send(fd,
-                                      send_buf->data + ctx.send_offset,
-                                      to_send,
-                                      0);
-                if (wn < 0) {
-                    if (errno == EINTR) {
-                        // 本轮重来一次
-                        continue;
-                    }
-                    perror("ntyco send");
-                    goto out;
-                } else if (wn == 0) {
-                    goto out; // 对端关闭
-                }
-
-                ctx.send_offset      += (size_t)wn;
-                ctx.total_send_bytes += (unsigned long long)wn;
-
-                // printf("[ntyco][fd=%d] sent_chunk=%zd, send_offset=%zu, "
-                //        "send_buf.size=%zu, total_send_bytes=%llu\n",
-                //        fd, wn, ctx.send_offset, send_buf->size,
-                //        ctx.total_send_bytes);
-
-                // 如果当前缓冲区的数据都发完了，就清空
-                if (ctx.send_offset >= send_buf->size) {
-                    send_buf->size = 0;
-                    ctx.send_offset = 0;
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    break;
                 }
             }
         }
     }
 
 out:
-    net_session_free(&ctx.session);
-    nty_close(fd);
+    // fprintf(stderr,
+    //     "[ntyco][fd=%d] exit loop, errno=%d, recv_buf_size=%zu\n",
+    //     ctx->fd, errno, ctx->session.recv_buf.size);
+    ntyco_free_conn_ctx(ctx);
 }
 
-// 监听协程
-void server(void *arg) {
-    unsigned short port = *(unsigned short *)arg;
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return;
+static void ntyco_accept_routine(void *arg) {
+    int listen_fd = (int)(intptr_t)arg;
 
-    int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-#ifdef SO_REUSEPORT
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse));
-#endif
-
-    struct sockaddr_in local, remote;
-    memset(&local, 0, sizeof(local));
-    local.sin_family      = AF_INET;
-    local.sin_port        = htons(port);
-    local.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        perror("bind");
-        close(fd);
-        return;
-    }
-
-    if (listen(fd, 1024) < 0) {
-        perror("listen");
-        close(fd);
-        return;
-    }
-
-    printf("ntyco listen port : %d\n", port);
 
     while (!g_shutdown_flag) {
-        socklen_t len = sizeof(remote);
-        int cli_fd = accept(fd, (struct sockaddr *)&remote, &len);
-        if (cli_fd < 0) {
-            if (errno == EINTR) continue;
-            perror("accept");
+        struct sockaddr_in clientaddr;
+        socklen_t len = sizeof(clientaddr);
+        int connfd = nty_accept(listen_fd,
+                                (struct sockaddr *)&clientaddr,
+                                &len);  // nty_accept 内部自动 poll+挂起:contentReference[oaicite:11]{index=11}
+        if (connfd < 0) {
+            if (errno == EAGAIN || errno == EINTR) {
+                continue;
+            } else {
+                // 其他错误，可以选择 break 或继续重试
+                fprintf(stderr, "nty_accept error: %s\n", strerror(errno));
+                continue;
+            }
+        }
+
+        ntyco_conn_ctx_t *ctx = (ntyco_conn_ctx_t *)kvs_malloc(sizeof(ntyco_conn_ctx_t));
+        if (!ctx) {
+            fprintf(stderr, "malloc conn ctx failed\n");
+            nty_close(connfd);
             continue;
         }
 
-        // 把每个连接交给一个协程处理
-        nty_coroutine *read_co;
-        nty_coroutine_create(&read_co,
-                             server_reader,
-                             (void *)(intptr_t)cli_fd);
-    }
+        if (ntyco_init_conn_ctx(ctx, connfd) < 0) {
+            fprintf(stderr, "init conn ctx failed\n");
+            nty_close(connfd);
+            kvs_free(ctx);
+            continue;
+        }
 
-    close(fd);
+        // 为每个连接创建一个协程
+        nty_coroutine *co = NULL;
+        if (nty_coroutine_create(&co, ntyco_conn_routine, ctx) != 0) {
+            fprintf(stderr, "nty_coroutine_create failed\n");
+            ntyco_free_conn_ctx(ctx);
+            continue;
+        }
+        // 这里不用手动 resume，调度器会在 nty_schedule_run 里处理 ready 队列:contentReference[oaicite:12]{index=12}
+    }
 }
 
-// ntyco 启动入口
-int ntyco_start(unsigned short port, msg_handler handler) {
 
-    kvs_handler = handler;
 
-    nty_coroutine_create(&co, server, &port);
-
-    // 调度循环，支持关闭标志
-    while (!g_shutdown_flag) {
-        fprintf(stderr, "[ntyco] schedule_run enter, flag=%d\n", g_shutdown_flag);
-        nty_schedule_run();
-        fprintf(stderr, "[ntyco] schedule_run return, flag=%d\n", g_shutdown_flag);
-        usleep(10000);       // 10ms 休眠，避免空转
+static int ntyco_init_server(unsigned short port) {
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);  
+    if (sockfd < 0) {
+        perror("nty_socket");
+        return -1;
     }
 
+    int reuse = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        perror("setsockopt SO_REUSEADDR");
+        nty_close(sockfd);
+        return -1;
+    }
+
+#ifdef SO_REUSEPORT
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
+        perror("setsockopt SO_REUSEPORT");
+        // 不一定要立刻失败，根据需要决定
+    }
+#endif
+
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(port);
+
+    if (bind(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+        perror("bind");
+        nty_close(sockfd);
+        return -1;
+    }
+
+    if (listen(sockfd, 1024) < 0) {
+        perror("listen");
+        nty_close(sockfd);
+        return -1;
+    }
+
+    // 设置 listen fd 为非阻塞
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
+    return sockfd;
+}
+
+
+
+int ntyco_start(unsigned short port, msg_handler handler) {
+    kvs_handler = handler;
+
+    int listen_fd = ntyco_init_server(port);
+    if (listen_fd < 0) {
+        return -1;
+    }
+
+    // 创建 accept 协程
+    nty_coroutine *accept_co = NULL;
+    if (nty_coroutine_create(&accept_co,
+                             ntyco_accept_routine,
+                             (void *)(intptr_t)listen_fd) != 0) {
+        fprintf(stderr, "create accept coroutine failed\n");
+        nty_close(listen_fd);
+        return -1;
+    }
+
+    // 进入调度循环：单线程 epoll+协程，直到没有协程可跑或你设置 g_shutdown_flag 后连接都退出:contentReference[oaicite:14]{index=14}
+    nty_schedule_run();
+
+    // 调度退出之后，关闭 listen_fd
+    nty_close(listen_fd);
+
+    printf("NtyCo network exited\n");
     return 0;
 }

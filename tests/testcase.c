@@ -1258,7 +1258,7 @@ static void master_slave_array_test(const char *master_ip, int master_port,
     }
 
     // 2. 等待主从同步
-    sleep(5);
+    sleep(10);
     // 3. 第一次：验证初始写入同步是否正确
     char *get_pipeline = generate_get_pipeline(count);
     if (!get_pipeline) {
@@ -1324,7 +1324,7 @@ static void master_slave_array_test(const char *master_ip, int master_port,
     }
 
     // 5. 再次等待主从同步
-    sleep(2);
+    sleep(10);
 
     // 6. 第二次：验证 MOD/DEL 后的数据是否同步
     send_msg(master_fd, get_pipeline, (int)strlen(get_pipeline));

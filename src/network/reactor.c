@@ -59,6 +59,7 @@ struct conn conn_list[CONNECTION_SIZE] = {0};
 //全局连接扩展数组
 static conn_extension_t conn_extensions[CONNECTION_SIZE] = {0};
 
+extern kvs_config_t g_cfg;
 
 // 设置非阻塞IO
 int set_nonblocking(int fd) {
@@ -217,45 +218,47 @@ static int reactor_session_handler(resp_parser_t* parser,
     }
 
     char *cmd_name = parser->tokens[0];
+    int resp_len = 0;
 
-    //单独处理REPLSYNC命令
-    if(strcasecmp(cmd_name, "REPLSYNC") == 0){
-        extern distributed_config_t global_dist_config;
+        //单独处理REPLSYNC命令
+        if(g_cfg.sync_mode == KVS_SYNC_EBPF && strcasecmp(cmd_name, "REPLSYNC") == 0){
+            extern distributed_config_t global_dist_config;
 
-        const char* ok_resp = "+OK\r\n";
-        const char* err_resp = "-ERR REPLSYNC not allowed in current role\r\n";
+            const char* ok_resp = "+OK\r\n";
+            const char* err_resp = "-ERR REPLSYNC not allowed in current role\r\n";
 
-        if(global_dist_config.role == ROLE_SLAVE){
-            //将该连接标记为复制连接
-            ext->is_replication = 1;
+            if(global_dist_config.role == ROLE_SLAVE){
+                //将该连接标记为复制连接
+                ext->is_replication = 1;
 
-            //回复+OK
-            size_t ok_len = strlen(ok_resp);
-            if(ok_len > response_buf_cap) ok_len = response_buf_cap;
-            memcpy(response_buf, ok_resp, ok_len);
-            return (int)ok_len;
-        }else{
-            //只允许从节点接收 REPLSYNC
-            size_t err_len = strlen(err_resp);
-            if(err_len > response_buf_cap) err_len = response_buf_cap;
-            memcpy(response_buf, err_resp, err_len);
-            return (int)err_len;
+                //回复+OK
+                size_t ok_len = strlen(ok_resp);
+                if(ok_len > response_buf_cap) ok_len = response_buf_cap;
+                memcpy(response_buf, ok_resp, ok_len);
+                return (int)ok_len;
+            }else{
+                //只允许从节点接收 REPLSYNC
+                size_t err_len = strlen(err_resp);
+                if(err_len > response_buf_cap) err_len = response_buf_cap;
+                memcpy(response_buf, err_resp, err_len);
+                return (int)err_len;
+            }
         }
-    }
 
-    //其他命令 根据is_replication选择上下文
-    int old_ctx = get_sync_context();
-    if(ext->is_replication){
-        set_sync_context(2);//复制连接上下文
-    }else{
-        set_sync_context(0);//普通连接上下文
-    }
+        //其他命令 根据is_replication选择上下文
+        int old_ctx = get_sync_context();
+        if(ext->is_replication){
+            set_sync_context(2);//复制连接上下文
+        }else{
+            set_sync_context(0);//普通连接上下文
+        }
 
-    int resp_len = kvs_handler(parser->tokens,
+        resp_len = kvs_handler(parser->tokens,
                             parser->arg_index,
                     response_buf);
 
-    set_sync_context(old_ctx);
+        set_sync_context(old_ctx);
+
 
     if(resp_len < 0 || resp_len > (int)response_buf_cap){
         //不合法长度 返回错误
@@ -526,7 +529,7 @@ int reactor_start(unsigned short port, msg_handler handler) {
 	while (!g_shutdown_flag) { // mainloop
         if(g_shutdown_flag) break;
 
-		int nready = epoll_wait(epfd, events, 1024, -1);
+		int nready = epoll_wait(epfd, events, 1024, -1); //-1
 		if (nready < 0 && errno != EINTR) {
             perror("epoll_wait");
             break;

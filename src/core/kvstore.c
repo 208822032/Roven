@@ -31,6 +31,7 @@ extern distributed_config_t global_dist_config;
 
 static __thread int sync_context = 0;//每个线程都有的局部变量
 
+//0 正常命令执行上下文 1 主从同步命令上下文 2 从节点应用主节点命令上下文（跳过从节点只读检查）
 void set_sync_context(int context) {
 	sync_context = context;
 }
@@ -55,10 +56,6 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	//检查参数数量
 	if(!check_arity(cmd, count)) return resp_generate_error(response, "Wrong number of arguments");
 	
-	//检查从节点写操作权限 
-	//eBPF 模式下 通过 sync_context==2 允许执行
-	// printf("current role=%d, sync_context=%d, cmd=%s, write_command=%d\n",
-	// 	global_dist_config.role, get_sync_context(), cmd->name, cmd->write_command); // DEBUG
 	if (cmd->write_command && global_dist_config.role == ROLE_SLAVE && get_sync_context() == 0){
 		return resp_generate_error(response, "ERROR SLAVE READ ONLY");
 	}
@@ -74,7 +71,9 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	//命令执行成功后记录写命令
 	if(ret >= 0 && cmd->write_command){
 		#if ENABLE_AOF// 添加日志打印命令
-		aof_append(count, tokens);
+			if(!aof_is_loading()){
+				aof_append(count, tokens);//正在加载AOF时不记录
+			}
 		#endif
 
 		if(get_sync_context() != 2){
@@ -136,6 +135,7 @@ void dest_kvengine(void) {
 #endif
 
 	mem_destroy();  // 清理内存管理组件
+	
 	if(g_cfg.sync_mode == KVS_SYNC_TCP){
 	distributed_shutdown(); //关闭分布式系统
 	}

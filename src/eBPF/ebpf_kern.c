@@ -13,15 +13,9 @@ clang -O2 -g -target bpf \
   -I. \
   -c ebpf_kern.c -o ebpf_kern.o
 */
-
-#define MAX_PAYLOAD 65535
-#define MAX_PAYLOAD_MASK  (MAX_PAYLOAD - 1)   // 4095
-
 //eBPF将复制流当成一个纯字节流 只保证顺序 不保证边界
 
 #define CHUNK_SIZE 2048
-#define MAX_CHUNKS 32
-#define MAX_MIRROR_BYTES (CHUNK_SIZE * MAX_CHUNKS)
 
 struct event {
     __u32 pid;
@@ -69,86 +63,68 @@ static __always_inline int target_master(struct sock *sk){
 }
 
 SEC("kprobe/tcp_sendmsg")
-int BPF_KPROBE(kprobe_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size){
+int BPF_KPROBE(kprobe_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
+{
+    if (!sk || !msg) return 0;
+    if (!target_master(sk)) return 0;
+    if (size == 0) return 0;
 
-    if(!sk || !msg) return 0;
-    if(!target_master(sk)) return 0;
+    // 强约束：先只处理小包（mode6-9）
+    if (size > CHUNK_SIZE) return 0;
 
-    if(size == 0) return 0;
-
-    //将一次tcp_sendmsg 视为流的一段
-    //最大只复制 MAX_MIRROR_BYTES 字节 避免ringbuf中单次事件过大
-    __u32 to_copy = (__u32)size;
-    if(to_copy > MAX_MIRROR_BYTES){
-        to_copy = MAX_MIRROR_BYTES;
-    }
-
-    //读取用户空间数据起始地址
     struct iov_iter iter = {};
-    struct iovec* iov = NULL;
-    void* base = NULL;
+    if (bpf_core_read(&iter, sizeof(iter), &msg->msg_iter) < 0)
+        return 0;
 
-    bpf_core_read(&iter, sizeof(iter), &msg->msg_iter);
-    bpf_core_read(&iov, sizeof(iov), &iter.iov);
-    if(!iov) return 0;
+    struct iovec *iov = NULL;
+    if (bpf_core_read(&iov, sizeof(iov), &iter.iov) < 0 || !iov)
+        return 0;
 
-    bpf_core_read(&base, sizeof(base), &iov->iov_base);
-    if(!base) return 0;
+    __u64 off64 = 0;
+    (void)bpf_core_read(&off64, sizeof(off64), &iter.iov_offset);
 
-    //准备连接信息
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    __u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    __u32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-    __u16 sport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_num));
-    __u16 dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+    // 再强约束：只处理 offset=0（避免 verifier 走到减法/比较的复杂路径）
+    if (off64 != 0) return 0;
 
-    //分片复制
-    __u32 remaining = to_copy;
-    __u32 offset = 0;
-    __u32 chunk_idx = 0;
+    struct iovec seg0 = {};
+    if (bpf_core_read(&seg0, sizeof(seg0), &iov[0]) < 0)
+        return 0;
 
-    //分片复制 最多 MAX_CHUNKS 片 每片 CHUNK_SIZE 字节
-    __u32 offset32 = 0;
+    void *base = NULL;
+    __u64 seg_len64 = 0;
+    if (bpf_core_read(&base, sizeof(base), &seg0.iov_base) < 0)
+        return 0;
+    if (bpf_core_read(&seg_len64, sizeof(seg_len64), &seg0.iov_len) < 0)
+        return 0;
 
-#pragma unroll 32
-    for(int i = 0;i < MAX_CHUNKS; i++){
-        if(remaining == 0)
-            break;
-        
-        __u32 frag_len = remaining;
-        if(frag_len > CHUNK_SIZE)
-            frag_len = CHUNK_SIZE;
-        // 再做一道收紧，帮助 verifier
-        frag_len &= (CHUNK_SIZE - 1);
-        if (frag_len == 0)
-            break;
+    if (!base) return 0;
+    if (seg_len64 == 0) return 0;
 
-        //为本分片分配一个变长ringbuf事件
-        struct event* e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-        if(!e){
-            //分配失败 直接返回
-            return 0;
-        }
+    // len：verifier 友好化（0..1023 + 修正 0->1024）
+    __u32 len = (__u32)size;
+    len &= (CHUNK_SIZE - 1);
+    if (len == 0) len = CHUNK_SIZE;
 
-        e->pid = pid;
-        e->len = frag_len;
-        e->saddr = saddr;
-        e->daddr = daddr;
-        e->sport = sport;
-        e->dport = dport;
+    // seg0 必须覆盖 len
+    if (seg_len64 < (__u64)len) return 0;
 
-        __u32 offset32 = offset & (MAX_MIRROR_BYTES - 1);
-        __u64 addr = (__u64)base + offset32;
+    struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (!e) return 0;
 
-        //从用户空间复制数据
-        //base + offset 视为一个连续缓冲区
-        bpf_probe_read_user(e->data, frag_len, (void* )(addr));
+    e->pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
+    e->len = len;
 
-        bpf_ringbuf_submit(e, 0);
+    e->saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    e->daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    e->sport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_num));
+    e->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+    e->chunk_idx = 0;
 
-        remaining -= frag_len;
-        offset += frag_len;
+    if (bpf_probe_read_user(e->data, len, base) < 0) {
+        bpf_ringbuf_discard(e, 0);
+        return 0;
     }
 
+    bpf_ringbuf_submit(e, 0);
     return 0;
 }

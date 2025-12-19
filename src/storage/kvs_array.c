@@ -71,16 +71,18 @@ int kvs_array_set(kvs_array_t *inst, char *key, char *value) {
 
 	char *kcopy = kvs_malloc(strlen(key) + 1);
 	if (kcopy == NULL) return -2;
-	memset(kcopy, 0, strlen(key) + 1);
-	strncpy(kcopy, key, strlen(key));
+	// memset(kcopy, 0, strlen(key) + 1);
+	// strncpy(kcopy, key, strlen(key));
+    strcpy(kcopy, key);
 
 	char *kvalue = kvs_malloc(strlen(value) + 1);
 	if (kvalue == NULL) {
         kvs_free(kcopy); // 释放已分配的内存
         return -2;
     }
-	memset(kvalue, 0, strlen(value) + 1);
-	strncpy(kvalue, value, strlen(value));
+	// memset(kvalue, 0, strlen(value) + 1);
+	// strncpy(kvalue, value, strlen(value));
+    strcpy(kvalue, value);
 
 	int i = 0;
 	for (i = 0;i < inst->total;i ++) {
@@ -221,8 +223,9 @@ int kvs_array_mod(kvs_array_t *inst, char *key, char *value) {
 
 			char *kvalue = kvs_malloc(strlen(value) + 1);
 			if (kvalue == NULL) return -2;
-			memset(kvalue, 0, strlen(value) + 1);
-			strncpy(kvalue, value, strlen(value));
+			// memset(kvalue, 0, strlen(value) + 1);
+			// strncpy(kvalue, value, strlen(value));
+            strcpy(kvalue, value);
 
 			inst->table[i].value = kvalue;
 

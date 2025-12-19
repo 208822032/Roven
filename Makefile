@@ -1,5 +1,4 @@
 CC = gcc
-SYNC_MODE ?= 0
 
 # 与 kvs_config.h 中的 KVS_MAX_RESPONSE_SIZE 保持一致
 KVS_MAX_RESPONSE_SIZE ?= 1048576
@@ -46,7 +45,8 @@ BASE_SRCS = \
 	$(SRC_PERSIST)/kvs_aof_rewrite.c \
 	$(SRC_UTILS)/msg_queue.c \
 	$(SRC_UTILS)/master_slave_proto.c \
-	$(SRC_UTILS)/netbuf.c
+	$(SRC_UTILS)/netbuf.c \
+	$(SRC_UTILS)/tx_batcher.c
 	
 
 SRCS = $(BASE_SRCS) \
@@ -77,7 +77,32 @@ TEST_BINARIES = \
 	$(TEST_PAPER_SYNC) \
 	$(TEST_BIGVALUE) \
 
-all: $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) 
+CLANG ?= clang
+# 尝试查找 bpftool，如果找不到则默认为 bpftool
+BPFTOOL := $(shell which bpftool 2>/dev/null)
+ifeq ($(BPFTOOL),)
+	BPFTOOL := bpftool
+endif
+EBPF_DIR := src/eBPF
+EBPF_KERN_OBJ := $(EBPF_DIR)/ebpf_kern.o
+EBPF_SYNCD_BIN := $(EBPF_DIR)/ebpf_syncd
+VMLINUX_H := $(EBPF_DIR)/vmlinux.h
+
+# 自动检测架构
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+    BPF_ARCH_MACRO := -D__TARGET_ARCH_x86
+else ifeq ($(UNAME_M),aarch64)
+    BPF_ARCH_MACRO := -D__TARGET_ARCH_arm64
+else
+    BPF_ARCH_MACRO := -D__TARGET_ARCH_x86
+endif
+
+# eBPF 内核态编译选项
+# BPF_NO_UNROLL := -fno-unroll-loops $(BPF_NO_UNROLL)
+BPF_CFLAGS := -O2 -g -target bpf $(BPF_ARCH_MACRO) -I $(EBPF_DIR) 
+
+all: $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN)
 
 $(NTYCO_DIR)/objs:
 	mkdir -p $@
@@ -118,21 +143,40 @@ MEMPOOL_OBJS := \
 $(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(MEMPOOL_OBJS)
 	$(CC) $(CFLAGS) -o $@ $< $(MEMPOOL_OBJS) -lpthread $(JEMALLOC_LIB) -ldl
 
+# 生成 vmlinux.h
+$(VMLINUX_H):
+	@echo "Generating vmlinux.h..."
+	@if [ ! -f /sys/kernel/btf/vmlinux ]; then \
+		echo "Error: /sys/kernel/btf/vmlinux not found. Ensure CONFIG_DEBUG_INFO_BTF is enabled."; \
+		exit 1; \
+	fi
+	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $@
+
+$(EBPF_KERN_OBJ): $(EBPF_DIR)/ebpf_kern.c $(VMLINUX_H)
+	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
+
+#eBPF用户态守护进程
+$(EBPF_SYNCD_BIN): \
+	$(EBPF_DIR)/ebpf_syncd.c \
+	$(SRC_UTILS)/msg_queue.c \
+	$(SRC_STORAGE)/kvs_mempool.c \
+	$(SRC_STORAGE)/jemalloc_wrapper.c \
+	$(SRC_STORAGE)/kvs_array.c \
+	$(SRC_STORAGE)/kvs_hash.c \
+	$(SRC_STORAGE)/kvs_rbtree.c \
+	$(SRC_STORAGE)/kvs_skiptable.c \
+	$(SRC_CORE)/kvs_config.c \
+	$(SRC_UTILS)/tx_batcher.c \
+	$(SRC_CORE)/kvs_globals.c
+	$(CC) -O2 -g $^ -o $@ \
+		-lbpf -lelf -lz -lpthread $(JEMALLOC_LIB) -ldl -I ./include
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
-
-# UNAME_M := $(shell uname -m)
-# ifeq ($(UNAME_M),x86_64)
-# BPF_ARCH_MACRO = __TARGET_ARCH_x86
-# else ifeq ($(UNAME_M),aarch64)
-# BPF_ARCH_MACRO = __TARGET_ARCH_arm64
-# else
-# BPF_ARCH_MACRO = __TARGET_ARCH_x86
-# endif
 
 
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
+	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H)
 .PHONY: all clean
