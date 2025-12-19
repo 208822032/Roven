@@ -525,8 +525,8 @@ kv> EXIT
   | Master-Slave | rbtree     | 100000   | 11496.70(无批处理)  |
   | Master-Slave | hash       | 100000   | 11455.85(无批处理)  |
   | Master-Slave | skiptable  | 100000   | 11270.69(无批处理)  |
-  | Master-Slave | array      | 100000   | 16351.16(批处理)  |
-  | Master-Slave | rbtree     | 100000   | 15561.02(批处理)  |
+  | Master-Slave | array      | 100000   | 15063.18(批处理)  |
+  | Master-Slave | rbtree     | 100000   | 15041.32(批处理)  |
   | Master-Slave | hash       | 100000   | 15231.43(批处理)  |
   | Master-Slave | skiptable  | 100000   | 15179.61(批处理)  |
 

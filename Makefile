@@ -99,8 +99,8 @@ else
 endif
 
 # eBPF 内核态编译选项
-# BPF_NO_UNROLL := -fno-unroll-loops $(BPF_NO_UNROLL)
-BPF_CFLAGS := -O2 -g -target bpf $(BPF_ARCH_MACRO) -I $(EBPF_DIR) 
+# BPF_NO_UNROLL := -fno-unroll-loops  $(BPF_NO_UNROLL) 
+BPF_CFLAGS := -O2 -g -target bpf $(BPF_ARCH_MACRO) -I $(EBPF_DIR)
 
 all: $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN)
 

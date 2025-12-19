@@ -30,6 +30,7 @@ extern kvs_config_t g_cfg;
 
 //消息队列成员
 typedef struct ebpf_sync_msg {
+    atomic_int refcnt;
     size_t len;
     unsigned char data[];
 } ebpf_sync_msg_t;
@@ -47,7 +48,7 @@ gcc -O2 -g ebpf_syncd.c ../utils/msg_queue.c  -o ebpf_syncd -lbpf -lelf -lz -lpt
 */
 
 #define MAX_PAYLOAD 65535 //1MB
-#define CHUNK_SIZE 2048
+#define CHUNK_SIZE 4096
 
 #define TX_BUF_SIZE (128 * 1024)
 // #define FLUSH_NS (300ull * 1000ull)
@@ -129,6 +130,26 @@ static struct send_stats g_stats;
 static inline unsigned long atomic_xchg_ul(atomic_ulong *v, unsigned long nv) {
     return atomic_exchange(v, nv);
 }
+
+static ebpf_sync_msg_t* ebpf_sync_msg_create(const void* data, size_t len,int refcnt){
+
+    if(!data || len == 0 || refcnt < 0) return NULL;
+
+    ebpf_sync_msg_t* msg = 
+        (ebpf_sync_msg_t*)kvs_malloc(sizeof(ebpf_sync_msg_t) + len);
+
+    atomic_init(&msg->refcnt, refcnt);
+    msg->len = len;
+    memcpy(msg->data, data, len);
+    return msg;
+}
+
+static inline void ebpf_sync_msg_put(ebpf_sync_msg_t* msg){
+    if(!msg) return;
+    if(atomic_fetch_sub_explicit(&msg->refcnt, 1, memory_order_acq_rel));
+        kvs_free(msg);
+}
+
 
 static void* stats_printer_thread(void* arg) {
     (void)arg;
@@ -385,7 +406,7 @@ static int connect_sand_handshake_slave(slave_ctx_t* ctx){
     int nd = 0;
     sl = sizeof(nd);
     if (getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nd, &sl) == 0) {
-        fprintf(stderr, "[slave] TCP_NODELAY=%d\n", nd);
+        // fprintf(stderr, "[slave] TCP_NODELAY=%d\n", nd);
     }
 
     printf("Connected to slave %s:%d\n", ctx->ip, ctx->port);
@@ -503,7 +524,8 @@ static void* slave_sender_worker(void* arg){
         }
         // 确保连接可用
         if (ctx->fd < 0) {
-            kvs_free(msg);
+            // kvs_free(msg);
+            ebpf_sync_msg_put(msg);
             break;
         }
 
@@ -515,7 +537,8 @@ static void* slave_sender_worker(void* arg){
             ctx->fd = -1;
         }
 
-        kvs_free(msg);
+        // kvs_free(msg);
+        ebpf_sync_msg_put(msg);
     }
 
     // 退出前尽量发掉尾巴（可选重连）
@@ -526,7 +549,8 @@ static void* slave_sender_worker(void* arg){
     void* item = NULL;
     while (msg_queue_pop(&ctx->queue, &item) == 0) {
         ebpf_sync_msg_t* msg = (ebpf_sync_msg_t*)item;
-        if (msg) kvs_free(msg);
+        // if (msg) kvs_free(msg);
+        if(msg) ebpf_sync_msg_put(msg);
     }
     return NULL;
 }
@@ -538,24 +562,42 @@ static void broadcast_to_all_slaves(const void* data, size_t len){
 
     if(!data || len == 0) return;
 
+    int targets = 0;
+    for(int i = 0;i < g_slave_count; i++){
+        if(g_slaves[i].running) targets++;
+    }
+    if(targets == 0) return;
+
+    ebpf_sync_msg_t* msg = ebpf_sync_msg_create(data, len, targets);
+    if(!msg){
+        fprintf(stderr, "Failed to allocate ebpf_sync_msg_t (len=%zu)\n", len);
+        return;
+    }
+
     for(int i = 0;i < g_slave_count;i++){
         slave_ctx_t* s = &g_slaves[i];
-        if(!s->running) continue;
+        // if(!s->running) continue;
 
-        ebpf_sync_msg_t* msg = 
-            (ebpf_sync_msg_t* )kvs_malloc(sizeof(ebpf_sync_msg_t) + len);
-        if(!msg){
-            fprintf(stderr, "Failed to allocate ebpf_sync_msg_t for slave %d\n",
-                    s->id);
-            continue;//内存不足
+        // ebpf_sync_msg_t* msg = 
+        //     (ebpf_sync_msg_t* )kvs_malloc(sizeof(ebpf_sync_msg_t) + len);
+        // if(!msg){
+        //     fprintf(stderr, "Failed to allocate ebpf_sync_msg_t for slave %d\n",
+        //             s->id);
+        //     continue;//内存不足
+        // }
+
+        // msg->len = len;
+        // memcpy(msg->data, data, len);
+
+        if(!s->running){
+            ebpf_sync_msg_put(msg);
+            continue;
         }
-
-        msg->len = len;
-        memcpy(msg->data, data, len);
 
         if(msg_queue_push(&s->queue, msg) != 0){
             fprintf(stderr, "msg_queue_push failed for slave %d\n", s->id);
-            kvs_free(msg);
+            // kvs_free(msg);
+            ebpf_sync_msg_put(msg);
             //当前队列已满
         }
     }
@@ -807,7 +849,7 @@ int main(int argc, char** argv){
     const char* conf_path = "../../config/ebpf_sync.conf";
     if(argc > 1) conf_path = argv[1];
 
-    printf("[ebpf_syncd] start, conf_path=%s\n", conf_path); // DEBUG
+    // printf("[ebpf_syncd] start, conf_path=%s\n", conf_path); // DEBUG
 
     struct daemon_conf conf = {0};
     if(load_daemon_conf(conf_path, &conf) != 0){
@@ -825,7 +867,7 @@ int main(int argc, char** argv){
     signal(SIGINT, handle_sigint);
     signal(SIGTERM, handle_sigint);
 
-    printf("[ebpf_syncd] before ebpf_kern__open_and_load\n"); // DEBUG
+    // printf("[ebpf_syncd] before ebpf_kern__open_and_load\n"); // DEBUG
 
     //初始化 slave_ctx + sender 线程
     g_slave_count = conf.slave_count;
@@ -898,7 +940,7 @@ int main(int argc, char** argv){
         return 1;
     }
 
-    printf("[ebpf_syncd] BPF object loaded\n"); // DEBUG
+    // printf("[ebpf_syncd] BPF object loaded\n"); // DEBUG
 
     //配置map 写入 master ip和port
     struct bpf_map* config_map = bpf_object__find_map_by_name(obj, "config_map");
@@ -914,7 +956,7 @@ int main(int argc, char** argv){
         bpf_object__close(obj);
         return 1;
     }
-    printf("[ebpf_syncd] config_map fd=%d\n", cfg_map_fd); // DEBUG
+    // printf("[ebpf_syncd] config_map fd=%d\n", cfg_map_fd); // DEBUG
 
     //填写配置
     __u32 key = 0;
@@ -933,8 +975,8 @@ int main(int argc, char** argv){
         bpf_object__close(obj);
         return 1;
     }
-    printf("[ebpf_syncd] config_map updated: master_ip=0x%x, master_port=%d\n",
-           cfg.master_ip, cfg.master_port); // DEBUG
+    // printf("[ebpf_syncd] config_map updated: master_ip=0x%x, master_port=%d\n",
+    //        cfg.master_ip, cfg.master_port); // DEBUG
         
     struct bpf_map* events_map = bpf_object__find_map_by_name(obj, "events");
     if(!events_map){
@@ -948,23 +990,44 @@ int main(int argc, char** argv){
         bpf_object__close(obj);
         return 1;
     }
-    printf("[ebpf_syncd] events map fd=%d\n", events_map_fd); // DEBUG
+    // printf("[ebpf_syncd] events map fd=%d\n", events_map_fd); // DEBUG
 
-    struct bpf_program* prog = bpf_object__find_program_by_name(obj, "kprobe_tcp_sendmsg");
-    if(!prog){
-        fprintf(stderr, "Failed to find program tcp_sendmsg\n");
+    struct bpf_link* link_entry = NULL;
+    struct bpf_link* link_ret   = NULL;
+
+    struct bpf_program* prog_entry = 
+        bpf_object__find_program_by_name(obj, "kprobe_tcp_recvmsg");
+    if(!prog_entry){
+        fprintf(stderr, "Failed to find program tcp_recvmsg\n");
         bpf_object__close(obj);
         return 1;
     }
-    struct bpf_link* link = bpf_program__attach(prog);
-    if(libbpf_get_error(link)){
-        int err = -libbpf_get_error(link);
+    link_entry = bpf_program__attach(prog_entry);
+    if(libbpf_get_error(link_entry)){
+        int err = -libbpf_get_error(link_entry);
         fprintf(stderr, "Failed to attach program: %d\n", err);
         bpf_object__close(obj);
         return 1;
     }
 
-    printf("[ebpf_syncd] Program attached\n"); // DEBUG
+    struct bpf_program* prog_ret =
+    bpf_object__find_program_by_name(obj, "kretprobe_tcp_recvmsg");
+    if (!prog_ret) {
+        fprintf(stderr, "Failed to find program kretprobe_tcp_recvmsg\n");
+        bpf_link__destroy(link_entry);
+        bpf_object__close(obj);
+        return 1;
+    }
+    link_ret = bpf_program__attach(prog_ret);
+    if (libbpf_get_error(link_ret)) {
+        int err = -libbpf_get_error(link_ret);
+        fprintf(stderr, "Failed to attach kretprobe_tcp_recvmsg: %d\n", err);
+        bpf_link__destroy(link_entry);
+        bpf_object__close(obj);
+        return 1;
+    }
+
+    // printf("[ebpf_syncd] Program attached\n"); // DEBUG
 
     // pthread_t tid_stats;
     // pthread_create(&tid_stats, NULL, stats_printer_thread, NULL);
@@ -978,7 +1041,7 @@ int main(int argc, char** argv){
         fprintf(stderr, "Failed to create ring buffer: %d\n", err);
         g_running = 0;
     }else{
-        printf("[ebpf_syncd] Ring buffer created\n"); // DEBUG
+        // printf("[ebpf_syncd] Ring buffer created\n"); // DEBUG
         while(!stop && g_running){
             int pret = ring_buffer__poll(ringbuf, 0);
             if(pret < 0 && pret != -EINTR){
@@ -989,7 +1052,7 @@ int main(int argc, char** argv){
     }
 
 
-    printf("[ebpf_syncd] Ring buffer created, entering main loop\n"); // DEBUG
+    // printf("[ebpf_syncd] Ring buffer created, entering main loop\n"); // DEBUG
 
 
     printf("[ebpf_syncd] Shutting down...\n"); // DEBUG
@@ -1021,8 +1084,8 @@ cleanup:
         msg_queue_destroy(&slave->queue);
     }
 
-    bpf_link__destroy(link);
-    bpf_object__close(obj);
+    bpf_link__destroy(link_ret);
+    bpf_link__destroy(link_entry);
     mem_destroy();
 
     printf("[ebpf_syncd] Exited cleanly\n");
