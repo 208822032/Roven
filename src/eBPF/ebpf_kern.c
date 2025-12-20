@@ -153,6 +153,40 @@ int BPF_KRETPROBE(kretprobe_tcp_recvmsg, int ret){
 
     __u32 total = (__u32)ret;
 
+    //小包路径
+    if(total <= (__u32)CHUNK_SIZE){
+        __u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        __u32 daddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+        __u16 sport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+        __u16 dport = BPF_CORE_READ(sk, __sk_common.skc_num); // host order
+
+        struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+        if (!e) return 0;
+
+        e->pid = (__u32)(pid_tgid >> 32);
+        e->len = total;
+        e->saddr = saddr;
+        e->daddr = daddr;
+        e->sport = sport;
+        e->dport = dport;
+        e->chunk_idx = 0;
+
+        __u32 size = total;
+        //强制 size 到 1..CHUNK_SIZE
+        size &= (CHUNK_SIZE - 1);
+        if (size == 0)
+            size = CHUNK_SIZE;
+
+        // 直接从 base 读取 total
+        if(bpf_probe_read_user(e->data, size, base) < 0){
+            bpf_ringbuf_discard(e, 0);
+            return 0;
+        }
+        // bpf_printk("ebpf path=SMALL total=%u\n", total);
+        bpf_ringbuf_submit(e, 0);
+        return 0;
+    }
+
 #pragma unroll
     for (int i = 0; i < MAX_CHUNKS; i++) {
 
@@ -190,7 +224,8 @@ int BPF_KRETPROBE(kretprobe_tcp_recvmsg, int ret){
             bpf_ringbuf_discard(e, 0);
             return 0;
         }
-
+        // if(i == 0)
+        //     bpf_printk("ebpf path=LARGE total=%u\n", total);
         bpf_ringbuf_submit(e, 0);
     }
 
