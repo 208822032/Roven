@@ -52,7 +52,8 @@ BASE_SRCS = \
 SRCS = $(BASE_SRCS) \
 		$(SRC_DIST)/sync_backend_tcp.c
 
-CFLAGS = -I ./NtyCo/core/ -I ./include -I ./src -I $(JEMALLOC_INCLUDE) -DSYNC_MODE=$(SYNC_MODE) -g
+EXTRA_CFLAGS ?=
+CFLAGS = -I ./NtyCo/core/ -I ./include -I ./src -I $(JEMALLOC_INCLUDE) -DSYNC_MODE=$(SYNC_MODE) -g $(EXTRA_CFLAGS)
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl $(EXTRA_LIBS)  $(JEMALLOC_LIB)
 
 TARGET = kvstore

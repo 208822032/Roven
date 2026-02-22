@@ -769,6 +769,8 @@ void rbtree_resp_testcase(int connfd){
 	testcase(connfd, "*3\r\n$4\r\nRSET\r\n$9\r\ntree_key4\r\n$5\r\nhippo\r\n", "+OK\r\n", "SET-arr_key4");
 	testcase(connfd, "*1\r\n$5\r\nRSORT\r\n", "*3\r\n$13\r\ntree_key2:fox\r\n$17\r\ntree_key3:giraffe\r\n$15\r\ntree_key4:hippo\r\n", "rbtree_SORT");
 	testcase(connfd, "*3\r\n$6\r\nRRANGE\r\n$9\r\ntree_key2\r\n$9\r\ntree_key4\r\n", "*3\r\n$13\r\ntree_key2:fox\r\n$17\r\ntree_key3:giraffe\r\n$15\r\ntree_key4:hippo\r\n", "rbtree_RANGE");
+    testcase(connfd, "*5\r\n$6\r\nRRANGE\r\n$9\r\ntree_key2\r\n$9\r\ntree_key4\r\n$5\r\nLIMIT\r\n$1\r\n2\r\n", "*2\r\n$13\r\ntree_key2:fox\r\n$17\r\ntree_key3:giraffe\r\n", "rbtree_RANGE_LIMIT_2");
+    testcase(connfd, "*5\r\n$6\r\nRRANGE\r\n$9\r\ntree_key2\r\n$9\r\ntree_key4\r\n$5\r\nLIMIT\r\n$1\r\n0\r\n", "-Invalid arguments\r\n", "rbtree_RANGE_LIMIT_0_INVALID");
 
     // // 清理本测试用到的所有 key
     // testcase(connfd, "*2\r\n$4\r\nRDEL\r\n$9\r\ntree_key1\r\n", "+OK\r\n", "CLEAN-tree_key1");
@@ -813,6 +815,8 @@ void skiptable_resp_testcase(int connfd){
 	testcase(connfd, "*3\r\n$4\r\nSSET\r\n$9\r\nskip_key4\r\n$7\r\npenguin\r\n", "+OK\r\n", "SET-skip_key4");
 	testcase(connfd, "*1\r\n$5\r\nSSORT\r\n", "*3\r\n$17\r\nskip_key2:narwhal\r\n$17\r\nskip_key3:octopus\r\n$17\r\nskip_key4:penguin\r\n", "skiptable_SORT");
 	testcase(connfd, "*3\r\n$6\r\nSRANGE\r\n$9\r\nskip_key2\r\n$9\r\nskip_key4\r\n", "*3\r\n$17\r\nskip_key2:narwhal\r\n$17\r\nskip_key3:octopus\r\n$17\r\nskip_key4:penguin\r\n", "skiptable_RANGE");
+    testcase(connfd, "*5\r\n$6\r\nSRANGE\r\n$9\r\nskip_key2\r\n$9\r\nskip_key4\r\n$5\r\nLIMIT\r\n$1\r\n2\r\n", "*2\r\n$17\r\nskip_key2:narwhal\r\n$17\r\nskip_key3:octopus\r\n", "skiptable_RANGE_LIMIT_2");
+    testcase(connfd, "*5\r\n$6\r\nSRANGE\r\n$9\r\nskip_key2\r\n$9\r\nskip_key4\r\n$5\r\nLIMIT\r\n$3\r\nabc\r\n", "-Invalid arguments\r\n", "skiptable_RANGE_LIMIT_ABC_INVALID");
 
     // 清理本测试用到的所有 key
     // testcase(connfd, "*2\r\n$4\r\nSDEL\r\n$9\r\nskip_key1\r\n", "+OK\r\n", "CLEAN-skip_key1");
@@ -909,6 +913,42 @@ char* generate_custom_set_pipeline(int count, const char* key_format, const char
                          strlen(key), key, strlen(value), value);
     }
     
+    pipeline[written] = '\0';
+    return pipeline;
+}
+
+char* generate_custom_set_pipeline_cmd(int count, const char* cmd, const char* key_format, const char* value_format) {
+    if (count <= 0 || cmd == NULL || key_format == NULL || value_format == NULL) {
+        return NULL;
+    }
+
+    size_t total_len = 0;
+    size_t cmd_len = strlen(cmd);
+
+    for (int i = 0; i < count; i++) {
+        char key[256], value[256];
+        snprintf(key, sizeof(key), key_format, i + 1);
+        snprintf(value, sizeof(value), value_format, i + 1);
+
+        total_len += snprintf(NULL, 0,
+                              "*3\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                              cmd_len, cmd, strlen(key), key, strlen(value), value);
+    }
+
+    char* pipeline = (char*)malloc(total_len + 1);
+    if (!pipeline) return NULL;
+
+    size_t written = 0;
+    for (int i = 0; i < count; i++) {
+        char key[256], value[256];
+        snprintf(key, sizeof(key), key_format, i + 1);
+        snprintf(value, sizeof(value), value_format, i + 1);
+
+        written += sprintf(pipeline + written,
+                           "*3\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+                           cmd_len, cmd, strlen(key), key, strlen(value), value);
+    }
+
     pipeline[written] = '\0';
     return pipeline;
 }
@@ -1204,6 +1244,93 @@ void hugepacket_testcase(int connfd, int command_count) {
 
     free(buf);
     free(pipeline_cmd);
+}
+
+void range_visited_bench_testcase(int connfd) {
+    const int count = 10000;
+    const char *r_start = "bench_r_key_00001";
+    const char *r_end = "bench_r_key_10000";
+    const char *s_start = "bench_s_key_00001";
+    const char *s_end = "bench_s_key_10000";
+    char cmd[512];
+    char *rset_pipeline = NULL;
+    char *sset_pipeline = NULL;
+    char *resp_buf = NULL;
+    size_t resp_len = 0;
+
+    printf("[range_visited_bench] prepare count=%d\n", count);
+
+    rset_pipeline = generate_custom_set_pipeline_cmd(count, "RSET", "bench_r_key_%05d", "value_%05d");
+    sset_pipeline = generate_custom_set_pipeline_cmd(count, "SSET", "bench_s_key_%05d", "value_%05d");
+    if (!rset_pipeline || !sset_pipeline) {
+        printf("[range_visited_bench] pipeline alloc failed\n");
+        free(rset_pipeline);
+        free(sset_pipeline);
+        return;
+    }
+
+    send_msg(connfd, rset_pipeline, (int)strlen(rset_pipeline));
+    if (recv_pipeline_resps(connfd, count, NULL, 0) != 0) {
+        printf("[range_visited_bench] RSET pipeline failed\n");
+        free(rset_pipeline);
+        free(sset_pipeline);
+        return;
+    }
+
+    send_msg(connfd, sset_pipeline, (int)strlen(sset_pipeline));
+    if (recv_pipeline_resps(connfd, count, NULL, 0) != 0) {
+        printf("[range_visited_bench] SSET pipeline failed\n");
+        free(rset_pipeline);
+        free(sset_pipeline);
+        return;
+    }
+
+    free(rset_pipeline);
+    free(sset_pipeline);
+
+    printf("[range_visited_bench] data loaded, run RRANGE/SRANGE full vs LIMIT 20\n");
+
+    snprintf(cmd, sizeof(cmd),
+             "*3\r\n$6\r\nRRANGE\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+             strlen(r_start), r_start, strlen(r_end), r_end);
+    send_msg(connfd, cmd, (int)strlen(cmd));
+    if (recv_all_with_timeout(connfd, &resp_buf, &resp_len) == 0) {
+        printf("[range_visited_bench] RRANGE full resp_len=%zu\n", resp_len);
+        free(resp_buf);
+        resp_buf = NULL;
+    }
+
+    snprintf(cmd, sizeof(cmd),
+             "*5\r\n$6\r\nRRANGE\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$5\r\nLIMIT\r\n$2\r\n20\r\n",
+             strlen(r_start), r_start, strlen(r_end), r_end);
+    send_msg(connfd, cmd, (int)strlen(cmd));
+    if (recv_all_with_timeout(connfd, &resp_buf, &resp_len) == 0) {
+        printf("[range_visited_bench] RRANGE LIMIT 20 resp_len=%zu\n", resp_len);
+        free(resp_buf);
+        resp_buf = NULL;
+    }
+
+    snprintf(cmd, sizeof(cmd),
+             "*3\r\n$6\r\nSRANGE\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+             strlen(s_start), s_start, strlen(s_end), s_end);
+    send_msg(connfd, cmd, (int)strlen(cmd));
+    if (recv_all_with_timeout(connfd, &resp_buf, &resp_len) == 0) {
+        printf("[range_visited_bench] SRANGE full resp_len=%zu\n", resp_len);
+        free(resp_buf);
+        resp_buf = NULL;
+    }
+
+    snprintf(cmd, sizeof(cmd),
+             "*5\r\n$6\r\nSRANGE\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$5\r\nLIMIT\r\n$2\r\n20\r\n",
+             strlen(s_start), s_start, strlen(s_end), s_end);
+    send_msg(connfd, cmd, (int)strlen(cmd));
+    if (recv_all_with_timeout(connfd, &resp_buf, &resp_len) == 0) {
+        printf("[range_visited_bench] SRANGE LIMIT 20 resp_len=%zu\n", resp_len);
+        free(resp_buf);
+        resp_buf = NULL;
+    }
+
+    printf("[range_visited_bench] done (check kvstore stderr for RANGE_VISITED lines)\n");
 }
 
 
@@ -1794,7 +1921,8 @@ static void master_slave_skiptable_test(const char *master_ip, int master_port,
 int main(int argc, char *argv[]) {
 
 	if (argc < 4) {
-		printf("usage: %s ip port mode [slave_ip slave_port]\n", argv[0]);
+        printf("usage: %s ip port mode [slave_ip slave_port]\n", argv[0]);
+        printf("  mode 10: range visited bench (requires kvstore built with EXTRA_CFLAGS=-DKVS_RANGE_VISITED_DEBUG=1)\n");
 		return -1;
 	}
 
@@ -1840,6 +1968,9 @@ int main(int argc, char *argv[]) {
     }  else if (mode == 5) {
         cleanup_connction(connfd);
         hugepacket_testcase(connfd, 1000000);
+    }  else if (mode == 10) {
+        cleanup_connction(connfd);
+        range_visited_bench_testcase(connfd);
     }
     
 	return 0;

@@ -291,7 +291,7 @@ int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *respo
 }
 
 int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, 
-                        char *response, int max_len) {
+                        int limit, char *response, int max_len) {
     if (!table || !table->header || !start_key || !end_key || !response || max_len <= 0) 
         return -1;  // 添加header检查
 
@@ -303,6 +303,8 @@ int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key,
     
     Node* current = table->header;
     int pos = 0;
+    int returned = 0;
+    int visited = 0;
     
     // 定位起始位置
     for (int i = table->level; i >= 0; i--) {
@@ -315,12 +317,22 @@ int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key,
     
     // 遍历范围内的节点
     while (current && strcmp(current->key, end_key) <= 0 && pos < max_len) {
+        if (limit > 0 && returned >= limit) {
+            break;
+        }
+        visited++;
         int written = snprintf(response + pos, max_len - pos, 
                               "%s:%s\r\n", current->key, current->value);
         if (written < 0 || written >= max_len - pos) break;
         pos += written;
+        returned++;
         current = current->forward[0];
     }
+
+#if KVS_RANGE_VISITED_DEBUG
+    fprintf(stderr, "[RANGE_VISITED][SRANGE] start=%s end=%s limit=%d returned=%d visited=%d\n",
+            start_key, end_key, limit, returned, visited);
+#endif
 
     
     // 确保字符串终止

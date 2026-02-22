@@ -178,7 +178,7 @@ int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value);
 int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key);
 //int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len);
 int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, int max_len);
-int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, char *response, int max_len);
+int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, int limit, char *response, int max_len);
 void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node, 
                                           void (*callback)(rbtree_node *, void *), 
                                           void *userdata);
@@ -269,7 +269,7 @@ int kvs_skiptable_del(kvs_skiptable_t *table, char *key);
 int kvs_skiptable_exist(kvs_skiptable_t *table, char *key);
 //int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len);
 int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *response, int max_len);
-int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, char *response, int max_len);
+int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, int limit, char *response, int max_len);
 
 #endif
 

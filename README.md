@@ -177,7 +177,7 @@ network_mode=ntyco
   RDEL key
   RMOD key value
   REXIST key
-  RRANGE startKey endKey
+  RRANGE startKey endKey [LIMIT k]
   RSORT [high|low] [limit]
   ```
 
@@ -201,9 +201,16 @@ network_mode=ntyco
   SDEL key
   SMOD key value
   SEXIST key
-  SRANGE startKey endKey
+  SRANGE startKey endKey [LIMIT k]
   SSORT [high|low] [limit]
   ```
+
+  说明：
+
+  - `RRANGE start end [LIMIT k]` / `SRANGE start end [LIMIT k]`
+  - 排序/区间比较语义基于 `strcmp`（字典序）；若希望按数值顺序，请将 key 统一做 zero-pad（例如 `key_00001`、`key_00002`）
+  - `LIMIT k` 语义为“对升序区间结果取前 `k` 条”，`k` 必须是正整数
+  - 不带 `LIMIT` 时保持旧行为（返回整个命中区间）
 
 - 大key大value
 

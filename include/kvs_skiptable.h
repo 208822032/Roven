@@ -25,5 +25,5 @@ int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value);
 int kvs_skiptable_del(kvs_skiptable_t *table, char *key);
 int kvs_skiptable_exist(kvs_skiptable_t *table, char *key);
 int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *response, int max_len);
-int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, char *response, int max_len);
+int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, int limit, char *response, int max_len);
 

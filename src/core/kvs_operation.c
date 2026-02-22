@@ -3,8 +3,11 @@
 #include "resp_protocol.h"
 #include "distributed.h"
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <limits.h>
+#include <errno.h>
 
 extern aof_state_t aof_state;
 extern distributed_config_t global_dist_config;
@@ -45,7 +48,7 @@ const command_info command_table[] = {
     {"RDEL",   handle_del,    2, 1, DATA_STRUCTURE_RBTREE},
     {"RMOD",   handle_mod,    3, 1, DATA_STRUCTURE_RBTREE},
     {"REXIST", handle_exist,  2, 0, DATA_STRUCTURE_RBTREE},
-    {"RRANGE", handle_range,  3, 0, DATA_STRUCTURE_RBTREE},
+    {"RRANGE", handle_range, -1, 0, DATA_STRUCTURE_RBTREE},
     {"RSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_RBTREE},
 
     // Hash commands）
@@ -63,7 +66,7 @@ const command_info command_table[] = {
     {"SDEL",   handle_del,    2, 1, DATA_STRUCTURE_SKIPTABLE},
     {"SMOD",   handle_mod,    3, 1, DATA_STRUCTURE_SKIPTABLE},
     {"SEXIST", handle_exist,  2, 0, DATA_STRUCTURE_SKIPTABLE},
-    {"SRANGE", handle_range,  3, 0, DATA_STRUCTURE_SKIPTABLE},
+    {"SRANGE", handle_range, -1, 0, DATA_STRUCTURE_SKIPTABLE},
     {"SSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_SKIPTABLE},
 
     // Paper commands (use RBTree for large values)
@@ -144,6 +147,7 @@ int convert_multiline_to_resp_array(char *multiline_response, char *response, in
 //解析命令参数到上下文
 int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx){
     memset(ctx, 0, sizeof(command_context_t));
+    ctx->limit = -1;
 
     //设置数据结构类型
     if(cmd >= KVS_CMD_SET && cmd <= KVS_CMD_SORT ){
@@ -201,12 +205,51 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             break;
 
         case KVS_CMD_RANGE:
-        case KVS_CMD_RRANGE:
         case KVS_CMD_HRANGE:
-        case KVS_CMD_SRANGE:
             if (count >= 3) {
                 ctx->start_key = tokens[1];
                 ctx->end_key = tokens[2];
+            }
+            break;
+
+        case KVS_CMD_RRANGE:
+        case KVS_CMD_SRANGE:
+            if (count != 3 && count != 5) {
+                return -1;
+            }
+
+            ctx->start_key = tokens[1];
+            ctx->end_key = tokens[2];
+
+            if (count == 5) {
+                char *endptr = NULL;
+                long parsed_limit;
+
+                if (strcasecmp(tokens[3], "LIMIT") != 0) {
+                    return -1;
+                }
+
+                errno = 0;
+                parsed_limit = strtol(tokens[4], &endptr, 10);
+                if (endptr == tokens[4] || *endptr != '\0') {
+                    return -1;
+                }
+
+                if (errno == ERANGE && parsed_limit == LONG_MAX) {
+                    parsed_limit = INT_MAX;
+                } else if (errno != 0) {
+                    return -1;
+                }
+
+                if (parsed_limit <= 0) {
+                    return -1;
+                }
+
+                if (parsed_limit > INT_MAX) {
+                    parsed_limit = INT_MAX;
+                }
+
+                ctx->limit = (int)parsed_limit;
             }
             break;
     }
@@ -227,6 +270,10 @@ const command_info *lookup_command(const char *name){
 
 //检查参数
 int check_arity(const command_info *cmd, int argc){
+    if(strcmp(cmd->name, "RRANGE") == 0 || strcmp(cmd->name, "SRANGE") == 0){
+        return argc == 3 || argc == 5;
+    }
+
     if(cmd->arity >= 0) return argc == cmd->arity;
     else{
         //至少需要 |arity|个参数
@@ -462,7 +509,7 @@ int handle_range(command_context_t *ctx, char *response){
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-    			ret = kvs_rbtree_range(kvs_get_global_rbtree(), ctx->start_key, ctx->end_key, temp_response, KVS_MAX_RESPONSE_LENGTH);
+			ret = kvs_rbtree_range(kvs_get_global_rbtree(), ctx->start_key, ctx->end_key, ctx->limit, temp_response, KVS_MAX_RESPONSE_LENGTH);
             break;
 #endif
 #if ENABLE_HASH
@@ -472,7 +519,7 @@ int handle_range(command_context_t *ctx, char *response){
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-    			ret = kvs_skiptable_range(kvs_get_global_skiptable(), ctx->start_key, ctx->end_key, temp_response, KVS_MAX_RESPONSE_LENGTH);
+		    	ret = kvs_skiptable_range(kvs_get_global_skiptable(), ctx->start_key, ctx->end_key, ctx->limit, temp_response, KVS_MAX_RESPONSE_LENGTH);
             break;
 #endif
         default:

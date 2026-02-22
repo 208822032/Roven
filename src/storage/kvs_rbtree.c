@@ -648,36 +648,55 @@ int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, in
 }
 
 
-// 中序遍历辅助函数
-static void inorder_traversal(rbtree *T, rbtree_node *node, 
-                              char *start_key, char *end_key,
-                              char *response, int *len, int max_len) {
-    if (node == T->nil) return;
-    
-    if (strcmp(node->key, start_key) >= 0) {
-        inorder_traversal(T, node->left, start_key, end_key, response, len, max_len);
-    }
-    
-    if (strcmp(node->key, start_key) >= 0 && 
-        strcmp(node->key, end_key) <= 0) {
-        int n = snprintf(response + *len, max_len - *len, 
-                         "%s:%s\r\n", node->key, (char*)node->value);
-        if (n > 0 && *len + n < max_len) {
-            *len += n;
-        }
-    }
-    
-    if (strcmp(node->key, end_key) <= 0) {
-        inorder_traversal(T, node->right, start_key, end_key, response, len, max_len);
-    }
+// 中序遍历辅助函数（支持 limit 和 early stop）
+static void inorder_traversal_with_range_limit(rbtree *T, rbtree_node *node,
+							  char *start_key, char *end_key, int limit,
+							  int *returned, int *visited, int *stop,
+							  char *response, int *len, int max_len) {
+	if (node == T->nil || *stop) return;
+	(*visited)++;
+
+	if (strcmp(node->key, start_key) >= 0) {
+		inorder_traversal_with_range_limit(T, node->left, start_key, end_key, limit,
+									   returned, visited, stop, response, len, max_len);
+	}
+
+	if (*stop) return;
+
+	if (strcmp(node->key, start_key) >= 0 &&
+		strcmp(node->key, end_key) <= 0) {
+		int n = snprintf(response + *len, max_len - *len,
+						 "%s:%s\r\n", node->key, (char*)node->value);
+		if (n > 0 && *len + n < max_len) {
+			*len += n;
+			(*returned)++;
+			if (limit > 0 && *returned >= limit) {
+				*stop = 1;
+				return;
+			}
+		}
+	}
+
+	if (strcmp(node->key, end_key) <= 0) {
+		inorder_traversal_with_range_limit(T, node->right, start_key, end_key, limit,
+									   returned, visited, stop, response, len, max_len);
+	}
 }
 
 
-int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, char *response, int max_len){
+int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, int limit, char *response, int max_len){
 	if (!inst || !start_key || !end_key) return -1;
     
     int len = 0;
-    inorder_traversal(inst, inst->root, start_key, end_key, response, &len, max_len);
+	int returned = 0;
+	int visited = 0;
+	int stop = 0;
+	inorder_traversal_with_range_limit(inst, inst->root, start_key, end_key, limit,
+									   &returned, &visited, &stop, response, &len, max_len);
+#if KVS_RANGE_VISITED_DEBUG
+	fprintf(stderr, "[RANGE_VISITED][RRANGE] start=%s end=%s limit=%d returned=%d visited=%d\n",
+			start_key, end_key, limit, returned, visited);
+#endif
     return len;
 }
 
@@ -724,7 +743,7 @@ int main(){
 	// 测试2: 范围查询
     printf("\n=== Testing kvs_rbtree_range ===\n");
     printf("Range from 'banana' to 'orange':\n");
-    len = kvs_rbtree_range(&tree, "banana", "orange", response, sizeof(response));
+	len = kvs_rbtree_range(&tree, "banana", "orange", -1, response, sizeof(response));
     if (len > 0) {
         printf("%s", response);
     } else {
@@ -741,7 +760,7 @@ int main(){
     
     // 无效范围测试
     printf("Invalid range test: %d (expected 0)\n", 
-           kvs_rbtree_range(&tree, "zebra", "aardvark", response, sizeof(response)));
+		   kvs_rbtree_range(&tree, "zebra", "aardvark", -1, response, sizeof(response)));
 
     // 清理
     kvs_rbtree_destory(&tree);

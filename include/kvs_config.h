@@ -27,6 +27,13 @@
 #define ENABLE_RDB              1
 #define ENABLE_AOF              1
 
+// 调试开关：统计并打印 RANGE 遍历访问节点数
+// 0: 关闭（默认，不影响兼容）
+// 1: 开启（用于测试/bench 观测）
+#ifndef KVS_RANGE_VISITED_DEBUG
+#define KVS_RANGE_VISITED_DEBUG 0
+#endif
+
 // 运行模式
 typedef enum {
 	KVS_ROLE_MASTER = 0,
