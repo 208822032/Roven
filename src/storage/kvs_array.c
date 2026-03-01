@@ -11,6 +11,20 @@
 
 kvs_array_t global_array = {0};
 
+static int kvs_array_find_index(kvs_array_t *inst, const char *key, int *out_idx) {
+
+    if (!inst || !key || !out_idx) return -1;
+
+    for (int i = 0; i < inst->len; i++) {
+        if (strcmp(inst->table[i].key, key) == 0) {
+            *out_idx = i;
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 int kvs_array_create(kvs_array_t *inst) {
 
 	if (!inst) return -1;
@@ -22,11 +36,44 @@ int kvs_array_create(kvs_array_t *inst) {
 	if (!inst->table) {
 		return -1;
 	}
+    memset(inst->table, 0, KVS_ARRAY_SIZE * sizeof(kvs_array_item_t));
 
+    inst->capacity = KVS_ARRAY_SIZE;
+    inst->min_capacity = inst->capacity;
+    inst->len = 0;
 	inst->total = 0;
 
 	return 0;
 
+}
+
+int kvs_array_reserve(kvs_array_t *inst, int new_cap) {
+
+    if (!inst || !inst->table || inst->capacity <= 0) return -1;
+    if (new_cap <= inst->capacity) return 0;
+
+    int target = inst->capacity * 2;
+    if (target < new_cap) {
+        target = new_cap;
+    }
+
+    if (target <= inst->capacity) {
+        return -1;
+    }
+
+    kvs_array_item_t *new_table = (kvs_array_item_t *)kvs_realloc(
+        inst->table, (size_t)target * sizeof(kvs_array_item_t));
+    if (!new_table) {
+        return -1;
+    }
+
+    memset(new_table + inst->capacity, 0,
+        (size_t)(target - inst->capacity) * sizeof(kvs_array_item_t));
+
+    inst->table = new_table;
+    inst->capacity = target;
+
+    return 0;
 }
 
 void kvs_array_destory(kvs_array_t *inst) {
@@ -35,7 +82,7 @@ void kvs_array_destory(kvs_array_t *inst) {
 
 	if (inst->table) {
         // 先释放每个元素的 key/value
-        for (int i = 0; i < inst->total; i++) {
+    for (int i = 0; i < inst->len; i++) {
             if (inst->table[i].key) {
                 kvs_free(inst->table[i].key);
                 inst->table[i].key = NULL;
@@ -50,6 +97,9 @@ void kvs_array_destory(kvs_array_t *inst) {
         inst->table = NULL;
 	}
 
+    inst->len = 0;
+    inst->capacity = 0;
+    inst->min_capacity = 0;
     inst->total = 0;
 
 }
@@ -62,12 +112,16 @@ void kvs_array_destory(kvs_array_t *inst) {
 int kvs_array_set(kvs_array_t *inst, char *key, char *value) {
 
 	if (inst == NULL || key == NULL || value == NULL) return -1;
-	if (inst->total == KVS_ARRAY_SIZE) return -1;
+    int idx = -1;
+    if (kvs_array_find_index(inst, key, &idx) == 0) {
+        return 1;
+    }
 
-	char *str = kvs_array_get(inst, key);
-	if (str) {
-		return 1; // 
-	}
+    if (inst->len >= inst->capacity) {
+        if (kvs_array_reserve(inst, inst->capacity + 1) != 0) {
+            return -1;
+        }
+    }
 
 	char *kcopy = kvs_malloc(strlen(key) + 1);
 	if (kcopy == NULL) return -2;
@@ -84,24 +138,10 @@ int kvs_array_set(kvs_array_t *inst, char *key, char *value) {
 	// strncpy(kvalue, value, strlen(value));
     strcpy(kvalue, value);
 
-	int i = 0;
-	for (i = 0;i < inst->total;i ++) {
-		if (inst->table[i].key == NULL) {
-			
-			inst->table[i].key = kcopy;
-			inst->table[i].value = kvalue;
-			inst->total ++;
-			
-			return 0;
-		}
-	}
-
-	if (i == inst->total && i < KVS_ARRAY_SIZE) {
-
-		inst->table[i].key = kcopy;
-		inst->table[i].value = kvalue;
-		inst->total ++;
-	}
+    inst->table[inst->len].key = kcopy;
+    inst->table[inst->len].value = kvalue;
+    inst->len++;
+    inst->total = inst->len;
 
 	return 0;
 }
@@ -110,16 +150,9 @@ char* kvs_array_get(kvs_array_t *inst, char *key) {
 
 	if (inst == NULL || key == NULL) return NULL;
 
-	int i = 0;
-	for (i = 0;i < inst->total;i ++) {
-		if (inst->table[i].key == NULL) {
-			continue;
-		}
-        
-		if (strcmp(inst->table[i].key, key) == 0) {
-			return inst->table[i].value;
-		}
-        
+    int idx = -1;
+    if (kvs_array_find_index(inst, key, &idx) == 0) {
+        return inst->table[idx].value;
 	}
     
 	return NULL;
@@ -163,37 +196,25 @@ int kvs_array_del(kvs_array_t *inst, char *key) {
         return -1; // 无效参数
     }
 
-    for (int i = 0; i < inst->total; i++) {
-        // 跳过已删除的项(key为NULL)
-        if (inst->table[i].key == NULL) {
-            continue;
-        }
-
-        if (strcmp(inst->table[i].key, key) == 0) {
-
-            // 释放内存
-            kvs_free(inst->table[i].key);
-            kvs_free(inst->table[i].value);
-            inst->table[i].key = NULL;   // 关键修复！
-            inst->table[i].value = NULL; // 保持一致性
-
-
-            // 如果删除的是最后一个元素，减少total计数
-            if (i == inst->total - 1) {
-                inst->total--;
-                
-                // 向前查找连续的NULL项，调整total
-                while (inst->total > 0 && 
-                       inst->table[inst->total - 1].key == NULL) {
-                    inst->total--;
-                }
-            }
-            
-            return 0; // 成功删除
-        }
+    int idx = -1;
+    if (kvs_array_find_index(inst, key, &idx) != 0) {
+        return 1; // 键不存在
     }
 
-    return 1; // 键不存在
+    kvs_free(inst->table[idx].key);
+    kvs_free(inst->table[idx].value);
+
+    if (idx < inst->len - 1) {
+        memmove(&inst->table[idx],
+                &inst->table[idx + 1],
+                (size_t)(inst->len - idx - 1) * sizeof(kvs_array_item_t));
+    }
+
+    inst->len--;
+    memset(&inst->table[inst->len], 0, sizeof(kvs_array_item_t));
+    inst->total = inst->len;
+
+    return 0; // 成功删除
 }
 
 
@@ -205,21 +226,14 @@ int kvs_array_mod(kvs_array_t *inst, char *key, char *value) {
 
 	if (inst == NULL || key == NULL || value == NULL) return -1;
 // error: > 1024
-	if (inst->total == 0) {
+    if (inst->len == 0) {
 		return KVS_ARRAY_SIZE;
 	}
-	
 
-	int i = 0;
-	for (i = 0;i < inst->total;i ++) {
+    int idx = -1;
+    if (kvs_array_find_index(inst, key, &idx) == 0) {
 
-		if (inst->table[i].key == NULL) {
-			continue;
-		}
-
-		if (strcmp(inst->table[i].key, key) == 0) {
-
-			kvs_free(inst->table[i].value);
+            kvs_free(inst->table[idx].value);
 
 			char *kvalue = kvs_malloc(strlen(value) + 1);
 			if (kvalue == NULL) return -2;
@@ -227,14 +241,12 @@ int kvs_array_mod(kvs_array_t *inst, char *key, char *value) {
 			// strncpy(kvalue, value, strlen(value));
             strcpy(kvalue, value);
 
-			inst->table[i].value = kvalue;
+            inst->table[idx].value = kvalue;
 
 			return 0;
-		}
-
 	}
 
-	return i;
+    return inst->len;
 }
 
 
@@ -297,15 +309,13 @@ int kvs_array_sort(kvs_array_t *inst, char *response, int max_len) {
 int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int max_len){
     if (!inst || !response || max_len <= 0) return -1;
 
-    kvs_array_item_t *items = kvs_malloc(inst->total * sizeof(kvs_array_item_t));
+    kvs_array_item_t *items = kvs_malloc((size_t)inst->len * sizeof(kvs_array_item_t));
     if(!items) return -1;
 
-    int count = 0;
+    int count = inst->len;
     int i;
-    for(i = 0;i < inst->total; i++){
-        if(inst->table[i].key){
-            items[count++] = inst->table[i];
-        }
+    for(i = 0; i < count; i++){
+        items[i] = inst->table[i];
     }
 
     //按键值排序
@@ -341,14 +351,12 @@ int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *res
     if (!inst || !start_key || !end_key) return -1;
     
     // 收集所有有效项
-    kvs_array_item_t *items = kvs_malloc(inst->total * sizeof(kvs_array_item_t));
+    kvs_array_item_t *items = kvs_malloc((size_t)inst->len * sizeof(kvs_array_item_t));
     if (!items) return -1;
     
-    int count = 0;
-    for (int i = 0; i < inst->total; i++) {
-        if (inst->table[i].key) {
-            items[count++] = inst->table[i];
-        }
+    int count = inst->len;
+    for (int i = 0; i < count; i++) {
+        items[i] = inst->table[i];
     }
     
     // 按键排序

@@ -523,10 +523,12 @@ int handle_range(command_context_t *ctx, char *response){
             break;
 #endif
         default:
+            kvs_free(temp_response);
             return resp_generate_error(response, "Data structure not enabled");
     }
 
     if (ret <= 0) {
+        kvs_free(temp_response);
         return resp_generate_array_start(response, 0);
     } else {
 		// 这里假定 temp_response 中的内容长度不会超过 KVS_MAX_RESPONSE_LENGTH
@@ -569,11 +571,13 @@ int handle_sort(command_context_t *ctx, char *response){
 #endif       
 
         default:
-            return resp_generate_error(response, "Data structure not enabled");
+        kvs_free(temp_response);
+        return resp_generate_error(response, "Data structure not enabled");
     }
 
         if (ret <= 0) {
-                return resp_generate_array_start(response, 0);
+        kvs_free(temp_response);
+        return resp_generate_array_start(response, 0);
         } else {
 		int n = convert_multiline_to_resp_array(temp_response, response, KVS_MAX_RESPONSE_LENGTH);
 		kvs_free(temp_response);

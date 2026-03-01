@@ -1,593 +1,431 @@
-# KVStore 
-
-项目现在支持通过简单的 `key=value` 配置文件集中管理启动参数，并允许命令行覆盖关键项。
 ## KVStore
 
-一个类 Redis 的轻量级 KV 引擎，支持多种数据结构、RESP 协议 & Pipeline、内存池、RDB/AOF 持久化，以及 TCP / eBPF 两种主从同步模式，并通过统一配置文件完成启动参数管理。
+一个类 Redis 的轻量级 KV 引擎，支持多数据结构、RESP 协议、AOF/RDB 持久化，以及 TCP/eBPF 两种主从同步链路。
 
 ---
 
-## 1. 功能概览
+## 1. 项目定位
 
-- **数据结构**：数组 / 红黑树 / 哈希表 / 跳表（全部支持**动态长度 value**）
-  - 数组：`SET / GET / DEL / MOD / EXIST / RANGE / SORT`
-  - 红黑树：`RSET / RGET / RDEL / RMOD / REXIST / RRANGE / RSORT`
-  - 哈希表：`HSET / HGET / HDEL / HMOD / HEXIST / HRANGE / HSORT`
-  - 跳表：`SSET / SGET / SDEL / SMOD / SEXIST / SRANGE / SSORT`
-  - 以上四种结构的 value 均使用统一内存管理层，支持从小 key 到大 value 的**按需动态分配与释放**，不会被固定长度数组/结构体限制。
-- **协议**：自研 RESP 解析器，兼容 Redis 风格，多命令 Pipeline
-- **持久化**：RDB 快照 + AOF 追加日志，支持重写
-- **分布式**：主从复制（TCP / eBPF 两种同步实现）
-- **内存管理**：自定义内存池 + jemalloc 封装 + glibc内存管理
-- **网络模型**：Reactor（epoll）/ Proactor（io_uring）/ NtyCo 协程
+一个可落地运行的 C 语言 KV 数据库，覆盖“协议解析 -> 存储引擎 -> 持久化 -> 主从复制 -> 压测体系”的完整链路，并通过统一脚本对比 Redis 进行性能验证。
+
+**核心职责/成果：**
+- 设计并实现四种数据结构引擎：`array / rbtree / hash / skiptable`
+- 完成 RESP 协议解析、Pipeline 支持与命令分发
+- 实现 AOF/RDB 持久化和重放恢复
+- 实现主从同步（`sync_mode=tcp|ebpf`）
+- 统一压测框架（同口径对比 KVStore 与 Redis）、自定义读写、自定义内存池虚拟内存占用、自定义eBPF同步链路压测
 
 ---
 
-## 2. 代码结构
+## 2. 技术栈
 
-- `src/core/`：核心入口 & 全局配置
-  - `kvstore.c`：主函数，加载配置、初始化引擎、启动网络循环
-  - `kvs_config.c`：配置解析与命令行参数合并逻辑
-  - `kvs_globals.c`：全局配置 `g_cfg`、全局数据结构实例
-- `src/storage/`：四种数据结构 + 内存池
-- `src/persistence/`：RDB、AOF 以及 AOF 重写
-- `src/network/`：RESP 协议解析 + Reactor/Proactor/NtyCo 三种网络实现
-- `src/distributed/`：主从同步、eBPF 相关代码
-- `include/`：公共头文件（命令表、配置、类型定义等）
-- `tests/`：功能测试 & QPS 压测客户端
+- **语言与系统**：C、Linux、epoll、io_uring、pthread
+- **协议与网络**：RESP、TCP、Pipeline
+- **存储与内存**：自定义内存池、glibc malloc、jemalloc 可切换
+- **持久化**：AOF（含 fsync 策略）、RDB
+- **复制**：Master-Slave（TCP / eBPF）
+- **工程化**：统一配置、自动化压测脚本、结果归档
 
 ---
 
-## 3. 编译
+## 3. 架构设计
 
-项目已经提供 `Makefile`，推荐直接使用：
+### 3.1 总体架构图
 
-```bash
-make            
+```mermaid
+flowchart LR
+    C[Client / redis-benchmark] --> N[Network Layer<br/>Reactor / Proactor / NtyCo]
+    N --> P[RESP Parser]
+    P --> D[Command Dispatcher]
+    D --> S1[array]
+    D --> S2[rbtree]
+    D --> S3[hash]
+    D --> S4[skiptable]
+
+    D --> AOF[AOF Append / Replay]
+    D --> RDB[RDB Load / Save]
+
+    D --> SYNC[Replication Layer]
+    SYNC --> TCP[TCP Sync Backend]
+    SYNC --> EBPF[eBPF Sync Daemon]
+
+    M[Memory Backend<br/>pool / system / jemalloc] --> S1
+    M --> S2
+    M --> S3
+    M --> S4
 ```
 
-生成的二进制文件：
+### 3.2 请求处理时序图（写命令）
 
-- 服务端：`kvstore`
-- 测试客户端：
-  - `tests/testcase`：协议正确性、主从同步、大pipeline压测
-  - `tests/write_qps_test`：单机写入QPS、主从写入QPS、自定义内存池写入用例
-  - `tests/kvstore_client`：交互式、管道式客户端
-  - `tests/test_paper`：单机写入、获取、修改、删除大value
-  - `tests/test_paper_sync`：主从同步写入、获取、修改、删除大value
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Net as Network
+    participant Resp as RESP Parser
+    participant Cmd as Command Filter
+    participant Store as Data Structure
+    participant AOF as AOF
+    participant Slave as Slave
 
-> 如果使用 eBPF 同步链路，工程会构建 eBPF 相关目标（内核态 `src/eBPF/ebpf_kern.o` 与用户态守护进程 `src/eBPF/ebpf_syncd`），并在编译时生成 `src/eBPF/vmlinux.h`。
-> 这要求系统存在 `/sys/kernel/btf/vmlinux`，并安装 `bpftool`、`clang`、`libbpf` 等开发包；运行 `ebpf_syncd` 需要 root/CAP_BPF 权限。
+    Client->>Net: TCP payload
+    Net->>Resp: parse RESP
+    Resp->>Cmd: tokens + argc
+    Cmd->>Store: execute write command
+    Store-->>Cmd: success
+    Cmd->>AOF: aof_append(...)
+    Cmd->>Slave: master_sync_command(...)
+    Cmd-->>Client: RESP reply
+```
+
+### 3.3 主从同步架构图（TCP / eBPF）
+
+```mermaid
+flowchart TD
+    W[Write Traffic] --> M[Master]
+    M -->|sync_mode=tcp| ST[TCP Sync Port]
+    ST --> S1[Slave1]
+    ST --> S2[Slave2]
+
+    W -->|sync_mode=ebpf| K[kprobe/tcp_sendmsg]
+    K --> R[ringbuf]
+    R --> D[ebpf_syncd]
+    D --> S1
+    D --> S2
+```
 
 ---
 
-## 4. 配置与启动
+## 4. 模块划分
 
-### 4.1 配置文件位置
+| 模块 | 路径 | 说明 |
+|---|---|---|
+| 核心入口 | `src/core/kvstore.c` | 配置加载、全局初始化、启动网络与优雅退出 |
+| 协议解析 | `src/network/resp_protocol.c` | RESP 命令探测、解析、状态机 |
+| 存储引擎 | `src/storage/` | array/rbtree/hash/skiptable 实现 |
+| 持久化 | `src/persistence/` | AOF/RDB 读写、重放、重写 |
+| TCP 复制 | `src/distributed/` | 全量 + 增量同步 |
+| eBPF 复制 | `src/eBPF/ebpf_syncd.c` | 抓取 master 流量并广播到 slave |
+| 压测体系 | `scripts/bench_all.sh`、`test/*` | 标准对齐压测（KVStore vs Redis）+ 自定义压测（读写负载、内存后端对比、eBPF同步链路） |
+
+---
+
+## 5. 关键代码片段
+
+### 5.1 写命令：执行后落盘 + 同步（`src/core/kvstore.c`）
+
+```c
+if(ret >= 0 && cmd->write_command){
+#if ENABLE_AOF
+    if(!aof_is_loading()){
+        aof_append(count, tokens);
+    }
+#endif
+
+    if(get_sync_context() != 2){
+        if (global_dist_config.role == ROLE_MASTER && g_cfg.sync_mode == KVS_SYNC_TCP) {
+            master_sync_command(tokens[0], tokens[1], (count > 2) ? tokens[2] : NULL);
+        }
+    }
+}
+```
+
+### 5.2 RESP 完整命令探测（`src/network/resp_protocol.c`）
+
+```c
+int resp_peek_command(const char* buf, size_t len, size_t offset){
+    if (!buf || offset >= len) return 0;
+    ...
+    if (*p != '*') return -1;
+    ...
+    for (long long i = 0; i < array_len; ++i) {
+        if (*p != '$') return -1;
+        ...
+    }
+    return (int)(p - (buf + offset));
+}
+```
+
+### 5.3 主节点全量同步（`src/distributed/distributed.c`）
+
+```c
+#if ENABLE_ARRAY
+for (int i = 0; i < global_array.total; i++) {
+    if (global_array.table[i].key && global_array.table[i].value) {
+        master_sync_command("SET", global_array.table[i].key, global_array.table[i].value);
+    }
+}
+#endif
+```
+
+---
+
+## 6. 性能报告
+
+### 6.1 标准对齐压测（KVStore vs Redis）
+
+- 压测工具：`redis-benchmark`
+- 二进制路径：`/usr/local/bin/redis-benchmark`
+- 版本：`redis-benchmark 6.2.21 (git:578ac274)`
+- 对齐范围：`populate / set / get`（KVStore 与 Redis 使用同一工具与同口径参数，仅目标地址不同）
+- 参数口径：`-c 50 -n 100000 -P 1 -d 32 -r 100000`
+
+| ds | op | kvstore_qps | redis_qps | kv/redis |
+|---|---:|---:|---:|---:|
+| array | set | 1226.890000 | 108577.630000 | 0.011 |
+| array | get | 1191.280000 | 129032.270000 | 0.009 |
+| rbtree | set | 95785.440000 | 121802.680000 | 0.786 |
+| rbtree | get | 94786.730000 | 112359.550000 | 0.844 |
+| hash | set | 88967.980000 | 123001.230000 | 0.723 |
+| hash | get | 90579.710000 | 124378.110000 | 0.728 |
+| skiptable | set | 88495.580000 | 122699.390000 | 0.721 |
+| skiptable | get | 93632.960000 | 121802.680000 | 0.769 |
+
+- 当前瓶颈集中在 `array` 路径（最低 `array/get = 1191.28 qps`）
+- `rbtree/hash/skiptable` 的 `set/get` 已进入高吞吐区间，与 Redis 差距显著缩小
+- TCP 主从模式下吞吐损耗较小；eBPF 模式在启用批处理后，吞吐显著优于无批处理路径
+- 后续优化优先级：`array` 路径、eBPF 大包与分片处理、内存后端按场景调优
+
+> 原始数据：`results/raw.csv`  
+> 汇总报告：`results/summary.md`
+
+### 6.2 自定义压测数据：单机 vs 主从同步（TCP）
+
+注：该组数据均为 `100000` 次写入，且测试时关闭 AOF。
+
+| Mode         | Structure | count  | QPS      |
+| ------------ | --------- | ------ | -------- |
+| Standalone   | array     | 100000 | 17668.08 |
+| Standalone   | rbtree    | 100000 | 16593.61 |
+| Standalone   | hash      | 100000 | 16897.22 |
+| Standalone   | skiptable | 100000 | 17324.24 |
+| Master-Slave | array     | 100000 | 17156.03 |
+| Master-Slave | rbtree    | 100000 | 16055.72 |
+| Master-Slave | hash      | 100000 | 16452.01 |
+| Master-Slave | skiptable | 100000 | 16559.29 |
+
+### 6.3 自定义压测数据：单机 vs 主从同步（eBPF）
+
+| Mode         | Structure | count  | QPS |
+| ------------ | --------- | ------ | --- |
+| Standalone   | array     | 100000 | 17668.08 |
+| Standalone   | rbtree    | 100000 | 16593.61 |
+| Standalone   | hash      | 100000 | 16897.22 |
+| Standalone   | skiptable | 100000 | 17324.24 |
+| Master-Slave | array     | 100000 | 11761.18（无批处理） |
+| Master-Slave | rbtree    | 100000 | 11496.70（无批处理） |
+| Master-Slave | hash      | 100000 | 11455.85（无批处理） |
+| Master-Slave | skiptable | 100000 | 11270.69（无批处理） |
+| Master-Slave | array     | 100000 | 15063.18（批处理） |
+| Master-Slave | rbtree    | 100000 | 15041.32（批处理） |
+| Master-Slave | hash      | 100000 | 15231.43（批处理） |
+| Master-Slave | skiptable | 100000 | 15179.61（批处理） |
+
+### 6.4 eBPF 批处理佐证（send_all 统计）
+
+- 无批处理：每次发送通常对应一条小同步指令，`avg` 约 30B，系统调用频繁。
+- 批处理：多条同步指令聚合后再发，`avg` 提升到 128KB（`131072`），系统调用次数显著下降。
+
+| 场景 | send_all calls | send_all bytes | send_all avg (B) |
+| ---- | -------------: | -------------: | ---------------: |
+| 无批处理 | 8281 ~ 13553 | 256711 ~ 420143 | 31.0 ~ 31.8 |
+| 批处理 | 3 ~ 5 | 393216 ~ 655360 | 131072.0 |
+
+### 6.5 自定义压测数据：不同内存后端对比
+
+**基础功能（pool / system / jemalloc）**
+
+| BACKEND | PATTERN        | maxrss (KB) | QPS / OPS |
+| ------- | -------------- | ----------- | --------- |
+| POOL    | small-fixed    | 210576      | qps-small = 27027027.03 |
+| POOL    | mid-fixed      | 210576      | read-heavy-small = 24005840 |
+| POOL    | big-after-frag | 1029412     | time = 0 ms |
+| SYSTEM  | small-fixed    | 10176       | qps-small = 26315789.47 |
+| SYSTEM  | mid-fixed      | 52416       | read-heavy-small = 46167076.92 |
+| SYSTEM  | big-after-frag | 1068024     | time = 0 ms |
+| JEMALLOC| small-fixed    | 10188       | qps-small = 25641025.64 |
+| JEMALLOC| mid-fixed      | 52428       | read-heavy-small = 49996000 |
+| JEMALLOC| big-after-frag | 1068036     | time = 0 ms |
+
+**混合写删负载（2次写入 → 1次删除 → 间隔后再写入1次 → 最后删除2次）的 QPS 对比**
+
+| Backend  | Structure | n      | total_ops | QPS (ops/s) | 虚拟内存占用 (GB) |
+|----------|-----------|--------|-----------|-------------|----------------|
+| pool     | array     | 100000 | 600000    | 18085.46    | 1.88 |
+| pool     | rbtree    | 100000 | 600000    | 16750.64    | 1.88 |
+| pool     | hash      | 100000 | 600000    | 17039.22    | 1.88 |
+| pool     | skiptable | 100000 | 600000    | 17490.27    | 1.88 |
+| system   | array     | 100000 | 600000    | 17234.81    | 1.96 |
+| system   | rbtree    | 100000 | 600000    | 17415.63    | 1.96 |
+| system   | hash      | 100000 | 600000    | 17502.00    | 1.96 |
+| system   | skiptable | 100000 | 600000    | 17021.75    | 1.96 |
+| jemalloc | array     | 100000 | 600000    | 17750.15    | 1.95 |
+| jemalloc | rbtree    | 100000 | 600000    | 17342.31    | 1.95 |
+| jemalloc | hash      | 100000 | 600000    | 17684.56    | 1.95 |
+| jemalloc | skiptable | 100000 | 600000    | 17790.69    | 1.95 |
+
+---
+
+## 7. 压测复现步骤
+
+### 7.1 依赖准备
+
+```bash
+# 必需工具
+which redis-benchmark
+redis-benchmark --version
+python3 --version
+```
+
+### 7.2 编译项目
+
+```bash
+git submodule init
+git submodule update 
+make 
+```
+
+### 7.3 启动待测服务
+
+```bash
+# KVStore
+./kvstore --config config/master.conf
+
+# Redis（示例）
+redis-server --port 6379
+```
+
+### 7.4 一键启动
+
+```bash
+KV_HOST=127.0.0.1 KV_PORT=9300 \
+REDIS_HOST=127.0.0.1 REDIS_PORT=6379 \
+C=50 N=100000 POP_N=100000 P=1 KEYSPACE=100000 VALUE_SIZE=32 \
+scripts/bench_all.sh
+```
+
+### 7.5 结果产物
+
+- 原始明细：`results/raw.csv`
+- 汇总报告：`results/summary.md`
+- 执行日志：`logs/`
+
+### 7.6 对齐说明
+
+- `set/get/populate`：同工具（`redis-benchmark`）同参数口径对齐
+- `range/sort`：KVStore 与 Redis 语义不完全一致，报告中标记为 **not aligned**，用于 KVStore 内部分析
+
+### 7.7 自定义压测复现命令
+
+以下命令用于复现本 README 中“自定义压测数据”部分。
+
+1) **单机写入 QPS（四种结构）**
+
+```bash
+./tests/write_qps_test 127.0.0.1 9300 5 100000
+```
+
+2) **主从一致性功能验证（TCP/eBPF 均可复用）**
+
+```bash
+# mode 6~9: array / rbtree / hash / skiptable 主从一致性
+./tests/testcase 127.0.0.1 9300 6 127.0.0.1 9301
+./tests/testcase 127.0.0.1 9300 7 127.0.0.1 9301
+./tests/testcase 127.0.0.1 9300 8 127.0.0.1 9301
+./tests/testcase 127.0.0.1 9300 9 127.0.0.1 9301
+```
+
+3) **自定义混合写删负载（对应 6.5 第二张表）**
+
+```bash
+# mode=7: 2次写入 -> 1次删除 -> 间隔后再写入1次 -> 最后删除2次
+./tests/write_qps_test 127.0.0.1 9300 7 100000
+```
+
+4) **eBPF 同步链路复现（先启动 master/slave，再启动 ebpf_syncd）**
+
+```bash
+./kvstore --config config/master.conf
+./kvstore --config config/slave.conf
+sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
+
+# 在 master 侧打压
+./tests/write_qps_test 127.0.0.1 9300 5 100000
+```
+
+5) **不同内存后端对比（pool/system/jemalloc）**
+
+```bash
+# 分别替换 mem_backend=pool|system|jemalloc 后重启服务，再执行同一压测命令
+./kvstore --config config/master.conf
+./tests/write_qps_test 127.0.0.1 9300 7 100000
+```
+
+---
+
+## 8. 功能与命令覆盖
+
+### 8.1 基础命令族
+
+- array：`SET/GET/DEL/MOD/EXIST/RANGE/SORT`
+- rbtree：`RSET/RGET/RDEL/RMOD/REXIST/RRANGE/RSORT`
+- hash：`HSET/HGET/HDEL/HMOD/HEXIST/HRANGE/HSORT`
+- skiptable：`SSET/SGET/SDEL/SMOD/SEXIST/SRANGE/SSORT`
+
+### 8.2 其他命令
+
+- 大 value：`PAPERSET/PAPERGET/PAPERMOD/PAPERDEL`
+- 连接控制：`QUIT`
+
+### 8.3 RANGE / SORT 参数支持
+
+#### RANGE 家族
+
+- `RANGE startKey endKey`（array）
+- `HRANGE startKey endKey`（hash）
+- `RRANGE startKey eney [LIMIT k]]`（rbtree）
+- `SRANGE startKey endKey [LIMIT k]`（skiptable）
+
+参数规则：
+- `RANGE/HRANGE` 固定 3 个参数（含命令名），不支持 `LIMIT`。
+- `RRANGE/SRANGE` 仅支持两种参数个数：`3` 或 `5`。
+- 当使用 `LIMIT` 时，格式必须是 `... LIMIT k`，其中 `k` 必须为正整数；否则返回参数错误。
+- `RRANGE/SRANGE` 不带 `LIMIT` 时返回整个命中区间；带 `LIMIT` 时返回前 `k` 条（按升序区间遍历顺序）。
+
+#### SORT 家族
+
+- `SORT [high|low] [limit]`
+- `RSORT [high|low] [limit]`
+- `HSORT [high|low] [limit]`
+- `SSORT [high|low] [limit]`
+
+参数规则：
+- 默认排序方向：`low`（升序）。
+- `high` 表示降序，`low` 表示升序。
+- `limit` 为可选正整数；`<=0` 或无法解析时按“不限制条数”处理。
+- 不带任何参数时等价于 `low` 且不限制条数。
+
+#### 比较语义
+
+- 四种结构的 `RANGE/SORT` 均基于 `strcmp` 的字典序比较 key。
+- 若希望获得数值顺序，建议使用 zero-pad key（如 `key_000001`）。
+
+---
+
+## 9. 项目亮点
+
+- 具备数据库内核端到端能力：协议、存储、持久化、复制、压测全链路
+- 实现多后端内存抽象（pool/system/jemalloc），可用于性能与碎片对比
+- 复制链路覆盖用户态 TCP 与内核态 eBPF 两种方案
+- 具备可复现的 benchmark 基建，与自定义压测脚本，支持结果归档与版本化对比
+
+---
+
+## 10. 快速索引
 
 - 默认配置：`config/kvstore.conf`
-- 已提供示例：
-  - `config/master.conf`：主节点
-  - `config/slave.conf`：从节点
-
-### 4.2 支持的主要配置项
-
-见 `include/kvs_config.h`，典型字段：
-
-- `port`：服务监听端口
-- `role`：`master` / `slave`
-- `master_ip`：从节点连接的主节点 IP
-- `master_port`：主节点端口
-- `sync_port`：主从同步端口
-  - 若未配置，master 默认 `port + 1000`
-  - slave 默认 `master_port + 1000`
-- `enable_aof`：`yes/no/true/false/0/1`
-- `aof_fsync_mode`：`no / everysec / always`：系统决定同步/每秒一次同步/每次写命令都同步
-- `aof_filename`：AOF 文件名
-- `rdb_filename`：RDB 文件名
-- `mem_backend`：`pool / system / jemalloc`：自定义内存池/glibc/jemalloc
-- `network_mode`：`reactor / proactor / ntyco`
-- `sync_mode`：`tcp / ebpf`
-  - `tcp`：使用内置 `distributed` 模块走独立同步端口（默认 `master_port + 1000`）
-  - `ebpf`：由 `ebpf_syncd` 抓取并转发 RESP 同步流量（见第 7 章）
-- `ebpf_conf`：eBPF 守护进程配置文件路径（默认 `config/ebpf_sync.conf`）
-- `max_value_size`：value 最大长度（字节，`0` 表示不限制；当前更多用于预留/实验项）
-
-### 4.3 Master 示例（`config/master.conf`）
-
-```ini
-port=8080
-role=master
-
-# 持久化
-enable_aof=yes
-aof_fsync_mode=everysec
-aof_filename=kvstore-master.aof
-rdb_filename=kvstore-master.rdb
-dump_filename=kvstore-master.dat
-
-# 网络模型
-network_mode=ntyco
-```
-
-### 4.4 Slave 示例（`config/slave.conf`）
-
-```ini
-port=8081
-role=slave
-
-master_ip=127.0.0.1
-master_port=8080
-
-enable_aof=yes
-aof_fsync_mode=everysec
-aof_filename=kvstore-slave.aof
-rdb_filename=kvstore-slave.rdb
-dump_filename=kvstore-slave.dat
-
-network_mode=ntyco
-```
-
-### 4.5 启动方式
-
-**Master：**
-
-```bash
-./kvstore --config config/master.conf
-```
-
-**Slave：**
-
-```bash
-./kvstore --config config/slave.conf
-```
-
-命令行参数可以覆盖配置文件中的部分字段，例如：
-
-```bash
-./kvstore --config config/master.conf --aof_fsync always
-./kvstore --config config/master.conf --aof_filename data/kvstore.aof
-```
-
-> Slave 节点会自动连接 master 的同步端口，并做全量 + 增量同步；在 Slave 上执行写命令会返回只读错误。
+- 主从示例：`config/master.conf`、`config/slave.conf`
+- eBPF 配置：`config/ebpf_sync.conf`
+- 测试客户端：`tests/kvstore_client`
+- 压测脚本：`scripts/bench_all.sh`
 
 ---
-
-## 5. 协议与命令
-
-### 5.1 基本命令
-
-- 数组
-
-  ```text
-  SET key value
-  GET key
-  DEL key
-  MOD key value
-  EXIST key
-  RANGE startKey endKey
-  SORT [high|low] [limit]
-  ```
-
-- 红黑树
-
-  ```text
-  RSET key value
-  RGET key
-  RDEL key
-  RMOD key value
-  REXIST key
-  RRANGE startKey endKey [LIMIT k]
-  RSORT [high|low] [limit]
-  ```
-
-- 哈希表
-
-  ```text
-  HSET key value
-  HGET key
-  HDEL key
-  HMOD key value
-  HEXIST key
-  HRANGE startKey endKey
-  HSORT [high|low] [limit]
-  ```
-
-- 跳表
-
-  ```text
-  SSET key value
-  SGET key
-  SDEL key
-  SMOD key value
-  SEXIST key
-  SRANGE startKey endKey [LIMIT k]
-  SSORT [high|low] [limit]
-  ```
-
-  说明：
-
-  - `RRANGE start end [LIMIT k]` / `SRANGE start end [LIMIT k]`
-  - 排序/区间比较语义基于 `strcmp`（字典序）；若希望按数值顺序，请将 key 统一做 zero-pad（例如 `key_00001`、`key_00002`）
-  - `LIMIT k` 语义为“对升序区间结果取前 `k` 条”，`k` 必须是正整数
-  - 不带 `LIMIT` 时保持旧行为（返回整个命中区间）
-
-- 大key大value
-
-  ```text
-  PAPERSET key value
-  PAPERGET key
-  PAPERDEL key
-  PAPERMOD key value
-  ```
-
-- 其他
-
-  ```text
-  QUIT  # 关闭连接 / 触发服务退出流程
-  ```
-
-### 5.2 RESP 与 Pipeline
-
-项目内部使用 RESP 编解码，与 Redis 类似，例如：
-
-```text
-*3\r
-$3\r
-SET\r
-$3\r
-k1\r
-$3\r
-v1\r
-
-*2\r
-$3\r
-GET\r
-$3\r
-k1\r
-```
-
-支持在同一 TCP 连接上连续发送多条命令，服务端按顺序解析并返回结果，可用来做 pipeline QPS 压测（见 `tests/testcase.c` 中的 pipeline 测试）。
-
----
-
-## 6. 持久化
-
-### 6.1 RDB
-
-- 代码：`src/persistence/kvs_rdb.c`
-- 开关宏：`ENABLE_RDB`
-- 主流程：启动时加载 RDB，退出时自动保存当前内存数据到 `g_cfg.rdb_filename`。
-
-### 6.2 AOF
-
-- 代码：`src/persistence/kvs_aof.c`, `kvs_aof_rewrite.c`
-- 启动时若 `enable_aof=yes`：
-  - 调用 `aof_init(g_cfg.aof_filename, g_cfg.aof_fsync_mode)`
-  - 读取 AOF 回放数据
-- 运行过程中所有写命令都会通过 `aof_append` 记录；
-- 支持 AOF 重写（前台/后台），减小文件体积。
-
-典型命令行：
-
-```bash
-./kvstore --config config/master.conf --aof_fsync everysec
-./kvstore --config config/master.conf --aof_fsync always
-```
-
----
-
-## 7. 主从同步
-
-### 7.1 模式选择
-
-通过配置文件的 `sync_mode=tcp|ebpf` 选择：
-
-- `sync_mode=tcp`：内置 TCP 主从同步（`src/distributed/`），同步端口默认 `master_port + 1000`。
-- `sync_mode=ebpf`：eBPF 同步链路（`src/eBPF/ebpf_syncd` + `src/eBPF/ebpf_kern.c`），通过抓取发往 master 的 RESP 请求并转发到 slave 来实现增量同步；全量同步通过 `FULLDUMP` 完成。
-
-核心文件：
-
-- TCP 同步：`src/distributed/distributed.c`、`src/distributed/sync_backend_tcp.c`
-- eBPF 同步：`src/eBPF/ebpf_kern.c`、`src/eBPF/ebpf_syncd.c`（批处理发送见 `src/utils/tx_batcher.c`）
-
-### 7.2 行为说明
-
-- TCP 同步（`sync_mode=tcp`）：
-  - Master：监听 `sync_port` 接收 Slave 连接；写命令执行成功后通过 `master_sync_command` 广播增量；Slave 首次连接时会做全量同步。
-  - Slave：连接 Master 的 `sync_port` 接收全量 + 增量；在本地重放写命令，并可记录 AOF 以便独立重启恢复。
-
-- eBPF 同步（`sync_mode=ebpf`）：
-  - 由 `ebpf_syncd` 负责：
-    - 全量：连接 master 服务端口发送 `FULLDUMP`，把返回的数据流广播到各 slave。
-    - 增量：加载 eBPF 程序（`kprobe/tcp_sendmsg`）抓取“发往 master_ip:master_port 的 TCP payload（RESP 请求字节流）”，通过 ringbuf 取出后广播到各 slave。
-  - slave 侧通过 `REPLSYNC` 握手把某条连接标记为“复制连接”，该连接上的写命令会在复制上下文执行（跳过 slave 只读限制）。
-
-eBPF 同步启动示例（需要 root/CAP_BPF 运行 `ebpf_syncd`）：
-
-```bash
-# 1) 启动 master/slave
-./kvstore --config config/master.conf
-./kvstore --config config/slave.conf
-
-# 2) 启动 eBPF 守护进程（配置见 config/ebpf_sync.conf）
-sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
-```
-
-**eBPF 链路的端口/流量方向）**
-
-- `master_port`：kvstore master 的服务端口（接收客户端 RESP 命令）。
-- `slave_port`：kvstore slave 的服务端口（`ebpf_syncd` 会主动连接它，并先发送 `REPLSYNC` 握手，把该 TCP 连接变成“复制连接”。）
-
-链路分两段：
-
-1）全量同步（FULLDUMP）：
-- `ebpf_syncd` -> `master_ip:master_port` 发送 `FULLDUMP`（RESP：`*1\r\n$8\r\nFULLDUMP\r\n`）。
-- master 把全量数据以字节流形式写回；`ebpf_syncd` recv 后原样广播给各 slave。
-- `max_payload` 仅用于这一阶段的 `recv` 缓冲区大小。
-
-2）增量同步（抓包转发）：
-- eBPF 程序挂在 `kprobe/tcp_sendmsg`，过滤 **目的地址=配置中的 `master_ip:master_port`** 的发送调用。
-- 这意味着：产生写流量的客户端进程需要运行在同一台加载 eBPF 程序的机器上（否则该机器上看不到“发往 master 的 sendmsg”）。
-- `ebpf_syncd` 从 ringbuf 取出 payload 后，不做解析，直接原样广播到每个 slave 的“复制连接”。
-
-**config/ebpf_sync.conf 字段说明**
-
-该文件由 `ebpf_syncd` 读取。示例见 `config/ebpf_sync.conf`，字段含义如下：
-
-- `master_ip` / `master_port`
-  - 用途 1：eBPF 过滤条件（只抓取目的地址为该 master 的 `tcp_sendmsg`）。
-  - 用途 2：FULLDUMP 阶段 `ebpf_syncd` 主动连接该地址。
-- `slave_count`
-  - 从节点数量（上限 10）。
-- `slave_ip` / `slave_port`
-  - 当 `slave_count=1` 时的兼容写法（等价于 `slave1_ip/slave1_port`）。
-- `slaveN_ip` / `slaveN_port`
-  - 多从节点写法：`slave1_ip/slave1_port`、`slave2_ip/slave2_port` ...
-  - `ebpf_syncd` 会对每个 slave：`connect(slave_ip:slave_port)` -> 发送 `REPLSYNC`（RESP：`*1\r\n$8\r\nREPLSYNC\r\n`）-> 接收 `+OK` 后进入转发。
-- `max_payload`
-  - FULLDUMP 阶段的单次 `recv` 缓冲区大小（字节）。
-
-**当前的实现约束**
-
-- 仅抓取 `tcp_sendmsg` 中 `size <= 2048` 的发送（超出会直接跳过）。
-- 仅处理 `iov_offset == 0` 且只读取第一个 `iovec` 的内容。
-
-因此，eBPF 增量同步目前更适合用“小命令/小包”场景来验证（例如 README 的 mode6-9 一致性用例）。
-
-`tests/testcase.c` 中提供了 master-slave 一致性验证用例：
-
-```bash
-./tests/testcase <master_ip> <master_port> 6 <slave_ip> <slave_port>   # 数组
-./tests/testcase <master_ip> <master_port> 7 <slave_ip> <slave_port>   # 红黑树
-./tests/testcase <master_ip> <master_port> 8 <slave_ip> <slave_port>   # 哈希表
-./tests/testcase <master_ip> <master_port> 9 <slave_ip> <slave_port>   # 跳表
-```
-
----
-
-## 8. 自带测试与压测
-
-### 8.1 功能测试
-
-`tests/testcase` 支持多种模式：
-
-```bash
-./tests/testcase <ip> <port> <mode>
-
-# 单节点功能
-# 1 : 数组 RESP 功能
-# 2 : 红黑树 RESP 功能
-# 3 : 哈希 RESP 功能
-# 4 : 跳表 RESP 功能
-# 5 : 大包（huge packet）压力测试
-
-# 主从一致性
-# 6 : 数组 master-slave 一致性（需要额外传 slave_ip slave_port）
-# 7 : 红黑树 master-slave 一致性
-# 8 : 哈希 master-slave 一致性
-# 9 : 跳表 master-slave 一致性
-```
-
-### 8.2 Pipeline QPS 测试
-
-`tests/write_qps_test.c`、`tests/testcase.c` 中提供了针对四种数据结构的 pipeline QPS 测试脚本，用于对比：
-
-- 无从节点时的最大吞吐
-- 挂载从节点后主从同步带来的性能影响（TCP / eBPF 模式对比）
-
-### 8.3 PAPER 测试
-
-`tests/test_paper.c`、`tests/test_paper_sync.c` 中提供了针对单机、主从同步的测试脚本，用于验证：
-
-- 单机对大key大value的增删改查
-- 主从同步对大key大value的增删改查
----
-
-# 9 `kvstore_client` 交互客户端
-
-源码：`tests/kvstore_client.c`，编译时 `make` 会自动生成二进制：`tests/kvstore_client`。
-
-### 启动方式
-
-```bash
-# 交互模式
-./tests/kvstore_client <ip> <port>
-
-# 单条命令模式
-./tests/kvstore_client <ip> <port> -c "CMD ..."
-```
-
-### 内置命令与功能
-
-- 基本 KV 操作：`SET / GET / DEL` 以及 `RSET/RGET/RDEL`、`HSET/HGET/HDEL`、`SSET/SGET/SDEL`
-- Paper 存取：
-  - `PAPERSET key /path/to/paper`：从本地文件读取内容，写入服务器（底层用 RESP bulk 传输，使用 RBTree 存储）。
-  - `PAPERMOD key /path/to/paper`：从本地文件读取内容，修改已有论文内容（语义类似 `MOD`）。
-  - `PAPERGET key /path/to/save`：从服务器拉取内容，如果存在则按 bulk 方式写入本地文件并打印长度；如果不存在则打印 `NO EXIST`。
-  - `PAPERDEL key`：删除论文，成功返回 `OK`，不存在返回 `NO EXIST`。
-- 连接/退出：
-  - `EXIT`：退出客户端
-  - `SQUIT`：向服务器发送 `QUIT` 命令（客户端仍保持运行，服务器收到后会进入优雅关闭流程）
-- 帮助与补全：
-  - `HELP`：列出所有支持的客户端命令
-  - `HELP <command>`：查看某个命令的说明与用法
-  - 交互模式下，支持基于 readline 的命令自动补全和历史记录
-
-### 使用示例
-
-```bash
-# 1）连接到本地 8080 端口，进入交互模式
-./tests/kvstore_client 127.0.0.1 8080
-
-kv> SET foo bar
-kv> GET foo
-kv> PAPERSET paper1 /home/user/paper.pdf
-kv> PAPERGET paper1 /tmp/paper-copy.pdf
-kv> PAPERMOD paper1 /home/user/paper-v2.pdf
-kv> PAPERDEL paper1
-kv> EXIT
-
-# 2）非交互调用一条命令
-./tests/kvstore_client 127.0.0.1 8080 -c "GET foo"
-```
-
-借助该客户端，可以方便地做手工调试、大 value/论文文件读写验证以及简单脚本化测试。
-
----
-
-# 10. 快速入门脚本示例
-
-1. 编译：
-
-   ```bash
-   make
-   ```
-
-2. 启动 master：
-
-   ```bash
-   ./kvstore --config config/master.conf
-   ```
-
-3. 另开终端，运行功能测试（以数组为例）：
-
-   ```bash
-   ./tests/testcase 127.0.0.1 8080 1
-   ```
-
-4. 启动 slave 并做一致性测试（可选）：
-
-   ```bash
-   ./kvstore --config config/slave.conf
-   ./tests/testcase 127.0.0.1 8080 6 127.0.0.1 8081
-   ```
-
-5. 启动 客户端进行交互：
-
-   ```bash
-   ./kvstore --config config/master.conf
-   ./tests/kvstore_client <masterip> <masterport> 交互模式
-   ./tests/kvstore_client <masterip> <masterport> -c "单条命令"
-   ```
-
-6. 以eBPF作为主从同步路径：
-
-   ```bash
-   ./kvstore --config config/master.conf
-   ./kvstore --config config/slave.conf
-   sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
-   ./tests/kvstore_client <masterip> <masterport> 交互模式
-   ./tests/kvstore_client <masterip> <masterport> -c "单条命令"
-   ```
-
-# 11. 测试附录
-
-  1. 单机与主从同步 QPS 差异
-
-  **单次写（100000 条），TCP，QPS 对比**
-  
-  注 所有测试均不开启aof
-
-  | Mode         | Structure  | count    | QPS       |
-  | ------------ | ---------  | -------- | --------- |
-  | Standalone   | array      | 100000   | 17668.08  |
-  | Standalone   | rbtree     | 100000   | 16593.61  |
-  | Standalone   | hash       | 100000   | 16897.22  |
-  | Standalone   | skiptable  | 100000   | 17324.24  |
-  | Master-Slave | array      | 100000   | 17156.03  |
-  | Master-Slave | rbtree     | 100000   | 16055.72  |
-  | Master-Slave | hash       | 100000   | 16452.01  |
-  | Master-Slave | skiptable  | 100000   | 16559.29  |
-
-  **单次写（100000 条），eBPF，QPS 对比**
-
-  | Mode         | Structure  | count    |    QPS    |
-  | ------------ | ---------  | -------- | --------- |
-  | Standalone   | array      | 100000   | 17668.08  |
-  | Standalone   | rbtree     | 100000   | 16593.61  |
-  | Standalone   | hash       | 100000   | 16897.22  |
-  | Standalone   | skiptable  | 100000   | 17324.24  |
-  | Master-Slave | array      | 100000   | 11761.18(无批处理)  |
-  | Master-Slave | rbtree     | 100000   | 11496.70(无批处理)  |
-  | Master-Slave | hash       | 100000   | 11455.85(无批处理)  |
-  | Master-Slave | skiptable  | 100000   | 11270.69(无批处理)  |
-  | Master-Slave | array      | 100000   | 15063.18(批处理)  |
-  | Master-Slave | rbtree     | 100000   | 15041.32(批处理)  |
-  | Master-Slave | hash       | 100000   | 15231.43(批处理)  |
-  | Master-Slave | skiptable  | 100000   | 15179.61(批处理)  |
-
-  **eBPF 批处理佐证数据（send_all 统计）**
-
-  上表中 eBPF “无批处理/批处理”差异，除 QPS 结果外，还可以用同步通道的发送统计作为佐证：
-
-  - 无批处理：每次发送通常对应一条小的同步指令，`avg` 大约是 30B 级别（频繁系统调用）。
-  - 批处理：把多条同步指令聚合后再发送，`avg` 提升到 128KiB 量级（`131072`），系统调用次数显著下降。
-
-  采样输出关键数据：
-
-  | 场景 | send_all calls | send_all bytes | send_all avg (B) |
-  | ---- | -------------: | -------------: | ---------------: |
-  | 无批处理 | 8281 ~ 13553 | 256711 ~ 420143 | 31.0 ~ 31.8 |
-  | 批处理 | 3 ~ 5 | 393216 ~ 655360 | 131072.0 |
-
-  2. 不同内存池对比
-
-  **内存池 QPS/内存占用测试**
-
-  - `maxrss(KB)`：进程峰值常驻内存。
-  - `qps-small`：执行 `ops` 次“分配 + 写入 + 释放”。
-  - `read-heavy-small`：预分配 `pool_size` 个对象，循环 `rounds` 轮，每次都做读/轻写；按 `write_ratio`随机执行一次“释放并重新分配”。统计总操作数并计算 `ops/s`。
-  - `big-after-frag`：在制造碎片场景后，探测一次大块分配的耗时与 RSS。
-  - `big-after-frag time = 0 ms`：表示测得耗时小于 1ms。
-
-  **基础功能（pool / system / jemalloc 对比）**
-
-  | BACKEND | PATTERN           | maxrss (KB) | QPS / OPS                    |
-  | ------- | ----------------- | ----------- | ---------------------------- |
-  | POOL    | small-fixed       | 210576      | qps-small = 27027027.03      |
-  | POOL    | mid-fixed         | 210576      | read-heavy-small = 24005840  |
-  | POOL    | big-after-frag    | 1029412     | time = 0 ms                  |
-  | SYSTEM  | small-fixed       | 10176       | qps-small = 26315789.47      |
-  | SYSTEM  | mid-fixed         | 52416       | read-heavy-small = 46167076.92 |
-  | SYSTEM  | big-after-frag    | 1068024     | time = 0 ms                  |
-  | JEMALLOC| small-fixed       | 10188       | qps-small = 25641025.64      |
-  | JEMALLOC| mid-fixed         | 52428       | read-heavy-small = 49996000  |
-  | JEMALLOC| big-after-frag    | 1068036     | time = 0 ms                  |
-
-  **写两次 -> 删一次 -> 隔一段时间 -> 再写一次 -> 最后删两次，不同内存后端 QPS 对比**
-| Backend  | Structure | n       | total_ops | QPS (ops/s) | 虚拟内存 (GiB)  |
-|----------|-----------|---------|-----------|-------------|----------------|
-| pool     | array     | 100000  | 600000    | 18085.46    | 1.88           |
-| pool     | rbtree    | 100000  | 600000    | 16750.64    | 1.88           |
-| pool     | hash      | 100000  | 600000    | 17039.22    | 1.88           |
-| pool     | skiptable | 100000  | 600000    | 17490.27    | 1.88           |
-| system   | array     | 100000  | 600000    | 17234.81    | 1.96           |
-| system   | rbtree    | 100000  | 600000    | 17415.63    | 1.96           |
-| system   | hash      | 100000  | 600000    | 17502.00    | 1.96           |
-| system   | skiptable | 100000  | 600000    | 17021.75    | 1.96           |
-| jemalloc | array     | 100000  | 600000    | 17750.15    | 1.95           |
-| jemalloc | rbtree    | 100000  | 600000    | 17342.31    | 1.95           |
-| jemalloc | hash      | 100000  | 600000    | 17684.56    | 1.95           |
-| jemalloc | skiptable | 100000  | 600000    | 17790.69    | 1.95           |
-

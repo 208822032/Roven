@@ -22,13 +22,17 @@ extern kvs_skiptable_t global_skiptable;
 
 // 内部函数前向声明（需在首次调用前声明以避免隐式声明）
 static void rdb_save_array(FILE *fp);
-static void rdb_load_array(FILE *fp);
+static int rdb_load_array(FILE *fp);
 static void rdb_save_rbtree(FILE *fp);
 static void rdb_load_rbtree(FILE *fp);
 static void rdb_save_hash(FILE *fp);
 static void rdb_load_hash(FILE *fp);
 static void rdb_save_skiptable(FILE *fp);
 static void rdb_load_skiptable(FILE *fp);
+
+static int rdb_read_exact(FILE *fp, void *buf, size_t size) {
+    return fread(buf, size, 1, fp) == 1 ? RDB_OK : RDB_ERR;
+}
 
 //检查文件是否存在
 static int file_exists(const char *filename){
@@ -137,7 +141,11 @@ int kvs_rdb_load(const char *filename){
 
     //检查魔数和版本 
     char magic[sizeof(RDB_MAGIC)];
-    fread(magic, sizeof(RDB_MAGIC) - 1, 1, fp);
+    if (rdb_read_exact(fp, magic, sizeof(RDB_MAGIC) - 1) != RDB_OK) {
+        fprintf(stderr, "Failed to read RDB magic\n");
+        fclose(fp);
+        return RDB_ERR;
+    }
     magic[sizeof(RDB_MAGIC) - 1] = '\0';
 
     if(strcmp(magic, RDB_MAGIC) != 0){
@@ -147,7 +155,11 @@ int kvs_rdb_load(const char *filename){
     }
 
     uint8_t version;
-    fread(&version, sizeof(version), 1, fp);
+    if (rdb_read_exact(fp, &version, sizeof(version)) != RDB_OK) {
+        fprintf(stderr, "Failed to read RDB version\n");
+        fclose(fp);
+        return RDB_ERR;
+    }
     if(version != RDB_VERSION){
         fprintf(stderr, "Unsupported RDB version: %d\n", version);
         fclose(fp);
@@ -156,7 +168,11 @@ int kvs_rdb_load(const char *filename){
 
     //读取时间戳
     time_t timestamp;
-    fread(&timestamp, sizeof(timestamp), 1, fp);
+    if (rdb_read_exact(fp, &timestamp, sizeof(timestamp)) != RDB_OK) {
+        fprintf(stderr, "Failed to read RDB timestamp\n");
+        fclose(fp);
+        return RDB_ERR;
+    }
     printf("Loading RDB snapshot created at: %s", ctime(&timestamp));
 
     //清空当前数据
@@ -188,7 +204,10 @@ int kvs_rdb_load(const char *filename){
         switch (type){
            #if ENABLE_ARRAY
             case 0x01:
-                rdb_load_array(fp);
+                if (rdb_load_array(fp) != RDB_OK) {
+                    fclose(fp);
+                    return RDB_ERR;
+                }
                 break;
            #endif
                 
@@ -229,46 +248,78 @@ static void rdb_save_array(FILE *fp){
     uint8_t type = 0x01; // 数据类型标识符
     fwrite(&type, sizeof(type), 1, fp);
 
-    // 使用 total 作为元素数量
-    uint32_t count = global_array.total;
+    // 使用 len 作为元素数量（有效元素个数）
+    uint32_t count = (uint32_t)global_array.len;
     fwrite(&count, sizeof(count), 1, fp);
-    for (int i = 0; i < global_array.total; i++) {
-        if (global_array.table[i].key && global_array.table[i].value) {
-            uint32_t key_len   = (uint32_t)strlen(global_array.table[i].key);
-            uint32_t value_len = (uint32_t)strlen(global_array.table[i].value);
+    for (int i = 0; i < global_array.len; i++) {
+        uint32_t key_len   = (uint32_t)strlen(global_array.table[i].key);
+        uint32_t value_len = (uint32_t)strlen(global_array.table[i].value);
 
-            fwrite(&key_len, sizeof(key_len), 1, fp);
-            fwrite(global_array.table[i].key, key_len, 1, fp);
-            fwrite(&value_len, sizeof(value_len), 1, fp);
-            fwrite(global_array.table[i].value, value_len, 1, fp);
-        }
+        fwrite(&key_len, sizeof(key_len), 1, fp);
+        fwrite(global_array.table[i].key, key_len, 1, fp);
+        fwrite(&value_len, sizeof(value_len), 1, fp);
+        fwrite(global_array.table[i].value, value_len, 1, fp);
     }
 
 }
 
 //加载数组
-static void rdb_load_array(FILE *fp){
+static int rdb_load_array(FILE *fp){
     uint32_t count;
-    fread(&count, sizeof(count), 1, fp);
+    if (rdb_read_exact(fp, &count, sizeof(count)) != RDB_OK) {
+        fprintf(stderr, "RDB array load failed: unable to read count\n");
+        return RDB_ERR;
+    }
 
     for (uint32_t i = 0; i < count; i++) {
         uint32_t key_len, value_len;
 
-        fread(&key_len, sizeof(key_len), 1, fp);
+        if (rdb_read_exact(fp, &key_len, sizeof(key_len)) != RDB_OK) {
+            fprintf(stderr, "RDB array load failed: unable to read key_len at index %u\n", i);
+            return RDB_ERR;
+        }
         char *key = kvs_malloc(key_len + 1);
-        fread(key, key_len, 1, fp);
+        if (!key) {
+            fprintf(stderr, "RDB array load failed: key alloc failed at index %u\n", i);
+            return RDB_ERR;
+        }
+        if (rdb_read_exact(fp, key, key_len) != RDB_OK) {
+            fprintf(stderr, "RDB array load failed: unable to read key at index %u\n", i);
+            kvs_free(key);
+            return RDB_ERR;
+        }
         key[key_len] = '\0';
 
-        fread(&value_len, sizeof(value_len), 1, fp);
+        if (rdb_read_exact(fp, &value_len, sizeof(value_len)) != RDB_OK) {
+            fprintf(stderr, "RDB array load failed: unable to read value_len at index %u\n", i);
+            kvs_free(key);
+            return RDB_ERR;
+        }
         char *value = kvs_malloc(value_len + 1);
-        fread(value, value_len, 1, fp);
+        if (!value) {
+            fprintf(stderr, "RDB array load failed: value alloc failed at index %u\n", i);
+            kvs_free(key);
+            return RDB_ERR;
+        }
+        if (rdb_read_exact(fp, value, value_len) != RDB_OK) {
+            fprintf(stderr, "RDB array load failed: unable to read value at index %u\n", i);
+            kvs_free(key);
+            kvs_free(value);
+            return RDB_ERR;
+        }
         value[value_len] = '\0';
 
-        kvs_array_set(&global_array, key, value);
+        int set_ret = kvs_array_set(&global_array, key, value);
         kvs_free(key);
         kvs_free(value);
+
+        if (set_ret != 0) {
+            fprintf(stderr, "RDB array load failed: kvs_array_set ret=%d at index %u\n", set_ret, i);
+            return RDB_ERR;
+        }
     }
 
+    return RDB_OK;
 }
 
 static void rdb_save_rbtree_node(rbtree_node *node,
