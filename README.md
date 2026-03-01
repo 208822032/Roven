@@ -107,6 +107,16 @@ flowchart TD
 | eBPF 复制 | `src/eBPF/ebpf_syncd.c` | 抓取 master 流量并广播到 slave |
 | 压测体系 | `scripts/bench_all.sh`、`test/*` | 标准对齐压测（KVStore vs Redis）+ 自定义压测（读写负载、内存后端对比、eBPF同步链路） |
 
+### 4.1 常用基础组件
+
+- 原子环形消息队列（低锁并发）：用于复制消息异步解耦，避免写路径被慢发送拖住（`src/utils/msg_queue.c`, `src/distributed/sync_backend_tcp.c`）。
+- netbuf 网络缓冲区：统一扩容/前裁剪/回收，支撑 RESP 半包与 pipeline 累积响应（`src/utils/netbuf.c`, `src/network/net_session.c`）。
+- 内存后端抽象（pool/system/jemalloc）：同一接口切换后端，便于按场景做吞吐与内存占用权衡（`src/storage/kvs_mempool.c`, `src/storage/jemalloc_wrapper.c`）。
+- tx_batcher 发送批处理器：按容量与时间窗口批量 flush，降低小包 syscall 开销（`src/utils/tx_batcher.c`, `src/eBPF/ebpf_syncd.c`）。
+- 主从二进制协议编解码：提供带长度头的流式解包能力，处理粘包/半包（`src/utils/master_slave_proto.c`）。
+- 配置系统与优先级覆盖：默认值→配置文件→命令行覆盖，保证运行参数可控可复现（`src/core/kvs_config.c`）。
+- 线程局部同步上下文：隔离 client 写入与复制回放路径，保障 slave 只读边界（`src/core/kvstore.c`, `src/network/reactor.c`, `src/network/proactor.c`）。
+
 ---
 
 ## 5. 关键代码片段
@@ -523,6 +533,16 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 ./tests/write_qps_test 127.0.0.1 9300 7 100000
 ```
 
+6) **pipeline测试**
+
+```bash
+# 1) 单连接大 pipeline 容量验证（1000000 条命令）
+./tests/testcase 127.0.0.1 PORT 5
+
+# 2) 四种结构 pipeline 写入 QPS 压测（batch 可调）
+./tests/write_qps_test 127.0.0.1 PORT 6 100000 100
+```
+说明：mode=5 重点验证“超大 pipeline 正确性与可处理上限”；mode=6 重点评估“pipeline 吞吐表现”。
 ---
 
 ## 8. 功能与命令覆盖
@@ -572,6 +592,9 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 - 四种结构的 `RANGE/SORT` 均基于 `strcmp` 的字典序比较 key。
 - 若希望获得数值顺序，建议使用 zero-pad key（如 `key_000001`）。
 
+### 8.4 Pipeline 模式
+
+- 支持 pipeline 模式；在测试用例中已验证单次 **1000000 条命令** 的大 pipeline 场景可完成收发与响应解析。
 ---
 
 ## 9. 项目亮点
