@@ -1,12 +1,12 @@
 ## KVStore
 
-一个类 Redis 的轻量级 KV 引擎，支持多数据结构、RESP 协议、AOF/RDB 持久化，以及 TCP/eBPF 两种主从同步链路。
+类 Redis 的轻量级 KV 引擎，支持多数据结构、RESP 协议、AOF/RDB 持久化，以及 TCP/eBPF 两种主从同步链路。
 
 ---
 
 ## 1. 项目定位
 
-一个可落地运行的 C 语言 KV 数据库，覆盖“协议解析 -> 存储引擎 -> 持久化 -> 主从复制 -> 压测体系”的完整链路，并通过统一脚本对比 Redis 进行性能验证。
+可落地运行的 C 语言 KV 内存数据库，覆盖“协议解析 -> 存储引擎 -> 持久化 -> 主从复制 -> 压测体系”的完整链路，并通过统一脚本对比 Redis 进行性能验证。
 
 **核心职责/成果：**
 - 设计并实现四种数据结构引擎：`array / rbtree / hash / skiptable`
@@ -22,9 +22,9 @@
 - **语言与系统**：C、Linux、epoll、io_uring、pthread
 - **协议与网络**：RESP、TCP、Pipeline
 - **存储与内存**：自定义内存池、glibc malloc、jemalloc 可切换
-- **持久化**：AOF（含 fsync 策略）、RDB
+- **持久化**：AOF（含 fsync 策略、aof_rewrite重写）、RDB
 - **复制**：Master-Slave（TCP / eBPF）
-- **工程化**：统一配置、自动化压测脚本、结果归档
+- **工程化**：统一配置、自动化压测脚本
 
 ---
 
@@ -111,6 +111,14 @@ flowchart TD
 
 ## 5. 关键代码片段
 
+- 一致性：写命令何时落盘、何时同步、如何避免回放重复写。
+- 正确性：协议半包/脏数据如何处理，参数非法如何快速失败。
+- 并发与隔离：主从线程上下文如何隔离，slave 连接风暴如何保护。
+- 工程化：配置优先级如何保证、内存后端如何按场景切换。
+- 性能：eBPF 链路如何做批处理降低 syscall 开销。
+
+下列片段均来自当前仓库真实实现。
+
 ### 5.1 写命令：执行后落盘 + 同步（`src/core/kvstore.c`）
 
 ```c
@@ -129,23 +137,72 @@ if(ret >= 0 && cmd->write_command){
 }
 ```
 
-### 5.2 RESP 完整命令探测（`src/network/resp_protocol.c`）
+相关源码：
+- `src/core/kvstore.c`：`kvs_filter_protocol`
+- `src/persistence/kvs_aof.c`：`aof_append`
+- `src/distributed/distributed.c`：`master_sync_command`
+
+### 5.2 配置优先级：默认值 -> 配置文件 -> 命令行覆盖（`src/core/kvstore.c`）
 
 ```c
-int resp_peek_command(const char* buf, size_t len, size_t offset){
-    if (!buf || offset >= len) return 0;
-    ...
-    if (*p != '*') return -1;
-    ...
-    for (long long i = 0; i < array_len; ++i) {
-        if (*p != '$') return -1;
-        ...
-    }
-    return (int)(p - (buf + offset));
+kvs_config_init_default(&g_cfg);
+const char *config_path = NULL;
+kvs_config_apply_cmdline(&g_cfg, argc, argv, &config_path);
+
+if (config_path) {
+    kvs_config_load_file(&g_cfg, config_path);
+} else {
+    kvs_config_load_file(&g_cfg, "config/kvstore.conf");
+}
+
+// 二次应用命令行，确保 CLI 优先级最高
+kvs_config_apply_cmdline(&g_cfg, argc, argv, NULL);
+```
+
+相关源码：
+- `src/core/kvstore.c`：`main`
+- `src/core/kvs_config.c`：`kvs_config_init_default` / `kvs_config_load_file` / `kvs_config_apply_cmdline`
+
+### 5.3 RANGE/SORT 参数校验（`src/core/kvs_operation.c`）
+
+```c
+if(strcmp(cmd->name, "RRANGE") == 0 || strcmp(cmd->name, "SRANGE") == 0){
+    return argc == 3 || argc == 5;
+}
+
+if(strcmp(cmd->name, "SORT") == 0 || strcmp(cmd->name, "RSORT") == 0 ||
+   strcmp(cmd->name, "HSORT") == 0 || strcmp(cmd->name, "SSORT") == 0){
+    return argc >= min_args && argc <= 3;
 }
 ```
 
-### 5.3 主节点全量同步（`src/distributed/distributed.c`）
+相关源码：
+- `src/core/kvs_operation.c`：`check_arity`
+- `src/core/kvs_operation.c`：`parse_command_argument`
+- `src/core/kvs_operation.c`：`handle_range` / `handle_sort`
+
+```c
+if (count == 5) {
+    if (strcasecmp(tokens[3], "LIMIT") != 0) return -1;
+    parsed_limit = strtol(tokens[4], &endptr, 10);
+    if (endptr == tokens[4] || *endptr != '\0' || parsed_limit <= 0) return -1;
+    ctx->limit = (int)parsed_limit;
+}
+```
+
+### 5.4 从节点只读保护（`src/core/kvstore.c`）
+
+```c
+if (cmd->write_command && global_dist_config.role == ROLE_SLAVE && get_sync_context() == 0){
+    return resp_generate_error(response, "ERROR SLAVE READ ONLY");
+}
+```
+
+相关源码：
+- `src/core/kvstore.c`：`kvs_filter_protocol`
+- `src/core/kvstore.c`：`set_sync_context` / `get_sync_context`
+
+### 5.5 主节点全量同步（`src/distributed/distributed.c`）
 
 ```c
 #if ENABLE_ARRAY
@@ -156,6 +213,112 @@ for (int i = 0; i < global_array.total; i++) {
 }
 #endif
 ```
+
+相关源码：
+- `src/distributed/distributed.c`：`slave_sync_thread`
+- `src/distributed/distributed.c`：`master_sync_server`
+
+### 5.6 eBPF 批处理发送（`src/eBPF/ebpf_syncd.c`）
+
+```c
+tx_batcher_init(&ctx->txb,
+                ctx->tx_buf, sizeof(ctx->tx_buf),
+                FLUSH_NS,
+                txb_send_fn, ctx);
+
+if (tx_batcher_append(&ctx->txb, msg->data, msg->len) < 0) {
+    close(ctx->fd);
+    ctx->fd = -1;
+}
+```
+
+相关源码：
+- `src/eBPF/ebpf_syncd.c`：`slave_sender_worker`
+- `src/utils/tx_batcher.c`：`tx_batcher_init` / `tx_batcher_append` / `tx_batcher_flush`
+
+### 5.7 RESP 半包/非法包处理（`src/network/resp_protocol.c`）
+
+```c
+if (!buf || offset >= len) return 0;
+...
+if (*p != '*') return -1;
+...
+if (array_len < 0 || array_len > MAX_ARRAY_LENGTH) return -1;
+...
+if (remain < need) return 0; // 半包，继续收包
+if (p[bulk_len] != '\r' || p[bulk_len + 1] != '\n') return -1;
+```
+
+`0` 表示“数据不够”（继续读），`-1` 表示“协议错误”（快速失败），可避免连接状态机混乱。
+
+相关源码：
+- `src/network/resp_protocol.c`：`resp_peek_command`
+- `src/network/resp_protocol.c`：`resp_parser`
+
+### 5.8 复制上下文隔离（`src/core/kvstore.c`）
+
+```c
+static __thread int sync_context = 0;
+
+void set_sync_context(int context) { sync_context = context; }
+int get_sync_context() { return sync_context; }
+```
+
+```c
+if (cmd->write_command && global_dist_config.role == ROLE_SLAVE && get_sync_context() == 0){
+    return resp_generate_error(response, "ERROR SLAVE READ ONLY");
+}
+```
+
+通过线程局部变量区分“客户端写请求”与“复制回放请求”，保证 slave 对外只读但可应用主节点增量。
+
+相关源码：
+- `src/core/kvstore.c`：`sync_context`（`__thread`）
+- `src/core/kvstore.c`：`set_sync_context` / `get_sync_context`
+- `src/distributed/distributed.c`：slave 侧回放命令路径（复制上下文设置）
+- `src/network/reactor.c` / `src/network/proactor.c` / `src/network/ntyco.c`：复制连接上下文切换（`set_sync_context(2)`）
+
+### 5.9 Slave 连接并发保护（`src/distributed/distributed.c`）
+
+```c
+pthread_mutex_lock(&global_dist_config.slave_mutex);
+if(global_dist_config.slave_count < global_dist_config.max_slaves){
+    ...
+    global_dist_config.slaves[global_dist_config.slave_count++] = *slave;
+    pthread_create(&slave->thread, NULL, slave_sync_thread, slave);
+}else{
+    close(client_fd);
+    printf("Max slave reached, connection refused\n");
+}
+pthread_mutex_unlock(&global_dist_config.slave_mutex);
+```
+
+互斥锁保护 slave 列表与计数， `max_slaves` 上限避免连接风暴导致资源失控。
+
+相关源码：
+- `src/distributed/distributed.c`：`master_sync_server`
+- `src/distributed/distributed.c`：`distributed_shutdown`
+
+### 5.10 内存后端策略切换（`src/core/kvstore.c`）
+
+```c
+if(g_cfg.mem_backend == KVS_MEM_BACKEND_JEMALLOC){
+    mem_set_backend(KVS_MEM_BACKEND_JEMALLOC);
+    mem_set_jemalloc_funcs(jemalloc_alloc_impl, jemalloc_free_impl, jemalloc_realloc_impl);
+}else if(g_cfg.mem_backend == KVS_MEM_BACKEND_SYSTEM){
+    mem_set_backend(KVS_MEM_BACKEND_SYSTEM);
+}else{
+    mem_set_backend(KVS_MEM_BACKEND_POOL);
+}
+```
+
+同一业务路径可在 `pool/system/jemalloc` 间切换，用于验证不同内存后端。
+
+相关源码：
+- `src/core/kvstore.c`：`main`（后端选择逻辑）
+
+- `src/storage/kvs_mempool.c`：`mem_set_backend` / `mem_init` / `mem_destroy`
+- `src/storage/jemalloc_wrapper.c`：`jemalloc_*_impl`
 
 ---
 
@@ -246,7 +409,7 @@ for (int i = 0; i < global_array.total; i++) {
 | JEMALLOC| mid-fixed      | 52428       | read-heavy-small = 49996000 |
 | JEMALLOC| big-after-frag | 1068036     | time = 0 ms |
 
-**混合写删负载（2次写入 → 1次删除 → 间隔后再写入1次 → 最后删除2次）的 QPS 对比**
+**混合写删负载（2次写入 → 1次删除 → 间隔后再写入1次 → 最后删除2次）的QPS、虚拟内存占用对比**
 
 | Backend  | Structure | n      | total_ops | QPS (ops/s) | 虚拟内存占用 (GB) |
 |----------|-----------|--------|-----------|-------------|----------------|
@@ -412,20 +575,18 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 ---
 
 ## 9. 项目亮点
-
-- 具备数据库内核端到端能力：协议、存储、持久化、复制、压测全链路
-- 实现多后端内存抽象（pool/system/jemalloc），可用于性能与碎片对比
-- 复制链路覆盖用户态 TCP 与内核态 eBPF 两种方案
-- 具备可复现的 benchmark 基建，与自定义压测脚本，支持结果归档与版本化对比
-
+- **端到端数据库工程能力**：从 RESP 协议解析、命令分发、存储引擎到持久化与主从复制，形成完整可运行闭环。
+- **多存储结构统一抽象**：array / rbtree / hash / skiptable 在统一命令框架下实现，便于横向性能对比与能力扩展。
+- **持久化链路完整**：支持 RDB + AOF（含 fsync 策略），覆盖冷启动恢复与运行期写入日志，兼顾可靠性与性能。
+- **复制方案具备层次化设计**：同时支持 TCP 同步与 eBPF 同步链路。
+- **一致性与安全边界清晰**：slave 只读保护、复制上下文隔离、参数校验与协议错误快速失败机制，降低误写和脏请求风险。
+- **性能工程方法完整**：标准对齐压测（KVStore vs Redis）+ 自定义压测（混合写删、内存后端、eBPF 批处理）验证。
 ---
 
 ## 10. 快速索引
-
 - 默认配置：`config/kvstore.conf`
 - 主从示例：`config/master.conf`、`config/slave.conf`
 - eBPF 配置：`config/ebpf_sync.conf`
 - 测试客户端：`tests/kvstore_client`
 - 压测脚本：`scripts/bench_all.sh`
-
 ---
