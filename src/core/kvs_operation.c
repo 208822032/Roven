@@ -992,6 +992,7 @@ int handle_fulldump(command_context_t* ctx, char* response){
 
     int off = 0;
     const int max_len = KVS_MAX_RESPONSE_LENGTH;
+    int64_t now_ms = kv_now_ms();
 
     //遍历生成
 #if ENABLE_ARRAY
@@ -1001,6 +1002,7 @@ int handle_fulldump(command_context_t* ctx, char* response){
             for (int i = 0; i < global_array.total; i++) {
                 kvs_array_item_t *it = &global_array.table[i];
                 if (!it->key || !it->value) continue;
+                if (kv_is_expired(it->expire_at_ms, now_ms)) continue;
 
                 if (fulldump_append_cmd3(response, max_len, &off,
                                          "SET", it->key, it->value) < 0) {
@@ -1020,6 +1022,7 @@ int handle_fulldump(command_context_t* ctx, char* response){
                 if (slot->used != 1 || !slot->key || !slot->value) {
                     continue;
                 }
+                if (kv_is_expired(slot->expire_at_ms, now_ms)) continue;
                 if (fulldump_append_cmd3(response, max_len, &off,
                                          "HSET",
                                          slot->key,
@@ -1036,12 +1039,14 @@ int handle_fulldump(command_context_t* ctx, char* response){
         int   max_len;
         int  *off;
         int   overflow;
+        int64_t now_ms;
     } rbt_ctx = { response, max_len, &off, 0 };
 
     void rbtree_dump_cb(rbtree_node *node, void *ud) {
         struct rbtree_dump_ctx *c = (struct rbtree_dump_ctx *)ud;
         if (c->overflow) return;
         if (!node->key || !node->value) return;
+        if (kv_is_expired(node->expire_at_ms, c->now_ms)) return;
 
         if (fulldump_append_cmd3(c->resp, c->max_len, c->off,
                                  "RSET",
@@ -1050,6 +1055,8 @@ int handle_fulldump(command_context_t* ctx, char* response){
             c->overflow = 1;
         }
     }
+
+    rbt_ctx.now_ms = now_ms;
 
     rbtree_traversal_with_callback((rbtree *)&global_rbtree,
                                    global_rbtree.root,
@@ -1062,27 +1069,20 @@ int handle_fulldump(command_context_t* ctx, char* response){
 #if ENABLE_SKIPTABLE
     {
         extern kvs_skiptable_t global_skiptable;
-        if (global_skiptable.header) {
-            Node *cur = global_skiptable.header->forward[0];
-            while (cur) {
-                if (cur->key && cur->value) {
-                    if (fulldump_append_cmd3(response, max_len, &off,
-                                             "SSET",
-                                             cur->key,
-                                             cur->value) < 0) {
-                        return off;
-                    }
+        Node *current = global_skiptable.header ? global_skiptable.header->forward[0] : NULL;
+        while (current) {
+            if (current->key && current->value && !kv_is_expired(current->expire_at_ms, now_ms)) {
+                if (fulldump_append_cmd3(response, max_len, &off,
+                                         "SSET",
+                                         current->key,
+                                         current->value) < 0) {
+                    return off;
                 }
-                cur = cur->forward[0];
             }
+            current = current->forward[0];
         }
     }
 #endif
-
-    if(off == 0){
-        //没有数据，返回空数组
-        return resp_generate_array_start(response, 0);
-    }
 
     return off;
 }

@@ -617,13 +617,13 @@ int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key) {
 // }
 
 // 中序遍历辅助函数
-static void inorder_traversal_with_limit(rbtree *T, rbtree_node *node, int order, int *count, int limit, char *response, int *len, int max_len) {
+static void inorder_traversal_with_limit(rbtree *T, rbtree_node *node, int order, int *count, int limit, char *response, int *len, int max_len, int64_t now_ms) {
     if (node == T->nil) return;
     
 	if(order == 0){//升序
-		inorder_traversal_with_limit(T, node->left, order, count, limit, response, len, max_len);
+		inorder_traversal_with_limit(T, node->left, order, count, limit, response, len, max_len, now_ms);
 
-		if (*count < limit || limit <= 0) {
+		if (!kv_is_expired(node->expire_at_ms, now_ms) && (*count < limit || limit <= 0)) {
             int n = snprintf(response + *len, max_len - *len, 
                              "%s:%s\r\n", node->key, (char*)node->value);
             if (n > 0 && *len + n < max_len) {
@@ -633,13 +633,13 @@ static void inorder_traversal_with_limit(rbtree *T, rbtree_node *node, int order
         }
 
 		if (*count < limit || limit <= 0) {
-            inorder_traversal_with_limit(T, node->right, order, count, limit, response, len, max_len);
+			inorder_traversal_with_limit(T, node->right, order, count, limit, response, len, max_len, now_ms);
         }
 	}else{//升序
 
-		inorder_traversal_with_limit(T, node->right, order, count, limit, response, len, max_len);
+		inorder_traversal_with_limit(T, node->right, order, count, limit, response, len, max_len, now_ms);
 
-		if (*count < limit || limit <= 0) {
+		if (!kv_is_expired(node->expire_at_ms, now_ms) && (*count < limit || limit <= 0)) {
             int n = snprintf(response + *len, max_len - *len, 
                              "%s:%s\r\n", node->key, (char*)node->value);
             if (n > 0 && *len + n < max_len) {
@@ -649,7 +649,7 @@ static void inorder_traversal_with_limit(rbtree *T, rbtree_node *node, int order
         }
 
 		if (*count < limit || limit <= 0) {
-            inorder_traversal_with_limit(T, node->left, order, count, limit, response, len, max_len);
+			inorder_traversal_with_limit(T, node->left, order, count, limit, response, len, max_len, now_ms);
         }
 
 	}
@@ -660,7 +660,7 @@ int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, in
     
     int len = 0;
     int count = 0;
-    inorder_traversal_with_limit(inst, inst->root, order, &count, limit, response, &len, max_len);
+	inorder_traversal_with_limit(inst, inst->root, order, &count, limit, response, &len, max_len, kv_now_ms());
     return len;
 }
 
@@ -669,19 +669,20 @@ int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, in
 static void inorder_traversal_with_range_limit(rbtree *T, rbtree_node *node,
 							  char *start_key, char *end_key, int limit,
 							  int *returned, int *visited, int *stop,
-							  char *response, int *len, int max_len) {
+							  char *response, int *len, int max_len, int64_t now_ms) {
 	if (node == T->nil || *stop) return;
 	(*visited)++;
 
 	if (strcmp(node->key, start_key) >= 0) {
 		inorder_traversal_with_range_limit(T, node->left, start_key, end_key, limit,
-									   returned, visited, stop, response, len, max_len);
+									   returned, visited, stop, response, len, max_len, now_ms);
 	}
 
 	if (*stop) return;
 
 	if (strcmp(node->key, start_key) >= 0 &&
-		strcmp(node->key, end_key) <= 0) {
+		strcmp(node->key, end_key) <= 0 &&
+		!kv_is_expired(node->expire_at_ms, now_ms)) {
 		int n = snprintf(response + *len, max_len - *len,
 						 "%s:%s\r\n", node->key, (char*)node->value);
 		if (n > 0 && *len + n < max_len) {
@@ -696,7 +697,7 @@ static void inorder_traversal_with_range_limit(rbtree *T, rbtree_node *node,
 
 	if (strcmp(node->key, end_key) <= 0) {
 		inorder_traversal_with_range_limit(T, node->right, start_key, end_key, limit,
-									   returned, visited, stop, response, len, max_len);
+									   returned, visited, stop, response, len, max_len, now_ms);
 	}
 }
 
@@ -709,7 +710,7 @@ int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, int lim
 	int visited = 0;
 	int stop = 0;
 	inorder_traversal_with_range_limit(inst, inst->root, start_key, end_key, limit,
-									   &returned, &visited, &stop, response, &len, max_len);
+									   &returned, &visited, &stop, response, &len, max_len, kv_now_ms());
 #if KVS_RANGE_VISITED_DEBUG
 	fprintf(stderr, "[RANGE_VISITED][RRANGE] start=%s end=%s limit=%d returned=%d visited=%d\n",
 			start_key, end_key, limit, returned, visited);

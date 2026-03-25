@@ -28,17 +28,17 @@ declare -A SET_OVERWRITE_REASON=(
 )
 
 declare -A RANGE_SORT_TTL_SUPPORT=(
-  [array]=0
-  [rbtree]=0
-  [hash]=0
-  [skiptable]=0
+  [array]=1
+  [rbtree]=1
+  [hash]=1
+  [skiptable]=1
 )
 
 declare -A RANGE_SORT_TTL_REASON=(
-  [array]="TTL filtering is not wired into RANGE/SORT yet"
-  [rbtree]="TTL filtering is not wired into RANGE/SORT yet"
-  [hash]="TTL filtering is not wired into RANGE/SORT yet"
-  [skiptable]="TTL filtering is not wired into RANGE/SORT yet"
+  [array]="TTL filtering is wired into RANGE/SORT/FULLDUMP"
+  [rbtree]="TTL filtering is wired into RANGE/SORT/FULLDUMP"
+  [hash]="TTL filtering is wired into RANGE/SORT/FULLDUMP"
+  [skiptable]="TTL filtering is wired into RANGE/SORT/FULLDUMP"
 )
 
 cleanup() {
@@ -60,6 +60,42 @@ run_client() {
 
 capture_output() {
   run_client "$1" | normalize_output
+}
+
+capture_raw_output() {
+  python3 - "$HOST" "$PORT" "$1" <<'PY'
+import shlex
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+cmd = sys.argv[3]
+parts = shlex.split(cmd)
+request = f"*{len(parts)}\r\n" + "".join(f"${len(part)}\r\n{part}\r\n" for part in parts)
+
+sock = socket.create_connection((host, port), timeout=3)
+try:
+  sock.sendall(request.encode())
+  sock.settimeout(0.2)
+  deadline = __import__("time").time() + 5
+  chunks = []
+  seen_data = False
+  while __import__("time").time() < deadline:
+    try:
+      data = sock.recv(8192)
+      if not data:
+        break
+      seen_data = True
+      chunks.append(data)
+    except socket.timeout:
+      if seen_data:
+        break
+      continue
+  sys.stdout.write(b"".join(chunks).decode("utf-8", "replace"))
+finally:
+  sock.close()
+PY
 }
 
 pass_case() {
@@ -225,6 +261,75 @@ expect_not_error() {
   pass_case "$backend" "$case_name" "$cmd"
 }
 
+expect_exact_one_of() {
+  local backend="$1"
+  local case_name="$2"
+  local cmd="$3"
+  local expected_a="$4"
+  local expected_b="$5"
+  local out
+
+  out="$(capture_output "$cmd")"
+  if [[ "$out" != "$expected_a" && "$out" != "$expected_b" ]]; then
+    fail_case "$backend" "$case_name" "response mismatch" "$cmd" "$expected_a | $expected_b" "$out"
+  fi
+  pass_case "$backend" "$case_name" "$cmd"
+}
+
+expect_eventually_output_contains_two_and_not_contains() {
+  local backend="$1"
+  local case_name="$2"
+  local cmd="$3"
+  local required_a="$4"
+  local required_b="$5"
+  local forbidden="$6"
+  local timeout_secs="${7:-5}"
+  local interval_secs="${8:-0.2}"
+  local min_elapsed_secs="${9:-0}"
+  local start_ts now_ts out
+
+  start_ts="$(date +%s)"
+  while true; do
+    out="$(capture_output "$cmd")"
+    now_ts="$(date +%s)"
+    if [[ "$out" == *"$required_a"* && "$out" == *"$required_b"* && "$out" != *"$forbidden"* ]] && (( now_ts - start_ts >= min_elapsed_secs )); then
+      pass_case "$backend" "$case_name" "$cmd"
+      return 0
+    fi
+    if (( now_ts - start_ts >= timeout_secs )); then
+      fail_case "$backend" "$case_name" "filtered output mismatch" "$cmd" "contains $required_a and $required_b; excludes $forbidden" "$out"
+    fi
+    sleep "$interval_secs"
+  done
+}
+
+expect_eventually_raw_output_contains_two_and_not_contains() {
+  local backend="$1"
+  local case_name="$2"
+  local cmd="$3"
+  local required_a="$4"
+  local required_b="$5"
+  local forbidden="$6"
+  local timeout_secs="${7:-5}"
+  local interval_secs="${8:-0.2}"
+  local min_elapsed_secs="${9:-0}"
+  local start_ts now_ts out
+
+  start_ts="$(date +%s)"
+  while true; do
+    out="$(capture_raw_output "$cmd")"
+    now_ts="$(date +%s)"
+    if [[ "$out" == *"$required_a"* && "$out" == *"$required_b"* && "$out" != *"$forbidden"* ]] && (( now_ts - start_ts >= min_elapsed_secs )); then
+      pass_case "$backend" "$case_name" "$cmd"
+      return 0
+    fi
+    if (( now_ts - start_ts >= timeout_secs )); then
+      fail_case "$backend" "$case_name" "filtered output mismatch" "$cmd" "contains $required_a and $required_b; excludes $forbidden" "$out"
+    fi
+    sleep "$interval_secs"
+  done
+}
+
 wait_for_server() {
   local i
   for i in $(seq 1 100); do
@@ -281,6 +386,7 @@ run_backend_suite() {
   local delete_key="${prefix}delete"
   local range_key_a="${prefix}range_a"
   local range_key_b="${prefix}range_b"
+  local range_key_c="${prefix}range_c"
 
   printf '[INFO][%s] running TTL suite\n' "$backend"
   print_backend_capabilities "$backend"
@@ -333,11 +439,18 @@ run_backend_suite() {
 
   expect_exact "$backend" "range-seed-a" "$write_cmd $range_key_a 11" "OK"
   expect_exact "$backend" "range-seed-b" "$write_cmd $range_key_b 22" "OK"
-  expect_not_error "$backend" "range-smoke" "$range_cmd $range_key_a $range_key_b"
-  expect_not_error "$backend" "sort-smoke" "$sort_cmd low 10"
-  skip_case "$backend" "range-ttl" "${RANGE_SORT_TTL_REASON[$backend]}"
+  expect_exact "$backend" "range-seed-c" "$write_cmd $range_key_c 33" "OK"
+  expect_exact "$backend" "range-expire-b" "EXPIRE $range_key_b 1" "OK"
+  expect_eventually_output_contains_two_and_not_contains "$backend" "range-filter" "$range_cmd $range_key_a $range_key_c" "$range_key_a" "$range_key_c" "$range_key_b" 5 0.2 1
+  expect_eventually_output_contains_two_and_not_contains "$backend" "sort-filter" "$sort_cmd low 10" "$range_key_a" "$range_key_c" "$range_key_b" 5 0.2 1
+  expect_eventually_raw_output_contains_two_and_not_contains "$backend" "fulldump-filter" "FULLDUMP" "$range_key_a" "$range_key_c" "$range_key_b" 5 0.2 1
   expect_exact "$backend" "range-cleanup-a" "$del_cmd $range_key_a" "OK"
-  expect_exact "$backend" "range-cleanup-b" "$del_cmd $range_key_b" "OK"
+  if [[ "$backend" == "hash" || "$backend" == "skiptable" ]]; then
+    expect_exact_one_of "$backend" "range-cleanup-b" "$del_cmd $range_key_b" "OK" "(error) ERROR"
+  else
+    expect_exact_one_of "$backend" "range-cleanup-b" "$del_cmd $range_key_b" "OK" "NO EXIST"
+  fi
+  expect_exact "$backend" "range-cleanup-c" "$del_cmd $range_key_c" "OK"
 
   pass_case "$backend" "suite" "all cases passed"
 }

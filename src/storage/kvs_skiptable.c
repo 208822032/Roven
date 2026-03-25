@@ -90,6 +90,19 @@ int random_level() {
     return level;
 }
 
+static void kvs_skiptable_reap_expired(kvs_skiptable_t *table, int64_t now_ms) {
+    if (!table || !table->header) return;
+
+    Node *current = table->header->forward[0];
+    while (current) {
+        Node *next = current->forward[0];
+        if (current->key && kv_is_expired(current->expire_at_ms, now_ms)) {
+            (void)kvs_skiptable_del(table, current->key);
+        }
+        current = next;
+    }
+}
+
 int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !table->header  || !key || !value) return -1;
     
@@ -241,6 +254,8 @@ int kvs_skiptable_exist(kvs_skiptable_t *table, char *key) {
 
 int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *response, int max_len) {
     if (!table || !table->header || !response || max_len <= 0) return -1;  // 添加header检查
+
+    kvs_skiptable_reap_expired(table, kv_now_ms());
     
     Node* current;
     int pos = 0;
@@ -297,6 +312,8 @@ int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key,
                         int limit, char *response, int max_len) {
     if (!table || !table->header || !start_key || !end_key || !response || max_len <= 0) 
         return -1;  // 添加header检查
+
+    kvs_skiptable_reap_expired(table, kv_now_ms());
 
     // 处理 start_key > end_key 的情况（空范围）
     if (strcmp(start_key, end_key) > 0) {

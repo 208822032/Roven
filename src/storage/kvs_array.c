@@ -25,6 +25,20 @@ static int kvs_array_find_index(kvs_array_t *inst, const char *key, int *out_idx
     return 1;
 }
 
+static void kvs_array_reap_expired(kvs_array_t *inst, int64_t now_ms) {
+    if (!inst || !inst->table) return;
+
+    for (int i = 0; i < inst->len;) {
+        kvs_array_item_t *item = &inst->table[i];
+        if (item->key && kv_is_expired(item->expire_at_ms, now_ms)) {
+            if (kvs_array_del(inst, item->key) == 0) {
+                continue;
+            }
+        }
+        i++;
+    }
+}
+
 int kvs_array_create(kvs_array_t *inst) {
 
 	if (!inst) return -1;
@@ -322,6 +336,9 @@ int kvs_array_sort(kvs_array_t *inst, char *response, int max_len) {
 int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int max_len){
     if (!inst || !response || max_len <= 0) return -1;
 
+	kvs_array_reap_expired(inst, kv_now_ms());
+	if (inst->len <= 0) return 0;
+
     kvs_array_item_t *items = kvs_malloc((size_t)inst->len * sizeof(kvs_array_item_t));
     if(!items) return -1;
 
@@ -362,6 +379,9 @@ int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int 
 
 int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *response, int max_len) {
     if (!inst || !start_key || !end_key) return -1;
+
+	kvs_array_reap_expired(inst, kv_now_ms());
+	if (inst->len <= 0) return 0;
     
     // 收集所有有效项
     kvs_array_item_t *items = kvs_malloc((size_t)inst->len * sizeof(kvs_array_item_t));

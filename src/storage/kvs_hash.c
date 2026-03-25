@@ -89,6 +89,17 @@ static int _find_idx(kvs_hash_t *hash, const char *key) {
     return -1;
 }
 
+static void kvs_hash_reap_expired(kvs_hash_t *inst, int64_t now_ms) {
+    if (!inst || !inst->nodes) return;
+
+    for (int i = 0; i < inst->max_slots; ++i) {
+        hashnode_t *slot = &inst->nodes[i];
+        if (slot->used == 1 && slot->key && kv_is_expired(slot->expire_at_ms, now_ms)) {
+            (void)kvs_hash_del(inst, slot->key);
+        }
+    }
+}
+
 /* 写入：key 不存在 -> 插入；已存在 -> 覆盖并清除 TTL */
 int kvs_hash_set(kvs_hash_t *hash, char *key, char *value) {
     if (!hash || !hash->nodes || !key || !value) return -1;
@@ -238,6 +249,8 @@ int kvs_hash_sort(kvs_hash_t *inst, int order, int limit,
                   char *response, int max_len) {
     if (!inst || !inst->nodes) return -1;
 
+    kvs_hash_reap_expired(inst, kv_now_ms());
+
     int total = inst->count;
     if (total <= 0) return 0;
 
@@ -282,6 +295,8 @@ int kvs_hash_sort(kvs_hash_t *inst, int order, int limit,
 int kvs_hash_range(kvs_hash_t *inst, char *start_key, char *end_key,
                    char *response, int max_len) {
     if (!inst || !inst->nodes || !start_key || !end_key) return -1;
+
+    kvs_hash_reap_expired(inst, kv_now_ms());
 
     int total = inst->count;
     if (total <= 0) return 0;
