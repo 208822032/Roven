@@ -27,6 +27,7 @@ typedef struct hashnode_s {
 	unsigned int   vlen;
 	char *key;
 	char *value;
+	int64_t expire_at_ms;
 } hashnode_t;
 #endif
 

@@ -38,6 +38,7 @@ int kvs_hash_create(kvs_hash_t *hash) {
         hash->nodes[i].vlen = 0;
         hash->nodes[i].key = NULL;
         hash->nodes[i].value = NULL;
+        hash->nodes[i].expire_at_ms = KV_TTL_NO_EXPIRE;
     }
     return 0;
 }
@@ -88,7 +89,7 @@ static int _find_idx(kvs_hash_t *hash, const char *key) {
     return -1;
 }
 
-/* 写入：key 不存在 -> 插入；已存在 -> 返回 1（保持现有语义） */
+/* 写入：key 不存在 -> 插入；已存在 -> 覆盖并清除 TTL */
 int kvs_hash_set(kvs_hash_t *hash, char *key, char *value) {
     if (!hash || !hash->nodes || !key || !value) return -1;
 
@@ -127,6 +128,7 @@ int kvs_hash_set(kvs_hash_t *hash, char *key, char *value) {
             slot->vlen = (unsigned int)val_len;
             slot->key = kcopy;
             slot->value = vcopy;
+            slot->expire_at_ms = KV_TTL_NO_EXPIRE;
 
             hash->count++;
             return 0;
@@ -134,8 +136,18 @@ int kvs_hash_set(kvs_hash_t *hash, char *key, char *value) {
             // 已占用，检查是否同 key
             if (slot->klen == (unsigned char)key_len &&
 	            memcmp(slot->key, key, (size_t)key_len) == 0) {
-				// 按现有语义：已存在返回 1，不覆盖
-				return 1;
+                char *vcopy = kvs_malloc((size_t)val_len + 1);
+                if (!vcopy) {
+                    return -4;
+                }
+                memcpy(vcopy, value, (size_t)val_len + 1);
+                if (slot->value) {
+                    kvs_free(slot->value);
+                }
+                slot->value = vcopy;
+                slot->vlen = (unsigned int)val_len;
+                slot->expire_at_ms = KV_TTL_NO_EXPIRE;
+                return 1;
             }
         } else if (slot->used == 2) {
             // tombstone，记录第一个
@@ -175,6 +187,7 @@ int kvs_hash_mod(kvs_hash_t *hash, char *key, char *value) {
     if (slot->value) kvs_free(slot->value);
     slot->value = vcopy;
     slot->vlen = (unsigned int)val_len;
+    slot->expire_at_ms = KV_TTL_NO_EXPIRE;
     return 0;
 }
 

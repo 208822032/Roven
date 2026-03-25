@@ -20,6 +20,7 @@ typedef struct _rbtree_node {
 	struct _rbtree_node *parent;
 	KEY_TYPE key;
 	void *value;
+	int64_t expire_at_ms;
 } rbtree_node;
 
 typedef struct _rbtree {

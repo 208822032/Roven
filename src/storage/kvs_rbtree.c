@@ -504,6 +504,21 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
 
 	if (!inst || !key || !value || inst->nil == NULL)  return -1;
 
+	rbtree_node *exist_node = rbtree_search(inst, key);
+	if (exist_node && exist_node != inst->nil) {
+		char *new_value = kvs_strdup(value);
+		if (!new_value) {
+			return -2;
+		}
+
+		if (exist_node->value) {
+			kvs_free(exist_node->value);
+		}
+		exist_node->value = new_value;
+		exist_node->expire_at_ms = KV_TTL_NO_EXPIRE;
+		return 1;
+	}
+
 
 	rbtree_node *node = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
 	if (!node) return -2;
@@ -523,6 +538,7 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
         kvs_free(node);
         return -2;
     }
+	node->expire_at_ms = KV_TTL_NO_EXPIRE;
 
 	rbtree_insert(inst, node);
 
@@ -575,6 +591,7 @@ int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value) {
 	
 	memset(node->value, 0, strlen(value) + 1);
 	strcpy(node->value, value);
+	node->expire_at_ms = KV_TTL_NO_EXPIRE;
 
 	return 0;
 

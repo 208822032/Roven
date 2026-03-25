@@ -8,6 +8,7 @@ typedef struct Node {
 	char *key;
 	char *value;
 	int level;
+	int64_t expire_at_ms;
 	struct Node* forward[];
 } Node;
 

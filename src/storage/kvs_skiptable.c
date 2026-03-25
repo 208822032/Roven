@@ -15,6 +15,7 @@ Node* create_node(int level, const char* key, const char* value) {
     if (!node) return NULL;
 
     node->level = level;
+    node->expire_at_ms = KV_TTL_NO_EXPIRE;
     for (int i = 0; i <= level; i++) {
         node->forward[i] = NULL;
     }
@@ -114,6 +115,7 @@ int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
         memcpy(new_value, value, vlen + 1);
         if (current->value) kvs_free(current->value);
         current->value = new_value;
+        current->expire_at_ms = KV_TTL_NO_EXPIRE;
         return 1;  // 表示更新
     }
     
@@ -184,6 +186,7 @@ int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value) {
         memcpy(new_value, value, vlen + 1);
         if (node->value) kvs_free(node->value);
         node->value = new_value;
+        node->expire_at_ms = KV_TTL_NO_EXPIRE;
         return 0;
     }
     

@@ -37,6 +37,9 @@ int handle_mod(command_context_t *ctx, char *response);
 int handle_exist(command_context_t *ctx, char *response);
 int handle_range(command_context_t *ctx, char *response);
 int handle_sort(command_context_t *ctx, char *response);
+int handle_expire(command_context_t *ctx, char *response);
+int handle_ttl(command_context_t *ctx, char *response);
+int handle_persist(command_context_t *ctx, char *response);
 int handle_quit(command_context_t *ctx, char *response);
 int handle_fulldump(command_context_t *ctx, char *response);
 

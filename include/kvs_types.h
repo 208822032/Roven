@@ -1,6 +1,7 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 #include "kvs_config.h"
 
 // 命令枚举（保留与现有实现一致的顺序与值）
@@ -43,6 +44,10 @@ enum {
 	KVS_CMD_PAPERGET,
 	KVS_CMD_PAPERDEL,
 	KVS_CMD_PAPERMOD,
+	// ttl
+	KVS_CMD_EXPIRE,
+	KVS_CMD_TTL,
+	KVS_CMD_PERSIST,
 	// quit
 	KVS_CMD_QUIT,
 	KVS_CMD_FULLDUMP,
@@ -58,3 +63,21 @@ enum {
 
 // 命令字符串表（定义在实现文件中）
 extern const char *command[];
+
+#define KV_TTL_NO_EXPIRE (-1)
+
+static inline int64_t kv_now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	return (int64_t)ts.tv_sec * 1000 + (int64_t)(ts.tv_nsec / 1000000);
+}
+
+static inline int kv_is_expired(int64_t expire_at_ms, int64_t now_ms) {
+	return expire_at_ms >= 0 && expire_at_ms <= now_ms;
+}
+
+static inline int64_t kv_ttl_remaining_seconds(int64_t expire_at_ms, int64_t now_ms) {
+	if (expire_at_ms < 0) return -1;
+	if (expire_at_ms <= now_ms) return -2;
+	return (expire_at_ms - now_ms) / 1000;
+}

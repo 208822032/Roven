@@ -5,6 +5,7 @@
 typedef struct kvs_array_item_s {
 	char *key;
 	char *value;
+	int64_t expire_at_ms;
 } kvs_array_item_t;
 
 #define KVS_ARRAY_SIZE 2048

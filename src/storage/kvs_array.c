@@ -114,6 +114,17 @@ int kvs_array_set(kvs_array_t *inst, char *key, char *value) {
 	if (inst == NULL || key == NULL || value == NULL) return -1;
     int idx = -1;
     if (kvs_array_find_index(inst, key, &idx) == 0) {
+        char *kvalue = kvs_malloc(strlen(value) + 1);
+        if (kvalue == NULL) {
+            return -2;
+        }
+        strcpy(kvalue, value);
+
+        if (inst->table[idx].value) {
+            kvs_free(inst->table[idx].value);
+        }
+        inst->table[idx].value = kvalue;
+        inst->table[idx].expire_at_ms = KV_TTL_NO_EXPIRE;
         return 1;
     }
 
@@ -140,6 +151,7 @@ int kvs_array_set(kvs_array_t *inst, char *key, char *value) {
 
     inst->table[inst->len].key = kcopy;
     inst->table[inst->len].value = kvalue;
+    inst->table[inst->len].expire_at_ms = KV_TTL_NO_EXPIRE;
     inst->len++;
     inst->total = inst->len;
 
@@ -242,6 +254,7 @@ int kvs_array_mod(kvs_array_t *inst, char *key, char *value) {
             strcpy(kvalue, value);
 
             inst->table[idx].value = kvalue;
+            inst->table[idx].expire_at_ms = KV_TTL_NO_EXPIRE;
 
 			return 0;
 	}
