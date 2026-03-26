@@ -430,7 +430,7 @@ extern int get_sync_context();
 
 //RDB
 #define RDB_MAGIC "KVSRDB"
-#define RDB_VERSION  1
+#define RDB_VERSION  2
 
 //RDB操作结果
 #define RDB_OK  0

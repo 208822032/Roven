@@ -2,7 +2,7 @@
 #include <stdio.h>
 
 #define RDB_MAGIC   "KVSRDB"
-#define RDB_VERSION 1
+#define RDB_VERSION 2
 
 #define RDB_OK  0
 #define RDB_ERR 1

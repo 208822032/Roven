@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdint.h>
 #include "kvs_memory.h"
 
 #if ENABLE_ARRAY
@@ -20,18 +21,79 @@ extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 #endif
 
+extern rbtree_node *rbtree_search(rbtree *T, KEY_TYPE key);
+
 // 内部函数前向声明（需在首次调用前声明以避免隐式声明）
-static void rdb_save_array(FILE *fp);
-static int rdb_load_array(FILE *fp);
-static void rdb_save_rbtree(FILE *fp);
-static void rdb_load_rbtree(FILE *fp);
-static void rdb_save_hash(FILE *fp);
-static void rdb_load_hash(FILE *fp);
-static void rdb_save_skiptable(FILE *fp);
-static void rdb_load_skiptable(FILE *fp);
+static void rdb_save_array(FILE *fp, int64_t now_ms);
+static int rdb_load_array(FILE *fp, uint8_t version, int64_t now_ms);
+static void rdb_save_rbtree(FILE *fp, int64_t now_ms);
+static int rdb_load_rbtree(FILE *fp, uint8_t version, int64_t now_ms);
+static void rdb_save_hash(FILE *fp, int64_t now_ms);
+static int rdb_load_hash(FILE *fp, uint8_t version, int64_t now_ms);
+static void rdb_save_skiptable(FILE *fp, int64_t now_ms);
+static int rdb_load_skiptable(FILE *fp, uint8_t version, int64_t now_ms);
+
+static int rdb_write_exact(FILE *fp, const void *buf, size_t size) {
+    return fwrite(buf, size, 1, fp) == 1 ? RDB_OK : RDB_ERR;
+}
 
 static int rdb_read_exact(FILE *fp, void *buf, size_t size) {
     return fread(buf, size, 1, fp) == 1 ? RDB_OK : RDB_ERR;
+}
+
+static int rdb_write_int64(FILE *fp, int64_t value) {
+    return rdb_write_exact(fp, &value, sizeof(value));
+}
+
+static int rdb_read_int64(FILE *fp, int64_t *value) {
+    return rdb_read_exact(fp, value, sizeof(*value));
+}
+
+static void rdb_apply_expire_array(const char *key, int64_t expire_at_ms) {
+#if ENABLE_ARRAY
+    for (int i = 0; i < global_array.len; ++i) {
+        if (global_array.table[i].key && strcmp(global_array.table[i].key, key) == 0) {
+            global_array.table[i].expire_at_ms = expire_at_ms;
+            return;
+        }
+    }
+#endif
+}
+
+static void rdb_apply_expire_rbtree(const char *key, int64_t expire_at_ms) {
+#if ENABLE_RBTREE
+    rbtree_node *node = rbtree_search(&global_rbtree, (char *)key);
+    if (node && node != global_rbtree.nil) {
+        node->expire_at_ms = expire_at_ms;
+    }
+#endif
+}
+
+static void rdb_apply_expire_hash(const char *key, int64_t expire_at_ms) {
+#if ENABLE_HASH
+    if (!global_hash.nodes) return;
+    for (int i = 0; i < global_hash.max_slots; ++i) {
+        hashnode_t *slot = &global_hash.nodes[i];
+        if (slot->used == 1 && slot->key && strcmp(slot->key, key) == 0) {
+            slot->expire_at_ms = expire_at_ms;
+            return;
+        }
+    }
+#endif
+}
+
+static void rdb_apply_expire_skiptable(const char *key, int64_t expire_at_ms) {
+#if ENABLE_SKIPTABLE
+    if (!global_skiptable.header) return;
+    Node *current = global_skiptable.header->forward[0];
+    while (current) {
+        if (current->key && strcmp(current->key, key) == 0) {
+            current->expire_at_ms = expire_at_ms;
+            return;
+        }
+        current = current->forward[0];
+    }
+#endif
 }
 
 //检查文件是否存在
@@ -59,29 +121,32 @@ int kvs_rdb_save(const char *filename){
     }
 
     //写入魔数和版本
-    if (fwrite(RDB_MAGIC, strlen(RDB_MAGIC), 1, fp) != 1) goto write_error;
+    if (rdb_write_exact(fp, RDB_MAGIC, strlen(RDB_MAGIC)) != RDB_OK) goto write_error;
     uint8_t version = RDB_VERSION;
-    if (fwrite(&version, sizeof(version), 1, fp) != 1) goto write_error;
+    if (rdb_write_exact(fp, &version, sizeof(version)) != RDB_OK) goto write_error;
 
     //保存当前时间戳
     time_t timestamp = time(NULL);
-    if (fwrite(&timestamp, sizeof(timestamp), 1, fp) != 1) goto write_error;
+    if (rdb_write_exact(fp, &timestamp, sizeof(timestamp)) != RDB_OK) goto write_error;
 
     //保存各数据结构
+    int64_t now_ms = kv_now_ms();
+
 #if ENABLE_ARRAY
-    rdb_save_array(fp);
+
+    rdb_save_array(fp, now_ms);
 #endif
 
 #if ENABLE_RBTREE
-    rdb_save_rbtree(fp);
+    rdb_save_rbtree(fp, now_ms);
 #endif
 
 #if ENABLE_HASH
-    rdb_save_hash(fp);
+    rdb_save_hash(fp, now_ms);
 #endif
 
 #if ENABLE_SKIPTABLE
-    rdb_save_skiptable(fp);
+    rdb_save_skiptable(fp, now_ms);
 #endif
 
     //写入结束标识
@@ -160,11 +225,12 @@ int kvs_rdb_load(const char *filename){
         fclose(fp);
         return RDB_ERR;
     }
-    if(version != RDB_VERSION){
+    if(version != 1 && version != 2){
         fprintf(stderr, "Unsupported RDB version: %d\n", version);
         fclose(fp);
-        return RESP_ERROR;
+        return RDB_ERR;
     }
+    int64_t load_now_ms = kv_now_ms();
 
     //读取时间戳
     time_t timestamp;
@@ -204,7 +270,7 @@ int kvs_rdb_load(const char *filename){
         switch (type){
            #if ENABLE_ARRAY
             case 0x01:
-                if (rdb_load_array(fp) != RDB_OK) {
+                if (rdb_load_array(fp, version, load_now_ms) != RDB_OK) {
                     fclose(fp);
                     return RDB_ERR;
                 }
@@ -213,19 +279,28 @@ int kvs_rdb_load(const char *filename){
                 
            #if ENABLE_RBTREE
             case 0x02:
-                rdb_load_rbtree(fp);
+                if (rdb_load_rbtree(fp, version, load_now_ms) != RDB_OK) {
+                    fclose(fp);
+                    return RDB_ERR;
+                }
                 break;
            #endif
                 
            #if ENABLE_HASH
             case 0x03:
-                rdb_load_hash(fp);
+                if (rdb_load_hash(fp, version, load_now_ms) != RDB_OK) {
+                    fclose(fp);
+                    return RDB_ERR;
+                }
                 break;
            #endif
                 
            #if ENABLE_SKIPTABLE
             case 0x04:
-                rdb_load_skiptable(fp);
+                if (rdb_load_skiptable(fp, version, load_now_ms) != RDB_OK) {
+                    fclose(fp);
+                    return RDB_ERR;
+                }
                 break; 
            #endif
 
@@ -244,14 +319,17 @@ int kvs_rdb_load(const char *filename){
  
 
 //保存数组
-static void rdb_save_array(FILE *fp){
+static void rdb_save_array(FILE *fp, int64_t now_ms){
     uint8_t type = 0x01; // 数据类型标识符
     fwrite(&type, sizeof(type), 1, fp);
 
-    // 使用 len 作为元素数量（有效元素个数）
-    uint32_t count = (uint32_t)global_array.len;
+    long count_pos = ftell(fp);
+    uint32_t count = 0;
     fwrite(&count, sizeof(count), 1, fp);
     for (int i = 0; i < global_array.len; i++) {
+        if (!global_array.table[i].key || !global_array.table[i].value) continue;
+        if (kv_is_expired(global_array.table[i].expire_at_ms, now_ms)) continue;
+
         uint32_t key_len   = (uint32_t)strlen(global_array.table[i].key);
         uint32_t value_len = (uint32_t)strlen(global_array.table[i].value);
 
@@ -259,12 +337,23 @@ static void rdb_save_array(FILE *fp){
         fwrite(global_array.table[i].key, key_len, 1, fp);
         fwrite(&value_len, sizeof(value_len), 1, fp);
         fwrite(global_array.table[i].value, value_len, 1, fp);
+
+#if RDB_VERSION >= 2
+        fwrite(&global_array.table[i].expire_at_ms, sizeof(int64_t), 1, fp);
+#endif
+
+        count++;
     }
+
+    long current_pos = ftell(fp);
+    fseek(fp, count_pos, SEEK_SET);
+    fwrite(&count, sizeof(count), 1, fp);
+    fseek(fp, current_pos, SEEK_SET);
 
 }
 
 //加载数组
-static int rdb_load_array(FILE *fp){
+static int rdb_load_array(FILE *fp, uint8_t version, int64_t now_ms){
     uint32_t count;
     if (rdb_read_exact(fp, &count, sizeof(count)) != RDB_OK) {
         fprintf(stderr, "RDB array load failed: unable to read count\n");
@@ -309,14 +398,36 @@ static int rdb_load_array(FILE *fp){
         }
         value[value_len] = '\0';
 
+        int64_t expire_at_ms = KV_TTL_NO_EXPIRE;
+        if (version >= 2) {
+            if (rdb_read_int64(fp, &expire_at_ms) != RDB_OK) {
+                fprintf(stderr, "RDB array load failed: unable to read expire_at_ms at index %u\n", i);
+                kvs_free(key);
+                kvs_free(value);
+                return RDB_ERR;
+            }
+        }
+
+        if (kv_is_expired(expire_at_ms, now_ms)) {
+            kvs_free(key);
+            kvs_free(value);
+            continue;
+        }
+
         int set_ret = kvs_array_set(&global_array, key, value);
         kvs_free(key);
         kvs_free(value);
 
-        if (set_ret != 0) {
+        if (set_ret < 0) {
             fprintf(stderr, "RDB array load failed: kvs_array_set ret=%d at index %u\n", set_ret, i);
             return RDB_ERR;
         }
+
+        if (global_array.len > 0) {
+            global_array.table[global_array.len - 1].expire_at_ms = expire_at_ms;
+        }
+
+        rdb_apply_expire_array(key, expire_at_ms);
     }
 
     return RDB_OK;
@@ -325,11 +436,17 @@ static int rdb_load_array(FILE *fp){
 static void rdb_save_rbtree_node(rbtree_node *node,
                                  rbtree *T,
                                  FILE *fp,
-                                 uint32_t *count)
+                                 uint32_t *count,
+                                 int64_t now_ms)
 {
     if (node == T->nil) return;
 
-    rdb_save_rbtree_node(node->left, T, fp, count);
+    rdb_save_rbtree_node(node->left, T, fp, count, now_ms);
+
+    if (kv_is_expired(node->expire_at_ms, now_ms)) {
+        rdb_save_rbtree_node(node->right, T, fp, count, now_ms);
+        return;
+    }
 
     uint32_t key_len   = (uint32_t)strlen(node->key);
     uint32_t value_len = (uint32_t)strlen((char*)node->value);
@@ -338,14 +455,17 @@ static void rdb_save_rbtree_node(rbtree_node *node,
     fwrite(node->key,  key_len,          1, fp);
     fwrite(&value_len, sizeof(value_len),1, fp);
     fwrite(node->value,value_len,        1, fp);
+#if RDB_VERSION >= 2
+    fwrite(&node->expire_at_ms, sizeof(int64_t), 1, fp);
+#endif
 
     (*count)++;
 
-    rdb_save_rbtree_node(node->right, T, fp, count);
+    rdb_save_rbtree_node(node->right, T, fp, count, now_ms);
 }
 
 //保存红黑树
-static void rdb_save_rbtree(FILE *fp){
+static void rdb_save_rbtree(FILE *fp, int64_t now_ms){
     uint8_t type = 0x02;//红黑树类型
     fwrite(&type, sizeof(type), 1, fp);
 
@@ -355,7 +475,7 @@ static void rdb_save_rbtree(FILE *fp){
     fwrite(&count, sizeof(count), 1, fp);
 
     // 中序遍历保存所有节点
-    rdb_save_rbtree_node(global_rbtree.root, &global_rbtree, fp, &count);
+    rdb_save_rbtree_node(global_rbtree.root, &global_rbtree, fp, &count, now_ms);
 
     // 回写实际数量
     long current_pos = ftell(fp);
@@ -366,31 +486,76 @@ static void rdb_save_rbtree(FILE *fp){
 }
 
 //红黑树加载实现
-static void rdb_load_rbtree(FILE *fp){
+static int rdb_load_rbtree(FILE *fp, uint8_t version, int64_t now_ms){
     uint32_t count;
-    fread(&count, sizeof(count), 1, fp);
+    if (rdb_read_exact(fp, &count, sizeof(count)) != RDB_OK) {
+        fprintf(stderr, "RDB rbtree load failed: unable to read count\n");
+        return RDB_ERR;
+    }
 
     for (uint32_t i = 0; i < count; i++){
         uint32_t key_len, value_len;
-        fread(&key_len, sizeof(key_len), 1, fp);
+        if (rdb_read_exact(fp, &key_len, sizeof(key_len)) != RDB_OK) {
+            fprintf(stderr, "RDB rbtree load failed: unable to read key_len at index %u\n", i);
+            return RDB_ERR;
+        }
         char *key = kvs_malloc(key_len + 1);
-        fread(key, key_len, 1, fp);
+        if (!key) return RDB_ERR;
+        if (rdb_read_exact(fp, key, key_len) != RDB_OK) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
         key[key_len] = '\0';
 
-        fread(&value_len, sizeof(value_len), 1, fp);
+        if (rdb_read_exact(fp, &value_len, sizeof(value_len)) != RDB_OK) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
         char *value = kvs_malloc(value_len + 1);
-        fread(value, value_len, 1, fp);
+        if (!value) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
+        if (rdb_read_exact(fp, value, value_len) != RDB_OK) {
+            kvs_free(key);
+            kvs_free(value);
+            return RDB_ERR;
+        }
         value[value_len] = '\0';
 
-        kvs_rbtree_set(&global_rbtree, key, value);
+        int64_t expire_at_ms = KV_TTL_NO_EXPIRE;
+        if (version >= 2) {
+            if (rdb_read_int64(fp, &expire_at_ms) != RDB_OK) {
+                kvs_free(key);
+                kvs_free(value);
+                return RDB_ERR;
+            }
+        }
+
+        if (kv_is_expired(expire_at_ms, now_ms)) {
+            kvs_free(key);
+            kvs_free(value);
+            continue;
+        }
+
+        int set_ret = kvs_rbtree_set(&global_rbtree, key, value);
+        if (set_ret < 0) {
+            kvs_free(key);
+            kvs_free(value);
+            return RDB_ERR;
+        }
+
+        rdb_apply_expire_rbtree(key, expire_at_ms);
 
         kvs_free(key);
         kvs_free(value);
     }
+
+    return RDB_OK;
 }
 
 //哈希表实现
-static void rdb_save_hash(FILE *fp){
+static void rdb_save_hash(FILE *fp, int64_t now_ms){
     uint8_t type = 0x03; // 哈希表类型标识
     fwrite(&type, sizeof(type), 1, fp);
 
@@ -407,6 +572,7 @@ static void rdb_save_hash(FILE *fp){
     for (int i = 0; i < global_hash.max_slots; i++) {
         hashnode_t *slot = &global_hash.nodes[i];
         if (slot->used != 1) continue; // 只保存有效元素
+        if (kv_is_expired(slot->expire_at_ms, now_ms)) continue;
 
         uint32_t key_len   = (uint32_t)strlen(slot->key);
         uint32_t value_len = (uint32_t)strlen(slot->value);
@@ -415,6 +581,9 @@ static void rdb_save_hash(FILE *fp){
         fwrite(slot->key, key_len, 1, fp);
         fwrite(&value_len, sizeof(value_len), 1, fp);
         fwrite(slot->value, value_len, 1, fp);
+#if RDB_VERSION >= 2
+        fwrite(&slot->expire_at_ms, sizeof(int64_t), 1, fp);
+#endif
 
         count++;
     }
@@ -429,39 +598,88 @@ static void rdb_save_hash(FILE *fp){
 }
 
 //哈希表加载
-static void rdb_load_hash(FILE *fp){
+static int rdb_load_hash(FILE *fp, uint8_t version, int64_t now_ms){
     uint32_t count;
-    fread(&count, sizeof(count), 1, fp);
+    if (rdb_read_exact(fp, &count, sizeof(count)) != RDB_OK) {
+        fprintf(stderr, "RDB hash load failed: unable to read count\n");
+        return RDB_ERR;
+    }
     for (uint32_t i = 0; i < count; i++){
         uint32_t key_len, value_len;
 
-        fread(&key_len, sizeof(key_len), 1, fp);
+        if (rdb_read_exact(fp, &key_len, sizeof(key_len)) != RDB_OK) {
+            return RDB_ERR;
+        }
         char *key = kvs_malloc(key_len + 1);
-        fread(key, key_len, 1, fp);
+        if (!key) return RDB_ERR;
+        if (rdb_read_exact(fp, key, key_len) != RDB_OK) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
         key[key_len] = '\0';
 
-        fread(&value_len, sizeof(value_len), 1, fp);
+        if (rdb_read_exact(fp, &value_len, sizeof(value_len)) != RDB_OK) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
         char *value = kvs_malloc(value_len + 1);
-        fread(value, value_len, 1, fp);
+        if (!value) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
+        if (rdb_read_exact(fp, value, value_len) != RDB_OK) {
+            kvs_free(key);
+            kvs_free(value);
+            return RDB_ERR;
+        }
         value[value_len] = '\0';
 
-        kvs_hash_set(&global_hash, key, value);
+        int64_t expire_at_ms = KV_TTL_NO_EXPIRE;
+        if (version >= 2) {
+            if (rdb_read_int64(fp, &expire_at_ms) != RDB_OK) {
+                kvs_free(key);
+                kvs_free(value);
+                return RDB_ERR;
+            }
+        }
+
+        if (kv_is_expired(expire_at_ms, now_ms)) {
+            kvs_free(key);
+            kvs_free(value);
+            continue;
+        }
+
+        int set_ret = kvs_hash_set(&global_hash, key, value);
+        if (set_ret < 0) {
+            kvs_free(key);
+            kvs_free(value);
+            return RDB_ERR;
+        }
+
+        rdb_apply_expire_hash(key, expire_at_ms);
 
         kvs_free(key);
         kvs_free(value);
     }
+
+    return RDB_OK;
 }
 
 //跳表保存
-static void rdb_save_skiptable(FILE *fp){
+static void rdb_save_skiptable(FILE *fp, int64_t now_ms){
     uint8_t type = 0x04; // 跳表类型标识
     fwrite(&type, sizeof(type), 1, fp);
 
-    uint32_t count = global_skiptable.count;
+    long count_pos = ftell(fp);
+    uint32_t count = 0;
     fwrite(&count, sizeof(count), 1, fp);
 
     Node *current = global_skiptable.header->forward[0];
     while (current) {
+        if (!current->key || !current->value || kv_is_expired(current->expire_at_ms, now_ms)) {
+            current = current->forward[0];
+            continue;
+        }
         uint32_t key_len = strlen(current->key);
         uint32_t value_len = strlen(current->value);
         
@@ -469,36 +687,88 @@ static void rdb_save_skiptable(FILE *fp){
         fwrite(current->key, key_len, 1, fp);
         fwrite(&value_len, sizeof(value_len), 1, fp);
         fwrite(current->value, value_len, 1, fp);
+#if RDB_VERSION >= 2
+        fwrite(&current->expire_at_ms, sizeof(int64_t), 1, fp);
+#endif
+        count++;
         
         current = current->forward[0];
     }
+
+    long current_pos = ftell(fp);
+    fseek(fp, count_pos, SEEK_SET);
+    fwrite(&count, sizeof(count), 1, fp);
+    fseek(fp, current_pos, SEEK_SET);
 
     
 }
 
 //跳表加载
-static void rdb_load_skiptable(FILE *fp){
+static int rdb_load_skiptable(FILE *fp, uint8_t version, int64_t now_ms){
     uint32_t count;
-    fread(&count, sizeof(count), 1, fp);
+    if (rdb_read_exact(fp, &count, sizeof(count)) != RDB_OK) {
+        return RDB_ERR;
+    }
 
     for (uint32_t i = 0; i < count; i++){
         uint32_t key_len, value_len;
 
-        fread(&key_len, sizeof(key_len), 1, fp);
+        if (rdb_read_exact(fp, &key_len, sizeof(key_len)) != RDB_OK) {
+            return RDB_ERR;
+        }
         char *key = kvs_malloc(key_len + 1);
-        fread(key, key_len, 1, fp);
+        if (!key) return RDB_ERR;
+        if (rdb_read_exact(fp, key, key_len) != RDB_OK) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
         key[key_len] = '\0';
 
-        fread(&value_len, sizeof(value_len), 1, fp);
+        if (rdb_read_exact(fp, &value_len, sizeof(value_len)) != RDB_OK) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
         char *value = kvs_malloc(value_len + 1);
-        fread(value, value_len, 1, fp);
+        if (!value) {
+            kvs_free(key);
+            return RDB_ERR;
+        }
+        if (rdb_read_exact(fp, value, value_len) != RDB_OK) {
+            kvs_free(key);
+            kvs_free(value);
+            return RDB_ERR;
+        }
         value[value_len] = '\0';
 
-        kvs_skiptable_set(&global_skiptable, key, value);
+        int64_t expire_at_ms = KV_TTL_NO_EXPIRE;
+        if (version >= 2) {
+            if (rdb_read_int64(fp, &expire_at_ms) != RDB_OK) {
+                kvs_free(key);
+                kvs_free(value);
+                return RDB_ERR;
+            }
+        }
+
+        if (kv_is_expired(expire_at_ms, now_ms)) {
+            kvs_free(key);
+            kvs_free(value);
+            continue;
+        }
+
+        int set_ret = kvs_skiptable_set(&global_skiptable, key, value);
+        if (set_ret < 0) {
+            kvs_free(key);
+            kvs_free(value);
+            return RDB_ERR;
+        }
+
+        rdb_apply_expire_skiptable(key, expire_at_ms);
         
         kvs_free(key);
         kvs_free(value);
     }
+
+    return RDB_OK;
 }
 
 
