@@ -512,6 +512,7 @@ const command_info *lookup_command(const char *name);
 int check_arity(const command_info *cmd, int argc);
 int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx);
 int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms);
+int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms);
 
 // 声明所有命令处理函数
 int handle_set(command_context_t *ctx, char *response);

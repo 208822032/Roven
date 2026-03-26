@@ -173,6 +173,14 @@ static int ttl_lookup_any(const char *key, ttl_target_ref_t *ref) {
     return 0;
 }
 
+static void ttl_sync_delete_if_needed(const char *key) {
+    if (!key) return;
+    if (global_dist_config.role != ROLE_MASTER) return;
+    if (g_cfg.sync_mode != KVS_SYNC_TCP) return;
+    if (get_sync_context() == 2) return;
+    master_sync_command("DEL", key, NULL);
+}
+
 int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms) {
     if (!key || !expire_at_ms) {
         return -1;
@@ -186,6 +194,32 @@ int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms) {
     }
 
     *expire_at_ms = ttl_target_get_expire_at(&ref);
+    return 1;
+}
+
+int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms) {
+    if (!key) {
+        return -1;
+    }
+
+    ttl_target_ref_t ref;
+    memset(&ref, 0, sizeof(ref));
+
+    if (!ttl_lookup_any(key, &ref)) {
+        return 0;
+    }
+
+    if (expire_at_ms < 0) {
+        ttl_target_set_expire_at(&ref, KV_TTL_NO_EXPIRE);
+        return 1;
+    }
+
+    int64_t now_ms = kv_now_ms();
+    if (kv_is_expired(expire_at_ms, now_ms)) {
+        return ttl_target_delete(&ref, key) == 0 ? 1 : 0;
+    }
+
+    ttl_target_set_expire_at(&ref, expire_at_ms);
     return 1;
 }
 
@@ -268,7 +302,14 @@ static int ttl_expire_if_needed_by_structure(int data_structure, const char *key
         return 0;
     }
 
-    return ttl_target_delete(&ref, key) == 0 ? 1 : -1;
+    if (global_dist_config.role == ROLE_MASTER) {
+        if (ttl_target_delete(&ref, key) != 0) {
+            return -1;
+        }
+        ttl_sync_delete_if_needed(key);
+    }
+
+    return 1;
 }
 
 static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
@@ -287,7 +328,11 @@ static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
     int64_t now_ms = kv_now_ms();
 
     if (kv_is_expired(expire_at_ms, now_ms)) {
-        ttl_target_delete(&ref, ctx->key);
+        if (global_dist_config.role == ROLE_MASTER) {
+            if (ttl_target_delete(&ref, ctx->key) == 0) {
+                ttl_sync_delete_if_needed(ctx->key);
+            }
+        }
         return (op == KVS_CMD_TTL) ? -2 : 0;
     }
 
@@ -695,6 +740,8 @@ int handle_get(command_context_t *ctx, char *response){
     int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key);
     if (ttl_ret < 0) {
         return resp_generate_error(response, "ERROR");
+    } else if (ttl_ret > 0) {
+        return resp_generate_simple_string(response, "NO EXIST");
     }
 
     switch (ctx->data_structure) {
@@ -819,6 +866,8 @@ int handle_exist(command_context_t *ctx, char *response){
     int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key);
     if (ttl_ret < 0) {
         return resp_generate_error(response, "ERROR");
+    } else if (ttl_ret > 0) {
+        return resp_generate_simple_string(response, "NO EXIST");
     }
 
     switch (ctx->data_structure) {

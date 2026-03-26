@@ -46,6 +46,7 @@ int handle_quit(command_context_t *ctx, char *response);
 int handle_fulldump(command_context_t *ctx, char *response);
 
 int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms);
+int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms);
 
 extern const command_info command_table[];
 

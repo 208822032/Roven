@@ -93,9 +93,26 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		if(get_sync_context() != 2){
 			// 主节点需要将命令分发给从节点 仅在TCP同步模式下
 			if (global_dist_config.role == ROLE_MASTER && g_cfg.sync_mode == KVS_SYNC_TCP) {
-				// 无论 TCP 还是 eBPF 模式，依然通过 master_sync_command 发送；
-				// eBPF 模式下，内核通过 kprobe/tcp_sendmsg 抓该同步端口上的数据包。
-				master_sync_command(tokens[0], tokens[1], (count > 2) ? tokens[2] : NULL);
+				if (strcmp(cmd->name, "EXPIRE") == 0 || strcmp(cmd->name, "PEXPIREAT") == 0) {
+					if (ret > 0) {
+						int64_t expire_at_ms = 0;
+						int ttl_lookup_ret = ttl_get_any_key_expire_at_ms(ctx.key, &expire_at_ms);
+						if (ttl_lookup_ret > 0 && expire_at_ms >= 0) {
+							char expire_buf[32];
+							snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
+							master_sync_command("PEXPIREAT", ctx.key, expire_buf);
+						} else {
+							master_sync_command("DEL", ctx.key, NULL);
+						}
+					}
+				} else if (strcmp(cmd->name, "PERSIST") == 0) {
+					if (ret > 0) {
+						master_sync_command("PERSIST", ctx.key, NULL);
+					}
+				} else {
+					// 其他写命令保持原样广播
+					master_sync_command(tokens[0], tokens[1], (count > 2) ? tokens[2] : NULL);
+				}
 			}
 		}
 		

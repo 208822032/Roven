@@ -21,6 +21,8 @@ typedef enum {
     MS_OP_PAPERSET     = 13,
     MS_OP_PAPERDEL     = 14,
     MS_OP_PAPERMOD     = 15,
+    MS_OP_TTL_PEXPIREAT = 16,
+    MS_OP_TTL_PERSIST   = 17,
 } ms_op_t;
 
 // 供分布式模块按需计算最小缓冲区大小

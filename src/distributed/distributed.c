@@ -65,6 +65,8 @@ static void slave_append_aof_from_op(ms_op_t op, const char *key, const char *va
         case MS_OP_SKIPTABLE_SMOD:cmd = "SMOD"; break;
         case MS_OP_PAPERSET:      cmd = "PAPERSET"; break;
         case MS_OP_PAPERDEL:      cmd = "PAPERDEL"; break;
+        case MS_OP_TTL_PEXPIREAT: cmd = "PEXPIREAT"; break;
+        case MS_OP_TTL_PERSIST:   cmd = "PERSIST"; break;
 
         default:
             // 非写类 / 未知操作，不写入 AOF
@@ -81,7 +83,8 @@ static void slave_append_aof_from_op(ms_op_t op, const char *key, const char *va
     if (op == MS_OP_ARRAY_DEL ||
         op == MS_OP_RBTREE_RDEL ||
         op == MS_OP_HASH_HDEL  ||
-        op == MS_OP_SKIPTABLE_SDEL) {
+        op == MS_OP_SKIPTABLE_SDEL ||
+        op == MS_OP_TTL_PERSIST) {
         argc = 2;
     } else {
         argv[2] = (char *)(val ? val : "");
@@ -92,6 +95,18 @@ static void slave_append_aof_from_op(ms_op_t op, const char *key, const char *va
     aof_append(argc, argv);
 }
 #endif // ENABLE_AOF
+
+static int master_sync_key_expire_at(const char *key, int64_t expire_at_ms)
+{
+    if (!key || expire_at_ms < 0) {
+        return 0;
+    }
+
+    char expire_buf[32];
+    snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
+    master_sync_command("PEXPIREAT", key, expire_buf);
+    return 1;
+}
 
 //每个slave同步线程 先全量 再增量
 void* slave_sync_thread(void *arg){
@@ -104,13 +119,19 @@ void* slave_sync_thread(void *arg){
            ntohs(slave->addr.sin_port));
 
     // 全量同步：遍历本地所有数据结构，对每个 key 调用 master_sync_command()
-    
+    int64_t now_ms = kv_now_ms();
+
 #if ENABLE_ARRAY
     for (int i = 0; i < global_array.total; i++) {
-        if (global_array.table[i].key && global_array.table[i].value) {
+        if (global_array.table[i].key && global_array.table[i].value &&
+            !kv_is_expired(global_array.table[i].expire_at_ms, now_ms)) {
             master_sync_command("SET",
                                 global_array.table[i].key,
                                 global_array.table[i].value);
+            if (global_array.table[i].expire_at_ms >= 0) {
+                master_sync_key_expire_at(global_array.table[i].key,
+                                          global_array.table[i].expire_at_ms);
+            }
         }
     }
 #endif
@@ -120,7 +141,12 @@ void* slave_sync_thread(void *arg){
     void send_rbtree_node(rbtree_node *node) {
         if (node == global_rbtree.nil) return;
         send_rbtree_node(node->left);
-        master_sync_command("RSET", node->key, (char*)node->value);
+        if (!kv_is_expired(node->expire_at_ms, now_ms)) {
+            master_sync_command("RSET", node->key, (char*)node->value);
+            if (node->expire_at_ms >= 0) {
+                master_sync_key_expire_at(node->key, node->expire_at_ms);
+            }
+        }
         send_rbtree_node(node->right);
     }
     send_rbtree_node(global_rbtree.root);
@@ -129,8 +155,11 @@ void* slave_sync_thread(void *arg){
 #if ENABLE_HASH
     for (int i = 0; i < global_hash.max_slots; i++) {
         hashnode_t *slot = &global_hash.nodes[i];
-        if (slot->used == 1) {
+        if (slot->used == 1 && !kv_is_expired(slot->expire_at_ms, now_ms)) {
             master_sync_command("HSET", slot->key, slot->value);
+            if (slot->expire_at_ms >= 0) {
+                master_sync_key_expire_at(slot->key, slot->expire_at_ms);
+            }
         }
     }
 #endif
@@ -138,7 +167,12 @@ void* slave_sync_thread(void *arg){
 #if ENABLE_SKIPTABLE
     Node *current = global_skiptable.header->forward[0];
     while (current) {
-        master_sync_command("SSET", current->key, current->value);
+        if (!kv_is_expired(current->expire_at_ms, now_ms)) {
+            master_sync_command("SSET", current->key, current->value);
+            if (current->expire_at_ms >= 0) {
+                master_sync_key_expire_at(current->key, current->expire_at_ms);
+            }
+        }
         current = current->forward[0];
     }
 #endif
@@ -509,7 +543,6 @@ void slave_connect_master(){
                     kvs_skiptable_mod(&global_skiptable, key, val ? val : "");
 #endif
                     break;
-#if ENABLE_RBTREE
                 case MS_OP_PAPERSET:
                     kvs_rbtree_set(&global_rbtree, key, val ? val : "");
                     break;
@@ -519,7 +552,30 @@ void slave_connect_master(){
                 case MS_OP_PAPERMOD:
                     kvs_rbtree_mod(&global_rbtree, key, val ? val : "");
                     break;
-#endif                   
+                case MS_OP_TTL_PEXPIREAT:
+                {
+                    char *endptr = NULL;
+                    errno = 0;
+                    long long parsed_expire = 0;
+                    if (!val) {
+                        fprintf(stderr, "[SLAVE] missing PEXPIREAT payload for key=%s\n", key);
+                        break;
+                    }
+                    parsed_expire = strtoll(val, &endptr, 10);
+                    if (endptr == val || *endptr != '\0' || errno == ERANGE) {
+                        fprintf(stderr, "[SLAVE] invalid PEXPIREAT payload for key=%s\n", key);
+                        break;
+                    }
+                    if (ttl_set_any_key_expire_at_ms(key, (int64_t)parsed_expire) < 0) {
+                        fprintf(stderr, "[SLAVE] apply PEXPIREAT failed for key=%s\n", key);
+                    }
+                    break;
+                }
+                case MS_OP_TTL_PERSIST:
+                    if (ttl_set_any_key_expire_at_ms(key, KV_TTL_NO_EXPIRE) < 0) {
+                        fprintf(stderr, "[SLAVE] apply PERSIST failed for key=%s\n", key);
+                    }
+                    break;
                 default:
                     fprintf(stderr, "[SLAVE] Unknown operation %d\n", op);
                     break;
@@ -587,6 +643,10 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
         op = MS_OP_PAPERDEL;
     }else if(strcmp(cmd, "PAPERMOD") == 0){
         op = MS_OP_PAPERMOD;
+    }else if(strcmp(cmd, "PEXPIREAT") == 0){
+        op = MS_OP_TTL_PEXPIREAT;
+    }else if(strcmp(cmd, "PERSIST") == 0){
+        op = MS_OP_TTL_PERSIST;
     }else{
         //未知命令
         return;
