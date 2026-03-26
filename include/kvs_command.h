@@ -40,8 +40,12 @@ int handle_sort(command_context_t *ctx, char *response);
 int handle_expire(command_context_t *ctx, char *response);
 int handle_ttl(command_context_t *ctx, char *response);
 int handle_persist(command_context_t *ctx, char *response);
+int handle_pexpireat(command_context_t *ctx, char *response);
+int handle_aofrewrite(command_context_t *ctx, char *response);
 int handle_quit(command_context_t *ctx, char *response);
 int handle_fulldump(command_context_t *ctx, char *response);
+
+int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms);
 
 extern const command_info command_table[];
 

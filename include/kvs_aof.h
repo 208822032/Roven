@@ -9,10 +9,10 @@
 #define AOF_FSYNC_ALWAYS   2
 
 // AOF 缓冲区与重写相关常量（可在实现中调整）
-#define AOF_BUFFER_SIZE         (1024 * 1024 * 64)
-#define AOF_REWRITE_MIN_SIZE    (1024 * 1024 * 128)
+#define AOF_BUFFER_SIZE         (64 * 1024 * 1024)
+#define AOF_REWRITE_MIN_SIZE    (28 * 1024 * 1024)
 #define AOF_REWRITE_PERCENTAGE  50
-#define AOF_REWRITE_MIN_GROWTH  (1024 * 1024 * 64)
+#define AOF_REWRITE_MIN_GROWTH  (64 * 1024 * 1024)
 
 // 现有实现的对外 API（保持兼容）。后续可演进为不透明句柄。
 typedef struct aof_state_s aof_state_t; // 前置声明以隐藏内部字段

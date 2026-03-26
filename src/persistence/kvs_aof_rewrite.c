@@ -155,6 +155,57 @@ static int write_command_parts(int fd, const char *cmd_type, const char *key, co
     return 0;
 }
 
+static int write_ttl_command_if_needed(int fd, const char *key, int64_t expire_at_ms) {
+    if (expire_at_ms < 0) {
+        return 0;
+    }
+
+    char expire_buf[32];
+    snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
+    return write_command_parts(fd, "PEXPIREAT", key, expire_buf);
+}
+
+typedef struct {
+    int fd;
+    int total_commands;
+    time_t start_time;
+    int64_t now_ms;
+    int error;
+} rbtree_rewrite_ctx_t;
+
+static void rbtree_rewrite_callback(rbtree_node *node, void *userdata) {
+    rbtree_rewrite_ctx_t *ctx = (rbtree_rewrite_ctx_t *)userdata;
+    if (!ctx || ctx->error) {
+        return;
+    }
+
+    if (time(NULL) - ctx->start_time > 290) {
+        fprintf(stderr, "Child process: Rewrite timeout approaching during rbtree processing\n");
+        ctx->error = 1;
+        return;
+    }
+
+    char *key_ptr = __atomic_load_n(&node->key, __ATOMIC_ACQUIRE);
+    char *value_ptr = __atomic_load_n(&node->value, __ATOMIC_ACQUIRE);
+    int64_t expire_at_ms = __atomic_load_n(&node->expire_at_ms, __ATOMIC_ACQUIRE);
+
+    if (key_ptr && value_ptr && !kv_is_expired(expire_at_ms, ctx->now_ms)) {
+        if (write_command_parts(ctx->fd, "RSET", key_ptr, value_ptr) == -1) {
+            perror("Failed to write rbtree data to temp file");
+            ctx->error = 1;
+            return;
+        }
+
+        if (write_ttl_command_if_needed(ctx->fd, key_ptr, expire_at_ms) == -1) {
+            perror("Failed to write rbtree TTL command to temp file");
+            ctx->error = 1;
+            return;
+        }
+
+        ctx->total_commands++;
+    }
+}
+
 
 //写入数据结构到文件 子进程专用
 static int write_data_to_tempfile(int fd) {
@@ -168,6 +219,7 @@ static int write_data_to_tempfile(int fd) {
 
     int total_commands = 0;
     time_t start_time = time(NULL);
+    int64_t now_ms = kv_now_ms();
 
     // 检查文件描述符有效性
     if (fd < 0) {
@@ -185,6 +237,7 @@ static int write_data_to_tempfile(int fd) {
     struct array_item_snapshot {
         char *key;
         char *value;
+        int64_t expire_at_ms;
     } *array_snapshot = NULL;
     
     int valid_count = 0;
@@ -198,10 +251,12 @@ static int write_data_to_tempfile(int fd) {
                     // 原子读取指针（避免编译器重排序）
                     char *key_ptr = __atomic_load_n(&global_array.table[i].key, __ATOMIC_ACQUIRE);
                     char *value_ptr = __atomic_load_n(&global_array.table[i].value, __ATOMIC_ACQUIRE);
+                    int64_t expire_at_ms = __atomic_load_n(&global_array.table[i].expire_at_ms, __ATOMIC_ACQUIRE);
                     
-                    if (key_ptr && value_ptr) {
+                    if (key_ptr && value_ptr && !kv_is_expired(expire_at_ms, now_ms)) {
                         array_snapshot[valid_count].key = key_ptr;
                         array_snapshot[valid_count].value = value_ptr;
+                        array_snapshot[valid_count].expire_at_ms = expire_at_ms;
                         valid_count++;
                     }
                 }
@@ -228,6 +283,12 @@ static int write_data_to_tempfile(int fd) {
             return -1;
         }
 
+        if (write_ttl_command_if_needed(fd, array_snapshot[i].key, array_snapshot[i].expire_at_ms) == -1) {
+            perror("Failed to write array TTL command to temp file");
+            if(array_snapshot) kvs_free(array_snapshot);
+            return -1;
+        }
+
         total_commands++;
     }
     
@@ -237,49 +298,20 @@ static int write_data_to_tempfile(int fd) {
 
 #if ENABLE_RBTREE 
     if (global_rbtree.root != global_rbtree.nil) {
-        // 使用栈进行非递归中序遍历
-        rbtree_node *stack[1024];
-        int stack_ptr = 0;
-        rbtree_node *current = global_rbtree.root;
-        int tree_commands = 0;
+        rbtree_rewrite_ctx_t rbtree_ctx = {
+            .fd = fd,
+            .total_commands = 0,
+            .start_time = start_time,
+            .now_ms = now_ms,
+            .error = 0,
+        };
 
-        while (current != global_rbtree.nil || stack_ptr > 0) {
-            // 超时检查
-            if (time(NULL) - start_time > 290) {
-                fprintf(stderr, "Child process: Rewrite timeout approaching during rbtree processing\n");
-                break;
-            }
-            
-            while (current != global_rbtree.nil) {
-                if (stack_ptr >= 1024) {
-                    fprintf(stderr, "Stack overflow in rbtree traversal\n");
-                    break;
-                }
-                stack[stack_ptr++] = current;
-                current = current->left;
-            }
-            
-            if (stack_ptr > 0) {
-                current = stack[--stack_ptr];
-                
-                // 原子读取键值
-                char *key_ptr = __atomic_load_n(&current->key, __ATOMIC_ACQUIRE);
-                char *value_ptr = __atomic_load_n(&current->value, __ATOMIC_ACQUIRE);
-                
-                if (key_ptr && value_ptr) {
-                    // 使用 write_command_parts 替代原有的 snprintf
-                    if (write_command_parts(fd, "RSET", key_ptr, value_ptr) == -1) {
-                        perror("Failed to write rbtree data to temp file");
-                        return -1;
-                    }
-                    tree_commands++;
-                    total_commands++;
-                }
-                
-                current = current->right;
-            }
+        rbtree_traversal_with_callback(&global_rbtree, global_rbtree.root, rbtree_rewrite_callback, &rbtree_ctx);
+        if (rbtree_ctx.error) {
+            return -1;
         }
-        //printf("Child process: Wrote %d rbtree commands\n", tree_commands);
+
+        total_commands += rbtree_ctx.total_commands;
     }
 #endif
 
@@ -302,9 +334,13 @@ static int write_data_to_tempfile(int fd) {
         char *key_ptr = slot->key;
         char *value_ptr = slot->value;
 
-        if (key_ptr && value_ptr && key_ptr[0] != '\0' && value_ptr[0] != '\0') {
+        if (key_ptr && value_ptr && key_ptr[0] != '\0' && value_ptr[0] != '\0' && !kv_is_expired(slot->expire_at_ms, now_ms)) {
             if (write_command_parts(fd, "HSET", key_ptr, value_ptr) == -1) {
                 perror("Failed to write hash data to temp file");
+                return -1;
+            }
+            if (write_ttl_command_if_needed(fd, key_ptr, slot->expire_at_ms) == -1) {
+                perror("Failed to write hash TTL command to temp file");
                 return -1;
             }
             hash_commands++;
@@ -331,10 +367,14 @@ static int write_data_to_tempfile(int fd) {
             }
             
             // 直接访问节点的键值
-            if (current->key && current->value && current->key[0] != '\0' && current->value[0] != '\0') {
+            if (current->key && current->value && current->key[0] != '\0' && current->value[0] != '\0' && !kv_is_expired(current->expire_at_ms, now_ms)) {
                 // 使用 write_command_parts 替代原有的 snprintf
                 if (write_command_parts(fd, "SSET", current->key, current->value) == -1) {
                     perror("Failed to write skiplist data to temp file");
+                    return -1;
+                }
+                if (write_ttl_command_if_needed(fd, current->key, current->expire_at_ms) == -1) {
+                    perror("Failed to write skiplist TTL command to temp file");
                     return -1;
                 }
                 skiplist_commands++;

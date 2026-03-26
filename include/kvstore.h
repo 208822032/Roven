@@ -511,6 +511,7 @@ int get_command_index(const char *name);
 const command_info *lookup_command(const char *name);
 int check_arity(const command_info *cmd, int argc);
 int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx);
+int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms);
 
 // 声明所有命令处理函数
 int handle_set(command_context_t *ctx, char *response);
@@ -520,6 +521,11 @@ int handle_mod(command_context_t *ctx, char *response);
 int handle_exist(command_context_t *ctx, char *response);
 int handle_range(command_context_t *ctx, char *response);
 int handle_sort(command_context_t *ctx, char *response);
+int handle_expire(command_context_t *ctx, char *response);
+int handle_ttl(command_context_t *ctx, char *response);
+int handle_persist(command_context_t *ctx, char *response);
+int handle_pexpireat(command_context_t *ctx, char *response);
+int handle_aofrewrite(command_context_t *ctx, char *response);
 int handle_quit(command_context_t *ctx, char *response);
 
 //命令表

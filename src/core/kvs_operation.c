@@ -37,6 +37,10 @@ typedef struct {
     void *entry;
 } ttl_target_ref_t;
 
+static int64_t ttl_target_get_expire_at(const ttl_target_ref_t *ref);
+static void ttl_target_set_expire_at(const ttl_target_ref_t *ref, int64_t expire_at_ms);
+static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key);
+
 static int ttl_lookup_array(kvs_array_t *inst, const char *key, ttl_target_ref_t *ref) {
     if (!inst || !key || !ref || !inst->table) return 0;
 
@@ -169,6 +173,28 @@ static int ttl_lookup_any(const char *key, ttl_target_ref_t *ref) {
     return 0;
 }
 
+int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms) {
+    if (!key || !expire_at_ms) {
+        return -1;
+    }
+
+    ttl_target_ref_t ref;
+    memset(&ref, 0, sizeof(ref));
+
+    if (!ttl_lookup_any(key, &ref)) {
+        return 0;
+    }
+
+    *expire_at_ms = ttl_target_get_expire_at(&ref);
+    return 1;
+}
+
+int handle_aofrewrite(command_context_t *ctx, char *response){
+    (void)ctx;
+    aof_rewrite_background();
+    return resp_generate_simple_string(response, "OK");
+}
+
 static int64_t ttl_target_get_expire_at(const ttl_target_ref_t *ref) {
     if (!ref) return KV_TTL_NO_EXPIRE;
 
@@ -266,7 +292,8 @@ static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
     }
 
     switch (op) {
-        case KVS_CMD_EXPIRE: {
+        case KVS_CMD_EXPIRE:
+        {
             if (!ctx->value) return -1;
 
             char *endptr = NULL;
@@ -286,6 +313,25 @@ static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
             } else {
                 ttl_target_set_expire_at(&ref, now_ms + delta_ms);
             }
+            return 1;
+        }
+        case KVS_CMD_PEXPIREAT:
+        {
+            if (!ctx->value) return -1;
+
+            char *endptr = NULL;
+            errno = 0;
+            long long expire_at_input = strtoll(ctx->value, &endptr, 10);
+            if (endptr == ctx->value || *endptr != '\0' || errno == ERANGE) {
+                return -1;
+            }
+
+            int64_t expire_at_input_ms = (int64_t)expire_at_input;
+            if (expire_at_input_ms <= now_ms) {
+                return ttl_target_delete(&ref, ctx->key) == 0 ? 1 : 0;
+            }
+
+            ttl_target_set_expire_at(&ref, expire_at_input_ms);
             return 1;
         }
         case KVS_CMD_TTL:
@@ -310,6 +356,8 @@ const char *command[] = {
     "SSET", "SGET", "SDEL", "SMOD", "SEXIST","SRANGE","SSORT",
     "PAPERSET", "PAPERGET", "PAPERDEL", "PAPERMOD",
     "EXPIRE", "TTL", "PERSIST",
+    "PEXPIREAT",
+    "AOFREWRITE",
     "QUIT",
     "FULLDUMP",
 };
@@ -361,6 +409,8 @@ const command_info command_table[] = {
     {"EXPIRE", handle_expire,  3, 1, -1},
     {"TTL",    handle_ttl,     2, 0, -1},
     {"PERSIST", handle_persist, 2, 1, -1},
+    {"PEXPIREAT", handle_pexpireat, 3, 1, -1},
+    {"AOFREWRITE", handle_aofrewrite, 1, 0, -1},
 
     // Special commands
     {"QUIT",   handle_quit,   1, 0, -1},
@@ -447,7 +497,7 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
         ctx->data_structure = DATA_STRUCTURE_SKIPTABLE;
     }else if(cmd >= KVS_CMD_PAPERSET && cmd <= KVS_CMD_PAPERMOD){
         ctx->data_structure = DATA_STRUCTURE_RBTREE; // Paper 使用 RBTree 存储大 value
-    }else if(cmd == KVS_CMD_EXPIRE || cmd == KVS_CMD_TTL || cmd == KVS_CMD_PERSIST){
+    }else if(cmd == KVS_CMD_EXPIRE || cmd == KVS_CMD_TTL || cmd == KVS_CMD_PERSIST || cmd == KVS_CMD_PEXPIREAT || cmd == KVS_CMD_AOFREWRITE){
         ctx->data_structure = -1;
     }else if(cmd == KVS_CMD_QUIT){
         //QUIT命令不需要额外参数
@@ -563,8 +613,12 @@ int check_arity(const command_info *cmd, int argc){
         return argc == 3 || argc == 5;
     }
 
-    if(strcmp(cmd->name, "EXPIRE") == 0){
+    if(strcmp(cmd->name, "EXPIRE") == 0 || strcmp(cmd->name, "PEXPIREAT") == 0){
         return argc == 3;
+    }
+
+    if(strcmp(cmd->name, "AOFREWRITE") == 0){
+        return argc == 1;
     }
 
     if(strcmp(cmd->name, "TTL") == 0 || strcmp(cmd->name, "PERSIST") == 0){
@@ -820,6 +874,17 @@ int handle_ttl(command_context_t *ctx, char *response){
 
 int handle_persist(command_context_t *ctx, char *response){
     int ret = ttl_apply_any_key_op(ctx, KVS_CMD_PERSIST);
+    if (ret < 0) {
+        return resp_generate_error(response, "ERROR");
+    }
+    if (ret == 0) {
+        return resp_generate_simple_string(response, "NO EXIST");
+    }
+    return resp_generate_simple_string(response, "OK");
+}
+
+int handle_pexpireat(command_context_t *ctx, char *response){
+    int ret = ttl_apply_any_key_op(ctx, KVS_CMD_PEXPIREAT);
     if (ret < 0) {
         return resp_generate_error(response, "ERROR");
     }

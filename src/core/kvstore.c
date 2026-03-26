@@ -72,7 +72,21 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	if(ret >= 0 && cmd->write_command){
 		#if ENABLE_AOF// 添加日志打印命令
 			if(!aof_is_loading()){
-				aof_append(count, tokens);//正在加载AOF时不记录
+				if (strcmp(cmd->name, "EXPIRE") == 0) {
+					int64_t expire_at_ms = 0;
+					int ttl_lookup_ret = ttl_get_any_key_expire_at_ms(ctx.key, &expire_at_ms);
+					if (ttl_lookup_ret > 0 && expire_at_ms >= 0) {
+						char expire_buf[32];
+						snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
+						char *aof_tokens[] = {"PEXPIREAT", ctx.key, expire_buf};
+						aof_append(3, aof_tokens);
+					} else if (ret > 0) {
+						char *aof_tokens[] = {"DEL", ctx.key};
+						aof_append(2, aof_tokens);
+					}
+				} else {
+					aof_append(count, tokens);//正在加载AOF时不记录
+				}
 			}
 		#endif
 
