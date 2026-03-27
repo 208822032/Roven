@@ -159,6 +159,7 @@ $(EBPF_KERN_OBJ): $(EBPF_DIR)/ebpf_kern.c $(VMLINUX_H)
 #eBPF用户态守护进程
 $(EBPF_SYNCD_BIN): \
 	$(EBPF_DIR)/ebpf_syncd.c \
+	$(SRC_NETWORK)/resp_protocol.c \
 	$(SRC_UTILS)/msg_queue.c \
 	$(SRC_STORAGE)/kvs_mempool.c \
 	$(SRC_STORAGE)/jemalloc_wrapper.c \

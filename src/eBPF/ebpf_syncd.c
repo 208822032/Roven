@@ -18,12 +18,15 @@
 #include <netinet/tcp.h>
 #include <stdatomic.h>
 #include <time.h>
+#include <strings.h>
 
 
 #include "msg_queue.h"
 #include "tx_batcher.h"
 #include "kvs_memory.h"
+#include "kvs_types.h"
 #include "kvs_config.h"
+#include "resp_protocol.h"
 #include <pthread.h>
 extern kvs_config_t g_cfg;
 
@@ -106,6 +109,11 @@ static volatile int          g_running = 1; //逻辑退出标记
 
 static slave_ctx_t g_slaves[MAX_SLAVES];
 static int g_slave_count = 0;
+static unsigned char *g_rx_stream = NULL;
+static size_t g_rx_stream_len = 0;
+static size_t g_rx_stream_cap = 0;
+
+static void broadcast_to_all_slaves(const void *data, size_t len);
 
 //信号处理
 static void handle_sigint(int sig){
@@ -355,6 +363,150 @@ static int txb_send_fn(void *ctx, const void *buf, size_t len) {
     slave_ctx_t *s = (slave_ctx_t *)ctx;
     if (s->fd < 0) return -1;
     return send_all(s->fd, buf, len);
+}
+
+static int rx_stream_reserve(size_t need) {
+    if (need <= g_rx_stream_cap) return 0;
+
+    size_t new_cap = g_rx_stream_cap ? g_rx_stream_cap : (64 * 1024);
+    while (new_cap < need) {
+        if (new_cap > (SIZE_MAX / 2)) {
+            new_cap = need;
+            break;
+        }
+        new_cap *= 2;
+    }
+
+    unsigned char *tmp = (unsigned char *)kvs_realloc(g_rx_stream, new_cap);
+    if (!tmp) {
+        return -1;
+    }
+
+    g_rx_stream = tmp;
+    g_rx_stream_cap = new_cap;
+    return 0;
+}
+
+static int broadcast_resp_array(const char *const *argv, int argc) {
+    if (!argv || argc <= 0) return -1;
+
+    size_t need = (size_t)resp_generate_array_start(NULL, argc);
+    for (int i = 0; i < argc; ++i) {
+        need += (size_t)resp_generate_array_item(NULL, argv[i]);
+    }
+
+    unsigned char *buf = (unsigned char *)kvs_malloc(need);
+    if (!buf) return -1;
+
+    size_t off = 0;
+    off += (size_t)resp_generate_array_start((char *)buf + off, argc);
+    for (int i = 0; i < argc; ++i) {
+        off += (size_t)resp_generate_array_item((char *)buf + off, argv[i]);
+    }
+
+    broadcast_to_all_slaves(buf, off);
+    kvs_free(buf);
+    return 0;
+}
+
+static int is_replicated_write_command(const char *cmd) {
+    if (!cmd) return 0;
+
+    return strcasecmp(cmd, "SET") == 0 ||
+           strcasecmp(cmd, "RSET") == 0 ||
+           strcasecmp(cmd, "HSET") == 0 ||
+           strcasecmp(cmd, "SSET") == 0 ||
+           strcasecmp(cmd, "MOD") == 0 ||
+           strcasecmp(cmd, "RMOD") == 0 ||
+           strcasecmp(cmd, "HMOD") == 0 ||
+           strcasecmp(cmd, "SMOD") == 0 ||
+           strcasecmp(cmd, "DEL") == 0 ||
+           strcasecmp(cmd, "RDEL") == 0 ||
+           strcasecmp(cmd, "HDEL") == 0 ||
+           strcasecmp(cmd, "SDEL") == 0 ||
+           strcasecmp(cmd, "EXPIRE") == 0 ||
+           strcasecmp(cmd, "PEXPIREAT") == 0 ||
+           strcasecmp(cmd, "PERSIST") == 0 ||
+           strcasecmp(cmd, "PAPERSET") == 0 ||
+           strcasecmp(cmd, "PAPERDEL") == 0 ||
+           strcasecmp(cmd, "PAPERMOD") == 0;
+}
+
+static int normalize_and_broadcast_command(const unsigned char *cmd_buf, size_t cmd_len) {
+    if (!cmd_buf || cmd_len == 0) return -1;
+
+    resp_parser_t parser;
+    resp_parser_init(&parser);
+
+    int parsed = resp_parser(&parser, (const char *)cmd_buf, cmd_len);
+    if (parsed <= 0 || parser.state != RESP_PARSE_COMPLETE || parser.arg_index <= 0 || !parser.tokens[0]) {
+        resp_parser_free(&parser);
+        return -1;
+    }
+
+    const char *cmd = parser.tokens[0];
+    int rc = 0;
+
+    if (strcasecmp(cmd, "EXPIRE") == 0 && parser.arg_index >= 3 && parser.tokens[1] && parser.tokens[2]) {
+        char *endptr = NULL;
+        long long seconds = strtoll(parser.tokens[2], &endptr, 10);
+        if (!endptr || *endptr != '\0') {
+            resp_parser_free(&parser);
+            return -1;
+        }
+
+        if (seconds <= 0) {
+            const char *argv[] = {"DEL", parser.tokens[1]};
+            rc = broadcast_resp_array(argv, 2);
+        } else {
+            int64_t expire_at_ms = kv_now_ms() + (int64_t)seconds * 1000LL;
+            char expire_buf[32];
+            snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
+            const char *argv[] = {"PEXPIREAT", parser.tokens[1], expire_buf};
+            rc = broadcast_resp_array(argv, 3);
+        }
+        resp_parser_free(&parser);
+        return rc;
+    }
+
+    if (!is_replicated_write_command(cmd)) {
+        resp_parser_free(&parser);
+        return 0;
+    }
+
+    broadcast_to_all_slaves(cmd_buf, cmd_len);
+    resp_parser_free(&parser);
+    return 0;
+}
+
+static void process_rx_stream(void) {
+    size_t offset = 0;
+
+    while (offset < g_rx_stream_len) {
+        int cmd_len = resp_peek_command((const char *)g_rx_stream, g_rx_stream_len, offset);
+        if (cmd_len == 0) {
+            break;
+        }
+        if (cmd_len < 0) {
+            fprintf(stderr, "[ebpf_syncd] RESP parse error in replication stream, dropping buffer\n");
+            g_rx_stream_len = 0;
+            return;
+        }
+
+        if (normalize_and_broadcast_command(g_rx_stream + offset, (size_t)cmd_len) < 0) {
+            fprintf(stderr, "[ebpf_syncd] failed to normalize replication command, dropping command\n");
+        }
+
+        offset += (size_t)cmd_len;
+    }
+
+    if (offset > 0) {
+        size_t remain = g_rx_stream_len - offset;
+        if (remain > 0) {
+            memmove(g_rx_stream, g_rx_stream + offset, remain);
+        }
+        g_rx_stream_len = remain;
+    }
 }
 
 //为slave建立TCP连接并发送REPLSYNC
@@ -709,8 +861,15 @@ static int handle_event(void* ctx, void* data, size_t data_sz){
     if (len == 0)
         return 0;
 
-    // 直接原样广播（RESP 粘包/拆包由 slave 端解析器处理）
-    broadcast_to_all_slaves(e->data, len);
+    if (rx_stream_reserve(g_rx_stream_len + len) != 0) {
+        fprintf(stderr, "[ebpf_syncd] rx stream allocation failed\n");
+        return 0;
+    }
+
+    memcpy(g_rx_stream + g_rx_stream_len, e->data, len);
+    g_rx_stream_len += len;
+
+    process_rx_stream();
     return 0;
 }
 #endif
@@ -1082,6 +1241,13 @@ cleanup:
             slave->fd = -1;
         }
         msg_queue_destroy(&slave->queue);
+    }
+
+    if (g_rx_stream) {
+        kvs_free(g_rx_stream);
+        g_rx_stream = NULL;
+        g_rx_stream_len = 0;
+        g_rx_stream_cap = 0;
     }
 
     bpf_link__destroy(link_ret);
