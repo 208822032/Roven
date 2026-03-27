@@ -88,18 +88,29 @@ static void ttl_scan_flush_expired(ttl_scan_cursor_t *cursor) {
 static void ttl_scan_array(kvs_array_t *inst, ttl_scan_cursor_t *cursor) {
     if (!inst || !inst->table || cursor->budget <= 0) return;
 
-    int len = inst->len;
-    if (len <= 0) return;
-
     int visited = 0;
-    for (int i = cursor->array_idx; i < len && visited < cursor->budget; ++i) {
+    int i = cursor->array_idx;
+    while (i < inst->len && visited < cursor->budget) {
         kvs_array_item_t *item = &inst->table[i];
-        cursor->array_idx = i + 1;
-        if (!item->key) continue;
+        if (!item->key) {
+            i++;
+            continue;
+        }
         visited++;
-        if (!kv_is_expired(item->expire_at_ms, cursor->now_ms)) continue;
-        ttl_scan_record_expired(cursor, item->key);
+        if (!kv_is_expired(item->expire_at_ms, cursor->now_ms)) {
+            i++;
+            continue;
+        }
+
+        char *expired_key = item->key;
+        ttl_scan_sync_delete_key(expired_key);
+        if (kvs_array_del_at(inst, i) == 0) {
+            continue;
+        }
+
+        i++;
     }
+    cursor->array_idx = i;
     cursor->budget -= visited;
 }
 #endif

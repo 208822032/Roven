@@ -45,13 +45,12 @@ static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key);
 static int ttl_lookup_array(kvs_array_t *inst, const char *key, ttl_target_ref_t *ref) {
     if (!inst || !key || !ref || !inst->table) return 0;
 
-    for (int i = 0; i < inst->len; ++i) {
-        if (inst->table[i].key && strcmp(inst->table[i].key, key) == 0) {
-            ref->kind = TTL_TARGET_ARRAY;
-            ref->container = inst;
-            ref->entry = &inst->table[i];
-            return 1;
-        }
+    int idx = -1;
+    if (kvs_array_lookup_index(inst, key, &idx) == 0 && idx >= 0 && idx < inst->len) {
+        ref->kind = TTL_TARGET_ARRAY;
+        ref->container = inst;
+        ref->entry = &inst->table[idx];
+        return 1;
     }
 
     return 0;
@@ -273,7 +272,13 @@ static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key) {
 
     switch (ref->kind) {
         case TTL_TARGET_ARRAY:
-            return kvs_array_del((kvs_array_t *)ref->container, (char *)key);
+        {
+            kvs_array_t *inst = (kvs_array_t *)ref->container;
+            kvs_array_item_t *item = (kvs_array_item_t *)ref->entry;
+            if (!inst || !item || !inst->table) return -1;
+            int idx = (int)(item - inst->table);
+            return kvs_array_del_at(inst, idx);
+        }
         case TTL_TARGET_RBTREE:
             return kvs_rbtree_del((kvs_rbtree_t *)ref->container, (char *)key);
         case TTL_TARGET_HASH:
@@ -1082,6 +1087,17 @@ static int fulldump_append_bulk(char *resp, int max_len, int *off,
     return 0;
 }
 
+static int fulldump_append_cmd3_len(char *resp, int max_len, int *off,
+                                    const char *cmd, int cmdlen,
+                                    const char *key, int keylen,
+                                    const char *val, int vallen) {
+    if (fulldump_append_array_header(resp, max_len, off, 3) < 0) return -1;
+    if (fulldump_append_bulk(resp, max_len, off, cmd, cmdlen) < 0) return -1;
+    if (fulldump_append_bulk(resp, max_len, off, key, keylen) < 0) return -1;
+    if (fulldump_append_bulk(resp, max_len, off, val, vallen) < 0) return -1;
+    return 0;
+}
+
 // 追加一条简单的 3 参数命令：CMD key value
 static int fulldump_append_cmd3(char *resp, int max_len, int *off,
                                 const char *cmd,
@@ -1114,22 +1130,26 @@ int handle_fulldump(command_context_t* ctx, char* response){
 #if ENABLE_ARRAY
     {
         extern kvs_array_t global_array; // 已在头部声明，这里只是强调一下
-        if (global_array.table && global_array.total > 0) {
-            for (int i = 0; i < global_array.total; i++) {
+        if (global_array.table && global_array.len > 0) {
+            for (int i = 0; i < global_array.len; i++) {
                 kvs_array_item_t *it = &global_array.table[i];
                 if (!it->key || !it->value) continue;
                 if (kv_is_expired(it->expire_at_ms, now_ms)) continue;
 
-                if (fulldump_append_cmd3(response, max_len, &off,
-                                         "SET", it->key, it->value) < 0) {
+                if (fulldump_append_cmd3_len(response, max_len, &off,
+                                             "SET", 3,
+                                             it->key, (int)it->key_len,
+                                             it->value, (int)it->value_len) < 0) {
                     // 缓冲区满了，直接停止，返回已填充长度
                     return off;
                 }
 
                 if (it->expire_at_ms >= 0) {
                     snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)it->expire_at_ms);
-                    if (fulldump_append_cmd3(response, max_len, &off,
-                                             "PEXPIREAT", it->key, expire_buf) < 0) {
+                    if (fulldump_append_cmd3_len(response, max_len, &off,
+                                                 "PEXPIREAT", 9,
+                                                 it->key, (int)it->key_len,
+                                                 expire_buf, (int)strlen(expire_buf)) < 0) {
                         return off;
                     }
                 }

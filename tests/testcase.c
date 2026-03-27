@@ -1333,6 +1333,104 @@ void range_visited_bench_testcase(int connfd) {
     printf("[range_visited_bench] done (check kvstore stderr for RANGE_VISITED lines)\n");
 }
 
+static int bench_send_and_recv_all(int connfd, const char *pipeline, int expected_count, const char *label) {
+    if (!pipeline) return -1;
+    send_msg(connfd, (char *)pipeline, (int)strlen(pipeline));
+    if (recv_pipeline_resps(connfd, expected_count, NULL, 0) != 0) {
+        printf("[%s] pipeline failed\n", label);
+        return -1;
+    }
+    return 0;
+}
+
+static void bench_timed_command(int connfd, const char *label, const char *cmd) {
+    char *resp_buf = NULL;
+    size_t resp_len = 0;
+    struct timeval tv_begin, tv_end;
+
+    gettimeofday(&tv_begin, NULL);
+    send_msg(connfd, (char *)cmd, (int)strlen(cmd));
+    if (recv_all_with_timeout(connfd, &resp_buf, &resp_len) != 0) {
+        printf("[range_sort_compare] %s failed\n", label);
+        free(resp_buf);
+        return;
+    }
+    gettimeofday(&tv_end, NULL);
+
+    int time_used = TIME_SUB_MS(tv_end, tv_begin);
+    printf("[range_sort_compare] %s time_used=%d ms resp_len=%zu\n", label, time_used, resp_len);
+    free(resp_buf);
+}
+
+void range_sort_compare_bench_testcase(int connfd) {
+    const int count = 10000;
+    const char *a_start = "bench_a_key_00001";
+    const char *a_end = "bench_a_key_10000";
+    const char *r_start = "bench_r_key_00001";
+    const char *r_end = "bench_r_key_10000";
+    const char *s_start = "bench_s_key_00001";
+    const char *s_end = "bench_s_key_10000";
+    char cmd[512];
+    char *aset_pipeline = NULL;
+    char *rset_pipeline = NULL;
+    char *sset_pipeline = NULL;
+
+    printf("[range_sort_compare] prepare count=%d\n", count);
+
+    aset_pipeline = generate_custom_set_pipeline_cmd(count, "SET", "bench_a_key_%05d", "value_%05d");
+    rset_pipeline = generate_custom_set_pipeline_cmd(count, "RSET", "bench_r_key_%05d", "value_%05d");
+    sset_pipeline = generate_custom_set_pipeline_cmd(count, "SSET", "bench_s_key_%05d", "value_%05d");
+    if (!aset_pipeline || !rset_pipeline || !sset_pipeline) {
+        printf("[range_sort_compare] pipeline alloc failed\n");
+        free(aset_pipeline);
+        free(rset_pipeline);
+        free(sset_pipeline);
+        return;
+    }
+
+    if (bench_send_and_recv_all(connfd, aset_pipeline, count, "array-set") != 0 ||
+        bench_send_and_recv_all(connfd, rset_pipeline, count, "rbtree-set") != 0 ||
+        bench_send_and_recv_all(connfd, sset_pipeline, count, "skiptable-set") != 0) {
+        free(aset_pipeline);
+        free(rset_pipeline);
+        free(sset_pipeline);
+        return;
+    }
+
+    free(aset_pipeline);
+    free(rset_pipeline);
+    free(sset_pipeline);
+
+    snprintf(cmd, sizeof(cmd),
+             "*3\r\n$5\r\nRANGE\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+             strlen(a_start), a_start, strlen(a_end), a_end);
+    bench_timed_command(connfd, "array-range", cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "*3\r\n$6\r\nRRANGE\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+             strlen(r_start), r_start, strlen(r_end), r_end);
+    bench_timed_command(connfd, "rbtree-range", cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "*3\r\n$6\r\nSRANGE\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
+             strlen(s_start), s_start, strlen(s_end), s_end);
+    bench_timed_command(connfd, "skiptable-range", cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "*3\r\n$4\r\nSORT\r\n$3\r\nlow\r\n$2\r\n20\r\n");
+    bench_timed_command(connfd, "array-sort-limit20", cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "*3\r\n$5\r\nRSORT\r\n$3\r\nlow\r\n$2\r\n20\r\n");
+    bench_timed_command(connfd, "rbtree-sort-limit20", cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "*3\r\n$5\r\nSSORT\r\n$3\r\nlow\r\n$2\r\n20\r\n");
+    bench_timed_command(connfd, "skiptable-sort-limit20", cmd);
+
+    printf("[range_sort_compare] done\n");
+}
+
 
 
 //在测试用例间添加连接清理
@@ -1923,6 +2021,7 @@ int main(int argc, char *argv[]) {
 	if (argc < 4) {
         printf("usage: %s ip port mode [slave_ip slave_port]\n", argv[0]);
         printf("  mode 10: range visited bench (requires kvstore built with EXTRA_CFLAGS=-DKVS_RANGE_VISITED_DEBUG=1)\n");
+        printf("  mode 11: array/rbtree/skiptable range-sort timing compare\n");
 		return -1;
 	}
 
@@ -1971,6 +2070,9 @@ int main(int argc, char *argv[]) {
     }  else if (mode == 10) {
         cleanup_connction(connfd);
         range_visited_bench_testcase(connfd);
+    }  else if (mode == 11) {
+        cleanup_connction(connfd);
+        range_sort_compare_bench_testcase(connfd);
     }
     
 	return 0;
