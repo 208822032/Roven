@@ -28,6 +28,7 @@ BASE_SRCS = \
 	$(SRC_CORE)/kvs_config.c \
 	$(SRC_CORE)/kvs_globals.c \
 	$(SRC_CORE)/kvs_operation.c \
+	$(SRC_CORE)/kvs_ttl_background.c \
 	$(SRC_STORAGE)/kvs_array.c \
 	$(SRC_STORAGE)/kvs_rbtree.c \
 	$(SRC_STORAGE)/kvs_hash.c \

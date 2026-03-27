@@ -8,6 +8,7 @@
 #include "jemalloc_wrapper.h"
 #include "kvs_memory_internal.h"
 
+pthread_rwlock_t g_kv_data_rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
 int g_shutdown_flag = 0;
 
@@ -52,7 +53,6 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 
 	int cmd_index = get_command_index(tokens[0]);
 	if(cmd_index == -1) return resp_generate_error(response, "Unknown command");
-
 	//检查参数数量
 	if(!check_arity(cmd, count)) return resp_generate_error(response, "Wrong number of arguments");
 	
@@ -66,21 +66,46 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		return resp_generate_error(response, "Invalid arguments");
 	}
 
+	int need_write_lock = 1;
+	if (need_write_lock) {
+		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+			return resp_generate_error(response, "Failed to acquire data lock");
+		}
+	}
+
     int ret = cmd->handler(&ctx, response);
+
+	int64_t expire_at_ms = 0;
+	int has_expire_at = 0;
+	int need_del_sync = 0;
+	int need_persist_sync = 0;
+	if (ret >= 0 && cmd->write_command) {
+		if (strcmp(cmd->name, "EXPIRE") == 0 || strcmp(cmd->name, "PEXPIREAT") == 0) {
+			if (ttl_get_any_key_expire_at_ms(ctx.key, &expire_at_ms) > 0 && expire_at_ms >= 0) {
+				has_expire_at = 1;
+			} else {
+				need_del_sync = (ret > 0);
+			}
+		} else if (strcmp(cmd->name, "PERSIST") == 0) {
+			need_persist_sync = (ret > 0);
+		}
+	}
+
+	if (need_write_lock) {
+		pthread_rwlock_unlock(&g_kv_data_rwlock);
+	}
 
 	//命令执行成功后记录写命令
 	if(ret >= 0 && cmd->write_command){
 		#if ENABLE_AOF// 添加日志打印命令
 			if(!aof_is_loading()){
 				if (strcmp(cmd->name, "EXPIRE") == 0) {
-					int64_t expire_at_ms = 0;
-					int ttl_lookup_ret = ttl_get_any_key_expire_at_ms(ctx.key, &expire_at_ms);
-					if (ttl_lookup_ret > 0 && expire_at_ms >= 0) {
+					if (has_expire_at) {
 						char expire_buf[32];
 						snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
 						char *aof_tokens[] = {"PEXPIREAT", ctx.key, expire_buf};
 						aof_append(3, aof_tokens);
-					} else if (ret > 0) {
+					} else if (need_del_sync) {
 						char *aof_tokens[] = {"DEL", ctx.key};
 						aof_append(2, aof_tokens);
 					}
@@ -95,9 +120,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 			if (global_dist_config.role == ROLE_MASTER && g_cfg.sync_mode == KVS_SYNC_TCP) {
 				if (strcmp(cmd->name, "EXPIRE") == 0 || strcmp(cmd->name, "PEXPIREAT") == 0) {
 					if (ret > 0) {
-						int64_t expire_at_ms = 0;
-						int ttl_lookup_ret = ttl_get_any_key_expire_at_ms(ctx.key, &expire_at_ms);
-						if (ttl_lookup_ret > 0 && expire_at_ms >= 0) {
+						if (has_expire_at) {
 							char expire_buf[32];
 							snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
 							master_sync_command("PEXPIREAT", ctx.key, expire_buf);
@@ -106,7 +129,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 						}
 					}
 				} else if (strcmp(cmd->name, "PERSIST") == 0) {
-					if (ret > 0) {
+					if (need_persist_sync) {
 						master_sync_command("PERSIST", ctx.key, NULL);
 					}
 				} else {
@@ -237,6 +260,8 @@ int main(int argc, char *argv[]) {
 	//初始化内存管理组件
 	mem_init();
 
+	pthread_rwlock_init(&g_kv_data_rwlock, NULL);
+
 	init_kvengine();
 
 	//先加载RDB文件
@@ -286,6 +311,10 @@ int main(int argc, char *argv[]) {
 	}
 	#endif
 
+	if (kvs_ttl_background_start() != 0) {
+		fprintf(stderr, "Warning: failed to start TTL background scan thread\n");
+	}
+
     int mode = g_cfg.network_mode;
 
 	if (mode == NETWORK_NTYCO) {
@@ -311,8 +340,10 @@ int main(int argc, char *argv[]) {
 #if ENABLE_RDB
 	kvs_rdb_save(g_cfg.rdb_filename);
 #endif
+	kvs_ttl_background_stop();
 	printf("Data saved. Exiting.\n");
     dest_kvengine();
+	pthread_rwlock_destroy(&g_kv_data_rwlock);
 
     return 0;    
     

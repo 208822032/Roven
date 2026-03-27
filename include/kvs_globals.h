@@ -1,4 +1,5 @@
 #pragma once
+#include <pthread.h>
 #include "kvs_config.h"
 #include "kvs_array.h"
 #include "kvs_rbtree.h"
@@ -7,6 +8,10 @@
 
 // 全局运行时配置
 extern kvs_config_t g_cfg;
+extern pthread_rwlock_t g_kv_data_rwlock;
+
+int kvs_ttl_background_start(void);
+void kvs_ttl_background_stop(void);
 
 // 提供集中式访问接口，避免在各处直接 extern 变量名
 

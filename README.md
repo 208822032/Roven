@@ -1,16 +1,17 @@
 ## KVStore
 
-类 Redis 的轻量级 KV 引擎，支持多数据结构、RESP 协议、AOF/RDB 持久化，以及 TCP/eBPF 两种主从同步链路。
+类 Redis 的轻量级 KV 引擎，支持多数据结构、TTL、RESP 协议、AOF/RDB 持久化，以及 TCP/eBPF 两种主从同步链路。
 
 ---
 
 ## 1. 项目定位
 
-可落地运行的 C 语言 KV 内存数据库，覆盖“协议解析 -> 存储引擎 -> 持久化 -> 主从复制 -> 压测体系”的完整链路，并通过统一脚本对比 Redis 进行性能验证。
+可落地运行的 C 语言 KV 内存数据库，覆盖“协议解析 -> 存储引擎 -> TTL -> 持久化 -> 主从复制 -> 压测体系”的完整链路，并通过统一脚本对比 Redis 进行性能验证。
 
 **核心职责/成果：**
 - 设计并实现四种数据结构引擎：`array / rbtree / hash / skiptable`
 - 完成 RESP 协议解析、Pipeline 支持与命令分发
+- 完成 TTL 语义闭环：`EXPIRE / TTL / PERSIST`、覆盖写清 TTL、过期 key 读路径过滤
 - 实现 AOF/RDB 持久化和重放恢复
 - 实现主从同步（`sync_mode=tcp|ebpf`）
 - 统一压测框架（同口径对比 KVStore 与 Redis）、自定义读写、自定义内存池虚拟内存占用、自定义eBPF同步链路压测
@@ -22,8 +23,9 @@
 - **语言与系统**：C、Linux、epoll、io_uring、pthread
 - **协议与网络**：RESP、TCP、Pipeline
 - **存储与内存**：自定义内存池、glibc malloc、jemalloc 可切换
+- **TTL**：节点内 `expire_at_ms`、惰性删除为主 + 轻量后台扫描兜底
 - **持久化**：AOF（含 fsync 策略、aof_rewrite重写）、RDB
-- **复制**：Master-Slave（TCP / eBPF）
+- **复制**：Master-Slave（TCP / eBPF，均保留 TTL 语义）
 - **工程化**：统一配置、自动化压测脚本
 
 ---
@@ -102,6 +104,7 @@ flowchart TD
 | 核心入口 | `src/core/kvstore.c` | 配置加载、全局初始化、启动网络与优雅退出 |
 | 协议解析 | `src/network/resp_protocol.c` | RESP 命令探测、解析、状态机 |
 | 存储引擎 | `src/storage/` | array/rbtree/hash/skiptable 实现 |
+| TTL 兜底 | `src/core/kvs_ttl_background.c` | 轻量后台扫描，兜底清理过期 key |
 | 持久化 | `src/persistence/` | AOF/RDB 读写、重放、重写 |
 | TCP 复制 | `src/distributed/` | 全量 + 增量同步 |
 | eBPF 复制 | `src/eBPF/ebpf_syncd.c` | 抓取 master 流量并广播到 slave |
@@ -116,6 +119,24 @@ flowchart TD
 - 主从二进制协议编解码：提供带长度头的流式解包能力，处理粘包/半包（`src/utils/master_slave_proto.c`）。
 - 配置系统与优先级覆盖：默认值→配置文件→命令行覆盖，保证运行参数可控可复现（`src/core/kvs_config.c`）。
 - 线程局部同步上下文：隔离 client 写入与复制回放路径，保障 slave 只读边界（`src/core/kvstore.c`, `src/network/reactor.c`, `src/network/proactor.c`）。
+
+### 4.2 TTL 能力概览
+
+TTL 现在是内建能力，不是额外脚本层补丁。当前实现的核心语义是：
+
+- 每个节点直接保存 `expire_at_ms`，`-1` 表示永不过期，使用绝对毫秒时间戳避免复制和重放漂移。
+- 过期策略以惰性删除为主：`GET / EXIST / RANGE / SORT / FULLDUMP` 在访问路径上都会过滤过期 key，读到过期项时会顺手清理。
+- 轻量后台扫描作为兜底：进程启动时拉起定时扫描线程，按小批量抽样清理过期 key，关闭时同步退出。
+- 已支持命令：`EXPIRE`、`TTL`、`PERSIST`。`TTL` 不存在返回 `-2`，永不过期返回 `-1`，其余返回剩余秒数。
+- 覆盖写默认清 TTL：`SET / RSET / HSET / SSET` 以及 `MOD / RMOD / HMOD / SMOD` 成功后，旧 TTL 会被清掉，便于保持覆盖写语义简单一致。
+- `DEL` 会同时清除 value 和 TTL 元数据。
+
+持久化与复制的语义也已经对齐：
+
+- RDB 保存绝对 `expire_at_ms`，保存和加载都会跳过已过期 key。
+- AOF 对 TTL 变更使用可回放的命令语义，重写时保留有效 TTL 状态。
+- TCP 主从中，master 是 TTL 的唯一裁判者，slave 被动回放 master 的 TTL 变更和删除动作。
+- eBPF 主从和 TCP 保持同一套 TTL 语义，只是传输路径不同。
 
 ---
 
@@ -543,6 +564,32 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 ./tests/write_qps_test 127.0.0.1 PORT 6 100000 100
 ```
 说明：mode=5 重点验证“超大 pipeline 正确性与可处理上限”；mode=6 重点评估“pipeline 吞吐表现”。
+
+7) **TTL 回归测试入口**
+
+```bash
+# 全后端 TTL 主入口
+./tests/test_ttl_all_backends.sh
+
+# 兼容入口，实际调用同一个脚本
+./tests/test_ttl_mvp.sh
+
+# 按持久化 / 复制链路拆分验证
+./tests/test_ttl_rdb.sh
+./tests/test_ttl_aof.sh
+./tests/test_ttl_tcp_replication.sh
+./tests/test_ttl_ebpf_replication.sh
+```
+
+常用环境变量：
+
+- `KV_BIN`：服务端二进制，默认 `./kvstore`
+- `CLIENT_BIN`：测试客户端，默认 `./tests/kvstore_client`
+- `TTL_TEST_PORT` / `RDB_TEST_PORT` / `AOF_TEST_PORT`：固定测试端口
+- `TCP_TTL_BACKENDS` / `EBPF_TTL_BACKENDS`：限制 TCP / eBPF 复制测试的后端集合
+- `AOF_REWRITE_ITERATIONS`、`AOF_REWRITE_MAX_FILE_SIZE`：AOF 回归测试参数
+
+测试脚本会自行拉起服务、发送 RESP 命令并断言 TTL 语义，适合做回归验证。
 ---
 
 ## 8. 功能与命令覆盖
@@ -556,8 +603,15 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 
 ### 8.2 其他命令
 
+- TTL：`EXPIRE/TTL/PERSIST`
 - 大 value：`PAPERSET/PAPERGET/PAPERMOD/PAPERDEL`
 - 连接控制：`QUIT`
+
+TTL 行为约定：
+
+- `EXPIRE`：成功设置绝对过期时间；key 不存在返回 `NO EXIST`。
+- `TTL`：key 不存在返回 `-2`，永不过期返回 `-1`。
+- `PERSIST`：清除 TTL；key 不存在返回 `NO EXIST`。
 
 ### 8.3 RANGE / SORT 参数支持
 
@@ -592,6 +646,12 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 - 四种结构的 `RANGE/SORT` 均基于 `strcmp` 的字典序比较 key。
 - 若希望获得数值顺序，建议使用 zero-pad key（如 `key_000001`）。
 
+#### TTL 过滤语义
+
+- `GET / EXIST`：命中已过期 key 时先删除，再返回不存在语义。
+- `RANGE / SORT`：遍历时跳过已过期 key，避免把脏数据继续暴露给客户端。
+- `FULLDUMP`：只导出有效 key，并且会把有效 TTL 以 `PEXPIREAT` 形式一并带出，便于恢复和复制。
+
 ### 8.4 Pipeline 模式
 
 - 支持 pipeline 模式；在测试用例中已验证单次 **1000000 条命令** 的大 pipeline 场景可完成收发与响应解析。
@@ -601,7 +661,8 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 - **端到端数据库工程能力**：从 RESP 协议解析、命令分发、存储引擎到持久化与主从复制，形成完整可运行闭环。
 - **多存储结构统一抽象**：array / rbtree / hash / skiptable 在统一命令框架下实现，便于横向性能对比与能力扩展。
 - **持久化链路完整**：支持 RDB + AOF（含 fsync 策略），覆盖冷启动恢复与运行期写入日志，兼顾可靠性与性能。
-- **复制方案具备层次化设计**：同时支持 TCP 同步与 eBPF 同步链路。
+- **复制方案具备层次化设计**：同时支持 TCP 同步与 eBPF 同步链路，且两条链路都保留 TTL 语义。
+- **TTL 闭环完整**：节点内过期时间、读路径懒删除、后台兜底扫描、RDB/AOF/TCP/eBPF 对齐，语义链路可闭环解释。
 - **一致性与安全边界清晰**：slave 只读保护、复制上下文隔离、参数校验与协议错误快速失败机制，降低误写和脏请求风险。
 - **性能工程方法完整**：标准对齐压测（KVStore vs Redis）+ 自定义压测（混合写删、内存后端、eBPF 批处理）验证。
 ---
