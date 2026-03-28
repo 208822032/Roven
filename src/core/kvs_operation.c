@@ -1183,10 +1183,10 @@ int handle_fulldump(command_context_t* ctx, char* response){
         if (!node->key || !node->value) return;
         if (kv_is_expired(node->expire_at_ms, c->now_ms)) return;
 
-        if (fulldump_append_cmd3(c->resp, c->max_len, c->off,
-                                 "RSET",
-                                 (const char *)node->key,
-                                 (const char *)node->value) < 0) {
+        if (fulldump_append_cmd3_len(c->resp, c->max_len, c->off,
+                                     "RSET", 4,
+                                     (const char *)node->key, (int)node->key_len,
+                                     (const char *)node->value, (int)node->value_len) < 0) {
             c->overflow = 1;
             return;
         }
@@ -1194,10 +1194,10 @@ int handle_fulldump(command_context_t* ctx, char* response){
         if (node->expire_at_ms >= 0) {
             char expire_buf[32];
             snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)node->expire_at_ms);
-            if (fulldump_append_cmd3(c->resp, c->max_len, c->off,
-                                     "PEXPIREAT",
-                                     (const char *)node->key,
-                                     expire_buf) < 0) {
+            if (fulldump_append_cmd3_len(c->resp, c->max_len, c->off,
+                                         "PEXPIREAT", 9,
+                                         (const char *)node->key, (int)node->key_len,
+                                         expire_buf, (int)strlen(expire_buf)) < 0) {
                 c->overflow = 1;
             }
         }

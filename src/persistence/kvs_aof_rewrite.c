@@ -155,6 +155,33 @@ static int write_command_parts(int fd, const char *cmd_type, const char *key, co
     return 0;
 }
 
+static int write_command_parts_len(int fd,
+                                   const char *cmd_type,
+                                   size_t cmd_len,
+                                   const char *key,
+                                   size_t key_len,
+                                   const char *value,
+                                   size_t value_len) {
+    char buf[64];
+
+    if (safe_write(fd, "*3\r\n", 4) == -1) return -1;
+
+    int n = snprintf(buf, sizeof(buf), "$%zu\r\n%s\r\n", cmd_len, cmd_type);
+    if (safe_write(fd, buf, n) == -1) return -1;
+
+    n = snprintf(buf, sizeof(buf), "$%zu\r\n", key_len);
+    if (safe_write(fd, buf, n) == -1) return -1;
+    if (safe_write(fd, key, key_len) == -1) return -1;
+    if (safe_write(fd, "\r\n", 2) == -1) return -1;
+
+    n = snprintf(buf, sizeof(buf), "$%zu\r\n", value_len);
+    if (safe_write(fd, buf, n) == -1) return -1;
+    if (safe_write(fd, value, value_len) == -1) return -1;
+    if (safe_write(fd, "\r\n", 2) == -1) return -1;
+
+    return 0;
+}
+
 static int write_ttl_command_if_needed(int fd, const char *key, int64_t expire_at_ms) {
     if (expire_at_ms < 0) {
         return 0;
@@ -187,10 +214,12 @@ static void rbtree_rewrite_callback(rbtree_node *node, void *userdata) {
 
     char *key_ptr = __atomic_load_n(&node->key, __ATOMIC_ACQUIRE);
     char *value_ptr = __atomic_load_n(&node->value, __ATOMIC_ACQUIRE);
+    uint32_t key_len = __atomic_load_n(&node->key_len, __ATOMIC_ACQUIRE);
+    uint32_t value_len = __atomic_load_n(&node->value_len, __ATOMIC_ACQUIRE);
     int64_t expire_at_ms = __atomic_load_n(&node->expire_at_ms, __ATOMIC_ACQUIRE);
 
     if (key_ptr && value_ptr && !kv_is_expired(expire_at_ms, ctx->now_ms)) {
-        if (write_command_parts(ctx->fd, "RSET", key_ptr, value_ptr) == -1) {
+        if (write_command_parts_len(ctx->fd, "RSET", 4, key_ptr, key_len, value_ptr, value_len) == -1) {
             perror("Failed to write rbtree data to temp file");
             ctx->error = 1;
             return;

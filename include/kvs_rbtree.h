@@ -20,6 +20,8 @@ typedef struct _rbtree_node {
 	struct _rbtree_node *parent;
 	KEY_TYPE key;
 	void *value;
+	uint32_t key_len;
+	uint32_t value_len;
 	int64_t expire_at_ms;
 } rbtree_node;
 
@@ -42,4 +44,8 @@ int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, int lim
 void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node,
 									void (*callback)(rbtree_node *, void *),
 									void *userdata);
+void rbtree_traversal_with_callback_limit(rbtree *T, rbtree_node *node,
+											void (*callback)(rbtree_node *, void *),
+											void *userdata,
+											int *budget);
 

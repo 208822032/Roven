@@ -72,6 +72,21 @@ static void ttl_scan_record_expired(ttl_scan_cursor_t *cursor, const char *key) 
     cursor->expired_keys[cursor->expired_count++] = dup_key;
 }
 
+static void ttl_scan_record_expired_len(ttl_scan_cursor_t *cursor, const char *key, size_t key_len) {
+    if (!cursor || !key || cursor->expired_count >= (int)(sizeof(cursor->expired_keys) / sizeof(cursor->expired_keys[0]))) {
+        return;
+    }
+
+    char *dup_key = kvs_malloc(key_len + 1);
+    if (!dup_key) {
+        return;
+    }
+
+    memcpy(dup_key, key, key_len);
+    dup_key[key_len] = '\0';
+    cursor->expired_keys[cursor->expired_count++] = dup_key;
+}
+
 static void ttl_scan_flush_expired(ttl_scan_cursor_t *cursor) {
     if (!cursor) return;
     for (int i = 0; i < cursor->expired_count; ++i) {
@@ -144,14 +159,14 @@ static void ttl_scan_rbtree_cb(rbtree_node *node, void *userdata) {
     ctx->visited++;
     ctx->cursor->budget--;
     if (kv_is_expired(node->expire_at_ms, ctx->cursor->now_ms)) {
-        ttl_scan_record_expired(ctx->cursor, node->key);
+        ttl_scan_record_expired_len(ctx->cursor, node->key, node->key_len);
     }
 }
 
 static void ttl_scan_rbtree(kvs_rbtree_t *inst, ttl_scan_cursor_t *cursor) {
     if (!inst || !inst->root || !inst->nil || cursor->budget <= 0) return;
     ttl_rbtree_scan_ctx_t ctx = { .cursor = cursor, .visited = 0 };
-    rbtree_traversal_with_callback((rbtree *)inst, inst->root, ttl_scan_rbtree_cb, &ctx);
+    rbtree_traversal_with_callback_limit((rbtree *)inst, inst->root, ttl_scan_rbtree_cb, &ctx, &cursor->budget);
 }
 #endif
 

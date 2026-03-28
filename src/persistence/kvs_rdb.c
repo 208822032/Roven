@@ -445,8 +445,8 @@ static void rdb_save_rbtree_node(rbtree_node *node,
         return;
     }
 
-    uint32_t key_len   = (uint32_t)strlen(node->key);
-    uint32_t value_len = (uint32_t)strlen((char*)node->value);
+    uint32_t key_len   = (uint32_t)node->key_len;
+    uint32_t value_len = (uint32_t)node->value_len;
 
     fwrite(&key_len,   sizeof(key_len),   1, fp);
     fwrite(node->key,  key_len,          1, fp);

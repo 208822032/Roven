@@ -8,6 +8,74 @@
 
 #include "kvs_api.h"
 
+static int rbtree_key_compare(const char *lhs, size_t lhs_len, const char *rhs, size_t rhs_len) {
+	size_t min_len = lhs_len < rhs_len ? lhs_len : rhs_len;
+	if (min_len > 0) {
+		int cmp = memcmp(lhs, rhs, min_len);
+		if (cmp != 0) {
+			return cmp;
+		}
+	}
+
+	if (lhs_len < rhs_len) return -1;
+	if (lhs_len > rhs_len) return 1;
+	return 0;
+}
+
+static char *rbtree_dup_cstr(const char *src, size_t len) {
+	char *dst = (char *)kvs_malloc(len + 1);
+	if (!dst) return NULL;
+	memcpy(dst, src, len);
+	dst[len] = '\0';
+	return dst;
+}
+
+static int rbtree_update_value(rbtree_node *node, const char *value) {
+	if (!node || !value) return -1;
+
+	size_t value_len = strlen(value);
+	char *value_ptr = (char *)node->value;
+
+	if (value_ptr && node->value_len >= value_len) {
+		memcpy(value_ptr, value, value_len);
+		value_ptr[value_len] = '\0';
+	} else if (value_ptr) {
+		char *new_value = (char *)kvs_realloc(value_ptr, value_len + 1);
+		if (!new_value) {
+			return -1;
+		}
+		memcpy(new_value, value, value_len + 1);
+		node->value = new_value;
+	} else {
+		char *new_value = rbtree_dup_cstr(value, value_len);
+		if (!new_value) {
+			return -1;
+		}
+		node->value = new_value;
+	}
+
+	node->value_len = (uint32_t)value_len;
+	return 0;
+}
+
+static int rbtree_append_kv_line(char *response, int *len, int max_len, const rbtree_node *node) {
+	if (!response || !len || !node || !node->key || !node->value) return -1;
+
+	int needed = (int)node->key_len + 1 + (int)node->value_len + 2;
+	if (*len + needed >= max_len) {
+		return -1;
+	}
+
+	memcpy(response + *len, node->key, node->key_len);
+	*len += (int)node->key_len;
+	response[(*len)++] = ':';
+	memcpy(response + *len, node->value, node->value_len);
+	*len += (int)node->value_len;
+	response[(*len)++] = '\r';
+	response[(*len)++] = '\n';
+	return 0;
+}
+
 rbtree_node *rbtree_mini(rbtree *T, rbtree_node *x) {
 	if (x == T->nil) return T->nil; // 空树检查
 	while (x->left != T->nil) {
@@ -139,10 +207,10 @@ void rbtree_insert(rbtree *T, rbtree_node *z) {
 	while (x != T->nil) {
 		y = x;
 #if ENABLE_KEY_CHAR
-
-		if (strcmp(z->key, x->key) < 0) {
+		int cmp = rbtree_key_compare(z->key, z->key_len, x->key, x->key_len);
+		if (cmp < 0) {
 			x = x->left;
-		} else if (strcmp(z->key, x->key) > 0) {
+		} else if (cmp > 0) {
 			x = x->right;
 		} else {//如果已存在值
 			kvs_free(z->key);
@@ -166,7 +234,7 @@ void rbtree_insert(rbtree *T, rbtree_node *z) {
 	if (y == T->nil) {
 		T->root = z;
 #if ENABLE_KEY_CHAR
-	} else if (strcmp(z->key, y->key) < 0) {
+	} else if (rbtree_key_compare(z->key, z->key_len, y->key, y->key_len) < 0) {
 #else
 	} else if (z->key < y->key) {
 #endif
@@ -285,9 +353,21 @@ rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z) {
 		z->key = y->key;
 		y->key = tmp;
 
+		uint32_t len_tmp = z->key_len;
+		z->key_len = y->key_len;
+		y->key_len = len_tmp;
+
 		tmp = z->value;
 		z->value= y->value;
 		y->value = tmp;
+
+		len_tmp = z->value_len;
+		z->value_len = y->value_len;
+		y->value_len = len_tmp;
+
+		int64_t ttl_tmp = z->expire_at_ms;
+		z->expire_at_ms = y->expire_at_ms;
+		y->expire_at_ms = ttl_tmp;
 
 #else
 		z->key = y->key;
@@ -309,13 +389,14 @@ rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z) {
 
 rbtree_node *rbtree_search(rbtree *T, KEY_TYPE key) {
 
+	size_t key_len = strlen(key);
 	rbtree_node *node = T->root;
 	while (node != T->nil) {
 #if ENABLE_KEY_CHAR
-
-		if (strcmp(key, node->key) < 0) {
+		int cmp = rbtree_key_compare(key, key_len, node->key, node->key_len);
+		if (cmp < 0) {
 			node = node->left;
-		} else if (strcmp(key, node->key) > 0) {
+		} else if (cmp > 0) {
 			node = node->right;
 		} else {
 			return node;
@@ -456,12 +537,15 @@ int kvs_rbtree_create(kvs_rbtree_t *inst) {
 	if (!inst->nil) return 1; // 分配失败检查
 
 	inst->nil->color = BLACK;
-	inst->root = inst->nil;
-#if 1
+	inst->nil->left = inst->nil;
 	inst->nil->right = inst->nil;
     inst->nil->parent = inst->nil;
+	inst->nil->key = NULL;
+	inst->nil->value = NULL;
+	inst->nil->key_len = 0;
+	inst->nil->value_len = 0;
+	inst->nil->expire_at_ms = KV_TTL_NO_EXPIRE;
 	inst->root = inst->nil;
-#endif
 	return 0;
 
 }
@@ -506,15 +590,9 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
 
 	rbtree_node *exist_node = rbtree_search(inst, key);
 	if (exist_node && exist_node != inst->nil) {
-		char *new_value = kvs_strdup(value);
-		if (!new_value) {
+		if (rbtree_update_value(exist_node, value) != 0) {
 			return -2;
 		}
-
-		if (exist_node->value) {
-			kvs_free(exist_node->value);
-		}
-		exist_node->value = new_value;
 		exist_node->expire_at_ms = KV_TTL_NO_EXPIRE;
 		return 1;
 	}
@@ -522,22 +600,27 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value) {
 
 	rbtree_node *node = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
 	if (!node) return -2;
+	memset(node, 0, sizeof(*node));
 
 
 	// 分配并复制键
-    node->key = kvs_strdup(key);
-    if (!node->key) {
+    size_t key_len = strlen(key);
+	node->key = rbtree_dup_cstr(key, key_len);
+	if (!node->key) {
         kvs_free(node);
         return -2;
     }
+	node->key_len = (uint32_t)key_len;
 
 
-	node->value = kvs_strdup(value);
+	size_t value_len = strlen(value);
+	node->value = rbtree_dup_cstr(value, value_len);
 	if (!node->value) {
         kvs_free(node->key);
         kvs_free(node);
         return -2;
     }
+	node->value_len = (uint32_t)value_len;
 	node->expire_at_ms = KV_TTL_NO_EXPIRE;
 
 	rbtree_insert(inst, node);
@@ -584,13 +667,7 @@ int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value) {
 	if (!node) return 1; // no exist
 	if (node == inst->nil) return 1;
 	
-	kvs_free(node->value);
-
-	node->value = kvs_malloc(strlen(value) + 1);
-	if (!node->value) return -2;
-	
-	memset(node->value, 0, strlen(value) + 1);
-	strcpy(node->value, value);
+	if (rbtree_update_value(node, value) != 0) return -2;
 	node->expire_at_ms = KV_TTL_NO_EXPIRE;
 
 	return 0;
@@ -624,12 +701,9 @@ static void inorder_traversal_with_limit(rbtree *T, rbtree_node *node, int order
 		inorder_traversal_with_limit(T, node->left, order, count, limit, response, len, max_len, now_ms);
 
 		if (!kv_is_expired(node->expire_at_ms, now_ms) && (*count < limit || limit <= 0)) {
-            int n = snprintf(response + *len, max_len - *len, 
-                             "%s:%s\r\n", node->key, (char*)node->value);
-            if (n > 0 && *len + n < max_len) {
-                *len += n;
-                (*count)++;
-            }
+			if (rbtree_append_kv_line(response, len, max_len, node) == 0) {
+				(*count)++;
+			}
         }
 
 		if (*count < limit || limit <= 0) {
@@ -640,12 +714,9 @@ static void inorder_traversal_with_limit(rbtree *T, rbtree_node *node, int order
 		inorder_traversal_with_limit(T, node->right, order, count, limit, response, len, max_len, now_ms);
 
 		if (!kv_is_expired(node->expire_at_ms, now_ms) && (*count < limit || limit <= 0)) {
-            int n = snprintf(response + *len, max_len - *len, 
-                             "%s:%s\r\n", node->key, (char*)node->value);
-            if (n > 0 && *len + n < max_len) {
-                *len += n;
-                (*count)++;
-            }
+			if (rbtree_append_kv_line(response, len, max_len, node) == 0) {
+				(*count)++;
+			}
         }
 
 		if (*count < limit || limit <= 0) {
@@ -661,32 +732,33 @@ int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, in
     int len = 0;
     int count = 0;
 	inorder_traversal_with_limit(inst, inst->root, order, &count, limit, response, &len, max_len, kv_now_ms());
+	if (len < max_len) {
+		response[len] = '\0';
+	}
     return len;
 }
 
 
 // 中序遍历辅助函数（支持 limit 和 early stop）
 static void inorder_traversal_with_range_limit(rbtree *T, rbtree_node *node,
-							  char *start_key, char *end_key, int limit,
+							  const char *start_key, size_t start_len,
+							  const char *end_key, size_t end_len, int limit,
 							  int *returned, int *visited, int *stop,
 							  char *response, int *len, int max_len, int64_t now_ms) {
 	if (node == T->nil || *stop) return;
 	(*visited)++;
 
-	if (strcmp(node->key, start_key) >= 0) {
-		inorder_traversal_with_range_limit(T, node->left, start_key, end_key, limit,
+	if (rbtree_key_compare(node->key, node->key_len, start_key, start_len) >= 0) {
+		inorder_traversal_with_range_limit(T, node->left, start_key, start_len, end_key, end_len, limit,
 									   returned, visited, stop, response, len, max_len, now_ms);
 	}
 
 	if (*stop) return;
 
-	if (strcmp(node->key, start_key) >= 0 &&
-		strcmp(node->key, end_key) <= 0 &&
+	if (rbtree_key_compare(node->key, node->key_len, start_key, start_len) >= 0 &&
+		rbtree_key_compare(node->key, node->key_len, end_key, end_len) <= 0 &&
 		!kv_is_expired(node->expire_at_ms, now_ms)) {
-		int n = snprintf(response + *len, max_len - *len,
-						 "%s:%s\r\n", node->key, (char*)node->value);
-		if (n > 0 && *len + n < max_len) {
-			*len += n;
+		if (rbtree_append_kv_line(response, len, max_len, node) == 0) {
 			(*returned)++;
 			if (limit > 0 && *returned >= limit) {
 				*stop = 1;
@@ -695,8 +767,8 @@ static void inorder_traversal_with_range_limit(rbtree *T, rbtree_node *node,
 		}
 	}
 
-	if (strcmp(node->key, end_key) <= 0) {
-		inorder_traversal_with_range_limit(T, node->right, start_key, end_key, limit,
+	if (rbtree_key_compare(node->key, node->key_len, end_key, end_len) <= 0) {
+		inorder_traversal_with_range_limit(T, node->right, start_key, start_len, end_key, end_len, limit,
 									   returned, visited, stop, response, len, max_len, now_ms);
 	}
 }
@@ -709,8 +781,13 @@ int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, int lim
 	int returned = 0;
 	int visited = 0;
 	int stop = 0;
-	inorder_traversal_with_range_limit(inst, inst->root, start_key, end_key, limit,
+	size_t start_len = strlen(start_key);
+	size_t end_len = strlen(end_key);
+	inorder_traversal_with_range_limit(inst, inst->root, start_key, start_len, end_key, end_len, limit,
 									   &returned, &visited, &stop, response, &len, max_len, kv_now_ms());
+	if (len < max_len) {
+		response[len] = '\0';
+	}
 #if KVS_RANGE_VISITED_DEBUG
 	fprintf(stderr, "[RANGE_VISITED][RRANGE] start=%s end=%s limit=%d returned=%d visited=%d\n",
 			start_key, end_key, limit, returned, visited);
@@ -727,6 +804,19 @@ void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node,
     rbtree_traversal_with_callback(T, node->left, callback, userdata);
     callback(node, userdata);
     rbtree_traversal_with_callback(T, node->right, callback, userdata);
+}
+
+void rbtree_traversal_with_callback_limit(rbtree *T, rbtree_node *node,
+											void (*callback)(rbtree_node *, void *),
+											void *userdata,
+											int *budget) {
+	if (node == T->nil || !budget || *budget <= 0) return;
+
+	rbtree_traversal_with_callback_limit(T, node->left, callback, userdata, budget);
+	if (*budget <= 0) return;
+	callback(node, userdata);
+	if (*budget <= 0) return;
+	rbtree_traversal_with_callback_limit(T, node->right, callback, userdata, budget);
 }
 #if 0
 int main(){
