@@ -64,6 +64,7 @@ TEST_DIR := tests
 
 TEST_CASE := $(TEST_DIR)/testcase
 TEST_WRITE_QPS := $(TEST_DIR)/write_qps_test
+TEST_TTL_QPS := $(TEST_DIR)/write_ttl_qps
 TEST_KVSTORE_CLIENT := $(TEST_DIR)/kvstore_client
 TEST_MEMPOOL := $(TEST_DIR)/mempool_test
 TEST_PAPER := $(TEST_DIR)/test_paper
@@ -73,6 +74,7 @@ TEST_BIGVALUE := $(TEST_DIR)/test_bigvalue
 TEST_BINARIES = \
 	$(TEST_CASE) \
 	$(TEST_WRITE_QPS) \
+	$(TEST_TTL_QPS) \
 	$(TEST_KVSTORE_CLIENT) \
 	$(TEST_MEMPOOL) \
 	$(TEST_PAPER) \
@@ -125,6 +127,11 @@ $(TEST_CASE): $(TEST_DIR)/testcase.c
 
 $(TEST_WRITE_QPS): $(TEST_DIR)/write_qps_test.c
 	$(CC) $(CFLAGS) -o $@ $<
+
+$(TEST_TTL_QPS): $(TEST_DIR)/write_ttl_qps_test.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+write_ttl_qps: $(TEST_TTL_QPS)
 
 $(TEST_KVSTORE_CLIENT): $(TEST_DIR)/kvstore_client.c
 	$(CC) $(CFLAGS) -o $@ $< -lreadline
@@ -180,6 +187,7 @@ $(EBPF_SYNCD_BIN): \
 
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
+	rm -f $(TEST_DIR)/write_ttl_qps_test
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H)
 .PHONY: all clean
