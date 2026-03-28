@@ -74,40 +74,15 @@ static int ttl_lookup_rbtree(kvs_rbtree_t *inst, const char *key, ttl_target_ref
     return 0;
 }
 
-static unsigned int ttl_hash_key(const char *key) {
-    unsigned int hash = 0;
-    while (*key) {
-        hash ^= ((hash << 5) + (unsigned char)(*key) + (hash >> 2));
-        key++;
-    }
-    return hash;
-}
-
 static int ttl_lookup_hash(kvs_hash_t *inst, const char *key, ttl_target_ref_t *ref) {
     if (!inst || !key || !ref || !inst->nodes || inst->max_slots <= 0) return 0;
 
-    int cap = inst->max_slots;
-    unsigned int h = ttl_hash_key(key);
-    int idx = (int)(h % (unsigned int)cap);
-    int key_len = (int)strlen(key);
-
-    for (int step = 0; step < cap; ++step) {
-        hashnode_t *slot = &inst->nodes[idx];
-        if (slot->used == 0) {
-            return 0;
-        }
-
-        if (slot->used == 1 &&
-            slot->klen == (unsigned short)key_len &&
-            slot->key && memcmp(slot->key, key, (size_t)key_len) == 0) {
-            ref->kind = TTL_TARGET_HASH;
-            ref->container = inst;
-            ref->entry = slot;
-            return 1;
-        }
-
-        idx++;
-        if (idx >= cap) idx = 0;
+    int idx = -1;
+    if (kvs_hash_lookup_index(inst, key, &idx) == 0 && idx >= 0 && idx < inst->max_slots) {
+        ref->kind = TTL_TARGET_HASH;
+        ref->container = inst;
+        ref->entry = &inst->nodes[idx];
+        return 1;
     }
 
     return 0;
@@ -282,7 +257,13 @@ static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key) {
         case TTL_TARGET_RBTREE:
             return kvs_rbtree_del((kvs_rbtree_t *)ref->container, (char *)key);
         case TTL_TARGET_HASH:
-            return kvs_hash_del((kvs_hash_t *)ref->container, (char *)key);
+        {
+            kvs_hash_t *hash = (kvs_hash_t *)ref->container;
+            hashnode_t *slot = (hashnode_t *)ref->entry;
+            if (!hash || !slot || !hash->nodes) return -1;
+            int idx = (int)(slot - hash->nodes);
+            return kvs_hash_del_at(hash, idx);
+        }
         case TTL_TARGET_SKIPTABLE:
             return kvs_skiptable_del((kvs_skiptable_t *)ref->container, (char *)key);
         default:
@@ -1167,17 +1148,19 @@ int handle_fulldump(command_context_t* ctx, char* response){
                     continue;
                 }
                 if (kv_is_expired(slot->expire_at_ms, now_ms)) continue;
-                if (fulldump_append_cmd3(response, max_len, &off,
-                                         "HSET",
-                                         slot->key,
-                                         slot->value) < 0) {
+                if (fulldump_append_cmd3_len(response, max_len, &off,
+                                             "HSET", 4,
+                                             slot->key, (int)slot->key_len,
+                                             slot->value, (int)slot->value_len) < 0) {
                     return off;
                 }
 
                 if (slot->expire_at_ms >= 0) {
                     snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)slot->expire_at_ms);
-                    if (fulldump_append_cmd3(response, max_len, &off,
-                                             "PEXPIREAT", slot->key, expire_buf) < 0) {
+                    if (fulldump_append_cmd3_len(response, max_len, &off,
+                                                 "PEXPIREAT", 9,
+                                                 slot->key, (int)slot->key_len,
+                                                 expire_buf, (int)strlen(expire_buf)) < 0) {
                         return off;
                     }
                 }

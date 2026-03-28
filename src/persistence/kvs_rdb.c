@@ -72,12 +72,9 @@ static void rdb_apply_expire_rbtree(const char *key, int64_t expire_at_ms) {
 static void rdb_apply_expire_hash(const char *key, int64_t expire_at_ms) {
 #if ENABLE_HASH
     if (!global_hash.nodes) return;
-    for (int i = 0; i < global_hash.max_slots; ++i) {
-        hashnode_t *slot = &global_hash.nodes[i];
-        if (slot->used == 1 && slot->key && strcmp(slot->key, key) == 0) {
-            slot->expire_at_ms = expire_at_ms;
-            return;
-        }
+    int idx = -1;
+    if (kvs_hash_lookup_index(&global_hash, key, &idx) == 0 && idx >= 0 && idx < global_hash.max_slots) {
+        global_hash.nodes[idx].expire_at_ms = expire_at_ms;
     }
 #endif
 }
@@ -574,8 +571,8 @@ static void rdb_save_hash(FILE *fp, int64_t now_ms){
         if (slot->used != 1) continue; // 只保存有效元素
         if (kv_is_expired(slot->expire_at_ms, now_ms)) continue;
 
-        uint32_t key_len   = (uint32_t)strlen(slot->key);
-        uint32_t value_len = (uint32_t)strlen(slot->value);
+        uint32_t key_len   = (uint32_t)slot->key_len;
+        uint32_t value_len = (uint32_t)slot->value_len;
 
         fwrite(&key_len, sizeof(key_len), 1, fp);
         fwrite(slot->key, key_len, 1, fp);

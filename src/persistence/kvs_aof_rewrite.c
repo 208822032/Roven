@@ -886,8 +886,8 @@ int aof_rewrite_buffer_write(int fd){
             char cmd[2048];
             int len = snprintf(cmd, sizeof(cmd),
                                "*3\r\n$4\r\nHSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                               strlen(slot->key), slot->key,
-                               strlen(slot->value), slot->value);
+                               (size_t)slot->key_len, slot->key,
+                               (size_t)slot->value_len, slot->value);
 
             if (write(fd, cmd, len) != len) {
                 perror("Failed to write to AOF temp file");
