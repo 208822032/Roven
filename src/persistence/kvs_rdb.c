@@ -677,8 +677,8 @@ static void rdb_save_skiptable(FILE *fp, int64_t now_ms){
             current = current->forward[0];
             continue;
         }
-        uint32_t key_len = strlen(current->key);
-        uint32_t value_len = strlen(current->value);
+        uint32_t key_len = current->key_len;
+        uint32_t value_len = current->value_len;
         
         fwrite(&key_len, sizeof(key_len), 1, fp);
         fwrite(current->key, key_len, 1, fp);

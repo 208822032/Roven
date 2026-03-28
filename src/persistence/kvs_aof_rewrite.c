@@ -397,14 +397,21 @@ static int write_data_to_tempfile(int fd) {
             
             // 直接访问节点的键值
             if (current->key && current->value && current->key[0] != '\0' && current->value[0] != '\0' && !kv_is_expired(current->expire_at_ms, now_ms)) {
-                // 使用 write_command_parts 替代原有的 snprintf
-                if (write_command_parts(fd, "SSET", current->key, current->value) == -1) {
+                if (write_command_parts_len(fd, "SSET", 4,
+                                            current->key, current->key_len,
+                                            current->value, current->value_len) == -1) {
                     perror("Failed to write skiplist data to temp file");
                     return -1;
                 }
-                if (write_ttl_command_if_needed(fd, current->key, current->expire_at_ms) == -1) {
-                    perror("Failed to write skiplist TTL command to temp file");
-                    return -1;
+                if (current->expire_at_ms >= 0) {
+                    char expire_buf[32];
+                    snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)current->expire_at_ms);
+                    if (write_command_parts_len(fd, "PEXPIREAT", 9,
+                                                current->key, current->key_len,
+                                                expire_buf, strlen(expire_buf)) == -1) {
+                        perror("Failed to write skiplist TTL command to temp file");
+                        return -1;
+                    }
                 }
                 skiplist_commands++;
                 total_commands++;
@@ -930,10 +937,35 @@ int aof_rewrite_buffer_write(int fd){
         Node *current = global_skiptable.header->forward[0];
         while (current) {
             char cmd[2048];
-            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                            strlen(current->key), current->key,
-                            strlen(current->value), current->value);
-            if (write(fd, cmd, len) != len) {
+            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%u\r\n", current->key_len);
+            if (len < 0 || len >= (int)sizeof(cmd)) {
+                perror("Failed to write to AOF temp file");
+                return -1;
+            }
+            int off = len;
+            if (off + (int)current->key_len + 4 >= (int)sizeof(cmd)) {
+                perror("Failed to write to AOF temp file");
+                return -1;
+            }
+            memcpy(cmd + off, current->key, current->key_len);
+            off += (int)current->key_len;
+            memcpy(cmd + off, "\r\n$", 3);
+            off += 3;
+            len = snprintf(cmd + off, sizeof(cmd) - (size_t)off, "%u\r\n", current->value_len);
+            if (len < 0 || len >= (int)(sizeof(cmd) - (size_t)off)) {
+                perror("Failed to write to AOF temp file");
+                return -1;
+            }
+            off += len;
+            if (off + (int)current->value_len + 2 >= (int)sizeof(cmd)) {
+                perror("Failed to write to AOF temp file");
+                return -1;
+            }
+            memcpy(cmd + off, current->value, current->value_len);
+            off += (int)current->value_len;
+            memcpy(cmd + off, "\r\n", 2);
+            off += 2;
+            if (write(fd, cmd, off) != off) {
                 perror("Failed to write to AOF temp file");
                 return -1;
             }

@@ -7,6 +7,144 @@
 
 kvs_skiptable_t global_skiptable;
 
+static unsigned int skiptable_key_hash_with_len(const char *key, size_t *key_len_out) {
+    unsigned int hash = 0;
+    size_t key_len = 0;
+
+    if (!key) {
+        if (key_len_out) {
+            *key_len_out = 0;
+        }
+        return 0;
+    }
+
+    while (key[key_len] != '\0') {
+        hash ^= ((hash << 5) + (unsigned char)key[key_len] + (hash >> 2));
+        key_len++;
+    }
+
+    if (key_len_out) {
+        *key_len_out = key_len;
+    }
+    return hash;
+}
+
+static size_t skiptable_value_len(const char *value) {
+    size_t value_len = 0;
+
+    if (!value) {
+        return 0;
+    }
+
+    while (value[value_len] != '\0') {
+        value_len++;
+    }
+
+    return value_len;
+}
+
+static int skiptable_key_compare(const Node *node, const char *key, size_t key_len) {
+    if (!node || !node->key || !key) {
+        return -1;
+    }
+
+    size_t node_key_len = node->key_len;
+    size_t min_len = node_key_len < key_len ? node_key_len : key_len;
+
+    if (min_len > 0) {
+        int cmp = memcmp(node->key, key, min_len);
+        if (cmp != 0) {
+            return cmp;
+        }
+    }
+
+    if (node_key_len < key_len) return -1;
+    if (node_key_len > key_len) return 1;
+    return 0;
+}
+
+static int skiptable_key_equals(const Node *node, const char *key, size_t key_len, unsigned int key_hash) {
+    if (!node || !node->key || !key) {
+        return 0;
+    }
+
+    if (node->key_hash != key_hash || node->key_len != key_len) {
+        return 0;
+    }
+
+    return skiptable_key_compare(node, key, key_len) == 0;
+}
+
+static int skiptable_update_value(Node *node, const char *value) {
+    if (!node || !value) {
+        return -1;
+    }
+
+    size_t value_len = skiptable_value_len(value);
+
+    if (node->value && node->value_len >= value_len) {
+        memcpy(node->value, value, value_len + 1);
+    } else if (node->value) {
+        char *new_value = kvs_realloc(node->value, value_len + 1);
+        if (!new_value) {
+            return -1;
+        }
+        memcpy(new_value, value, value_len + 1);
+        node->value = new_value;
+    } else {
+        char *new_value = kvs_malloc(value_len + 1);
+        if (!new_value) {
+            return -1;
+        }
+        memcpy(new_value, value, value_len + 1);
+        node->value = new_value;
+    }
+
+    node->value_len = (uint32_t)value_len;
+    return 0;
+}
+
+static Node *skiptable_find_with_update(kvs_skiptable_t *table,
+                                        const char *key,
+                                        size_t key_len,
+                                        Node **update) {
+    if (!table || !table->header || !key) {
+        return NULL;
+    }
+
+    Node *current = table->header;
+    for (int i = table->level; i >= 0; i--) {
+        while (current->forward[i] && skiptable_key_compare(current->forward[i], key, key_len) < 0) {
+            current = current->forward[i];
+        }
+        if (update) {
+            update[i] = current;
+        }
+    }
+
+    return current->forward[0];
+}
+
+static int skiptable_append_kv_line(char *response, int max_len, int *pos, const Node *node) {
+    if (!response || !pos || !node || !node->key || !node->value) {
+        return -1;
+    }
+
+    int needed = (int)node->key_len + 1 + (int)node->value_len + 2;
+    if (*pos < 0 || *pos + needed >= max_len) {
+        return -1;
+    }
+
+    memcpy(response + *pos, node->key, node->key_len);
+    *pos += (int)node->key_len;
+    response[(*pos)++] = ':';
+    memcpy(response + *pos, node->value, node->value_len);
+    *pos += (int)node->value_len;
+    response[(*pos)++] = '\r';
+    response[(*pos)++] = '\n';
+    return 0;
+}
+
 // 创建跳表节点（使用内存池）
 Node* create_node(int level, const char* key, const char* value) {
     // 计算节点总大小（结构体 + 指针数组）
@@ -16,12 +154,19 @@ Node* create_node(int level, const char* key, const char* value) {
 
     node->level = level;
     node->expire_at_ms = KV_TTL_NO_EXPIRE;
+    node->key_len = 0;
+    node->value_len = 0;
+    node->key_hash = 0;
     for (int i = 0; i <= level; i++) {
         node->forward[i] = NULL;
     }
 
-    size_t klen = strlen(key);
-    size_t vlen = strlen(value);
+    size_t klen = 0;
+    size_t vlen = 0;
+    node->key_hash = skiptable_key_hash_with_len(key, &klen);
+    vlen = skiptable_value_len(value);
+    node->key_len = (uint32_t)klen;
+    node->value_len = (uint32_t)vlen;
 
     node->key = kvs_malloc(klen + 1);
     node->value = kvs_malloc(vlen + 1);
@@ -107,27 +252,17 @@ int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !table->header  || !key || !value) return -1;
     
     Node* update[MAX_LEVEL + 1];
-    Node* current = table->header;
+    size_t key_len = 0;
+    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
     
     // 从最高层开始查找插入位置
-    for (int i = table->level; i >= 0; i--) {
-        while (current->forward[i] && 
-               strcmp(current->forward[i]->key, key) < 0) {
-            current = current->forward[i];
-        }
-        update[i] = current;
-    }
-    
-    current = current->forward[0];
+    Node* current = skiptable_find_with_update(table, key, key_len, update);
     
     // 如果键已存在，更新值
-    if (current && strcmp(current->key, key) == 0) {
-        size_t vlen = strlen(value);
-        char *new_value = kvs_malloc(vlen + 1);
-        if (!new_value) return -1;
-        memcpy(new_value, value, vlen + 1);
-        if (current->value) kvs_free(current->value);
-        current->value = new_value;
+    if (current && skiptable_key_equals(current, key, key_len, key_hash)) {
+        if (skiptable_update_value(current, value) != 0) {
+            return -1;
+        }
         current->expire_at_ms = KV_TTL_NO_EXPIRE;
         return 1;  // 表示更新
     }
@@ -159,19 +294,21 @@ int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
 char* kvs_skiptable_get(kvs_skiptable_t *table, char *key) {
     if (!table || !table->header || !key) return NULL;//增加对header检查
     
-    Node* current = table->header;
+    size_t key_len = 0;
+    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
     
     // 从最高层开始搜索
+    Node* current = table->header;
+
     for (int i = table->level; i >= 0; i--) {
         while (current->forward[i] && 
-               strcmp(current->forward[i]->key, key) < 0) {
+               skiptable_key_compare(current->forward[i], key, key_len) < 0) {
             current = current->forward[i];
         }
     }
-    
+
     current = current->forward[0];
-    
-    if (current && strcmp(current->key, key) == 0) {
+    if (current && skiptable_key_equals(current, key, key_len, key_hash)) {
         return current->value;
     }
     
@@ -181,24 +318,23 @@ char* kvs_skiptable_get(kvs_skiptable_t *table, char *key) {
 int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !table->header || !key || !value) return -1;  // 添加header检查
 
+    size_t key_len = 0;
+    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
     Node* node = table->header;
     
     // 搜索节点
     for (int i = table->level; i >= 0; i--) {
         while (node->forward[i] && 
-               strcmp(node->forward[i]->key, key) < 0) {
+               skiptable_key_compare(node->forward[i], key, key_len) < 0) {
             node = node->forward[i];
         }
     }
     node = node->forward[0];
     
-    if (node && strcmp(node->key, key) == 0) {
-        size_t vlen = strlen(value);
-        char *new_value = kvs_malloc(vlen + 1);
-        if (!new_value) return -1;
-        memcpy(new_value, value, vlen + 1);
-        if (node->value) kvs_free(node->value);
-        node->value = new_value;
+    if (node && skiptable_key_equals(node, key, key_len, key_hash)) {
+        if (skiptable_update_value(node, value) != 0) {
+            return -1;
+        }
         node->expire_at_ms = KV_TTL_NO_EXPIRE;
         return 0;
     }
@@ -210,21 +346,14 @@ int kvs_skiptable_del(kvs_skiptable_t *table, char *key) {
     if (!table || !table->header  || !key) return -1;
     
     Node* update[MAX_LEVEL + 1];
-    Node* current = table->header;
+    size_t key_len = 0;
+    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
     
     // 查找要删除的节点及更新路径
-    for (int i = table->level; i >= 0; i--) {
-        while (current->forward[i] && 
-               strcmp(current->forward[i]->key, key) < 0) {
-            current = current->forward[i];
-        }
-        update[i] = current;
-    }
-    
-    current = current->forward[0];
+    Node* current = skiptable_find_with_update(table, key, key_len, update);
     
     // 如果节点不存在
-    if (!current || strcmp(current->key, key) != 0) {
+    if (!current || !skiptable_key_equals(current, key, key_len, key_hash)) {
         return -1;
     }
     
@@ -248,8 +377,28 @@ int kvs_skiptable_del(kvs_skiptable_t *table, char *key) {
 }
 
 int kvs_skiptable_exist(kvs_skiptable_t *table, char *key) {
-    //return table && table->header && kvs_skiptable_get(table, key) != NULL;
-    return table && table->header && kvs_skiptable_get(table, key) == NULL;
+    if (!table || !table->header || !key) {
+        return -1;
+    }
+
+    size_t key_len = 0;
+    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
+    Node *current = table->header;
+
+    for (int i = table->level; i >= 0; i--) {
+        while (current->forward[i] && 
+               skiptable_key_compare(current->forward[i], key, key_len) < 0) {
+            current = current->forward[i];
+        }
+    }
+
+    current = current->forward[0];
+
+    if (!current || !skiptable_key_equals(current, key, key_len, key_hash)) {
+        return 1;
+    }
+
+    return 0;
 }
 
 int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *response, int max_len) {
@@ -267,36 +416,42 @@ int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *respo
     if (order == 0) { // 升序
         current = table->header->forward[0];
     }else { // 降序 - 需要先收集所有节点
-        // 收集所有节点
-        Node** nodes = kvs_malloc(table->count * sizeof(Node*));
+        size_t buffer_size = (limit > 0 && limit < table->count) ? (size_t)limit : (size_t)table->count;
+        if (buffer_size == 0) {
+            response[0] = '\0';
+            return 0;
+        }
+
+        // 收集所有节点或最近 limit 个节点
+        Node** nodes = kvs_malloc(buffer_size * sizeof(Node*));
         if (!nodes) return -1;
         
         current = table->header->forward[0];
-        int i = 0;
+        size_t stored = 0;
         while (current) {
-            nodes[i++] = current;
+            nodes[stored % buffer_size] = current;
+            stored++;
             current = current->forward[0];
         }
         
         // 反向遍历
-        for (int j = i - 1; j >= 0 && (limit <= 0 || count < limit); j--) {
-            int written = snprintf(response + pos, max_len - pos, 
-                                  "%s:%s\r\n", nodes[j]->key, nodes[j]->value);
-            if (written < 0 || written >= max_len - pos) break;
-            pos += written;
+        size_t output_count = (limit > 0 && (size_t)limit < stored) ? (size_t)limit : stored;
+        size_t start = stored > buffer_size ? stored % buffer_size : 0;
+        for (size_t j = 0; j < output_count && (limit <= 0 || count < limit); j++) {
+            size_t idx = (start + output_count - 1 - j) % buffer_size;
+            if (skiptable_append_kv_line(response, max_len, &pos, nodes[idx]) != 0) break;
             count++;
         }
         
         kvs_free(nodes);
+        if (pos < max_len) response[pos] = '\0';
+        else response[max_len - 1] = '\0';
         return pos;
     }
 
     // 升序遍历
     while (current && (limit <= 0 || count < limit) && pos < max_len) {
-        int written = snprintf(response + pos, max_len - pos, 
-                              "%s:%s\r\n", current->key, current->value);
-        if (written < 0 || written >= max_len - pos) break;
-        pos += written;
+        if (skiptable_append_kv_line(response, max_len, &pos, current) != 0) break;
         count++;
         current = current->forward[0];
     }
@@ -316,7 +471,10 @@ int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key,
     kvs_skiptable_reap_expired(table, kv_now_ms());
 
     // 处理 start_key > end_key 的情况（空范围）
-    if (strcmp(start_key, end_key) > 0) {
+    size_t start_key_len = strlen(start_key);
+    size_t end_key_len = strlen(end_key);
+    if (start_key_len > end_key_len ||
+        (start_key_len == end_key_len && memcmp(start_key, end_key, start_key_len) > 0)) {
         response[0] = '\0';
         return 0;
     }
@@ -329,22 +487,19 @@ int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key,
     // 定位起始位置
     for (int i = table->level; i >= 0; i--) {
         while (current->forward[i] && 
-               strcmp(current->forward[i]->key, start_key) < 0) {
+               skiptable_key_compare(current->forward[i], start_key, start_key_len) < 0) {
             current = current->forward[i];
         }
     }
     current = current->forward[0];
     
     // 遍历范围内的节点
-    while (current && strcmp(current->key, end_key) <= 0 && pos < max_len) {
+    while (current && skiptable_key_compare(current, end_key, end_key_len) <= 0 && pos < max_len) {
         if (limit > 0 && returned >= limit) {
             break;
         }
         visited++;
-        int written = snprintf(response + pos, max_len - pos, 
-                              "%s:%s\r\n", current->key, current->value);
-        if (written < 0 || written >= max_len - pos) break;
-        pos += written;
+        if (skiptable_append_kv_line(response, max_len, &pos, current) != 0) break;
         returned++;
         current = current->forward[0];
     }

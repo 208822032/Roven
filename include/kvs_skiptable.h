@@ -7,6 +7,9 @@
 typedef struct Node {
 	char *key;
 	char *value;
+	uint32_t key_len;
+	uint32_t value_len;
+	unsigned int key_hash;
 	int level;
 	int64_t expire_at_ms;
 	struct Node* forward[];

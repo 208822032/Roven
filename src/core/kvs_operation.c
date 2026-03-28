@@ -91,6 +91,7 @@ static int ttl_lookup_hash(kvs_hash_t *inst, const char *key, ttl_target_ref_t *
 static int ttl_lookup_skiptable(kvs_skiptable_t *table, const char *key, ttl_target_ref_t *ref) {
     if (!table || !key || !ref || !table->header) return 0;
 
+    size_t key_len = strlen(key);
     Node *current = table->header;
     for (int i = table->level; i >= 0; --i) {
         while (current->forward[i] && strcmp(current->forward[i]->key, key) < 0) {
@@ -875,7 +876,7 @@ int handle_exist(command_context_t *ctx, char *response){
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_exist(kvs_get_global_skiptable(), ctx->key);
+            ret = kvs_skiptable_get(kvs_get_global_skiptable(), ctx->key) ? 0 : 1;
             break;
 #endif
         default:
@@ -1219,17 +1220,19 @@ int handle_fulldump(command_context_t* ctx, char* response){
         Node *current = global_skiptable.header ? global_skiptable.header->forward[0] : NULL;
         while (current) {
             if (current->key && current->value && !kv_is_expired(current->expire_at_ms, now_ms)) {
-                if (fulldump_append_cmd3(response, max_len, &off,
-                                         "SSET",
-                                         current->key,
-                                         current->value) < 0) {
+                if (fulldump_append_cmd3_len(response, max_len, &off,
+                                             "SSET", 4,
+                                             current->key, (int)current->key_len,
+                                             current->value, (int)current->value_len) < 0) {
                     return off;
                 }
 
                 if (current->expire_at_ms >= 0) {
                     snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)current->expire_at_ms);
-                    if (fulldump_append_cmd3(response, max_len, &off,
-                                             "PEXPIREAT", current->key, expire_buf) < 0) {
+                    if (fulldump_append_cmd3_len(response, max_len, &off,
+                                                 "PEXPIREAT", 9,
+                                                 current->key, (int)current->key_len,
+                                                 expire_buf, (int)strlen(expire_buf)) < 0) {
                         return off;
                     }
                 }
