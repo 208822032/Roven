@@ -7,6 +7,9 @@
 #include "kvs_globals.h"
 #include "jemalloc_wrapper.h"
 #include "kvs_memory_internal.h"
+#include "kvs_log.h"
+
+#include <strings.h>
 
 pthread_rwlock_t g_kv_data_rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
@@ -205,6 +208,19 @@ void dest_kvengine(void) {
 
 extern kvs_config_t g_cfg;
 
+static kvs_log_level_t kvs_parse_log_level_value(const char *value, int *valid) {
+	if (valid) *valid = 1;
+	if (!value || value[0] == '\0') {
+		return KVS_LOG_LEVEL_INFO;
+	}
+	if (strcasecmp(value, "error") == 0) return KVS_LOG_LEVEL_ERROR;
+	if (strcasecmp(value, "warn") == 0 || strcasecmp(value, "warning") == 0) return KVS_LOG_LEVEL_WARN;
+	if (strcasecmp(value, "info") == 0) return KVS_LOG_LEVEL_INFO;
+	if (strcasecmp(value, "debug") == 0) return KVS_LOG_LEVEL_DEBUG;
+	if (valid) *valid = 0;
+	return KVS_LOG_LEVEL_INFO;
+}
+
 // 信号处理函数
 void handle_signal(int sig) {
 	g_shutdown_flag = 1;
@@ -218,11 +234,12 @@ int main(int argc, char *argv[]) {
 	// 先从命令行解析 --config 等，获取配置文件路径和覆盖项
 	const char *config_path = NULL;
 	kvs_config_apply_cmdline(&g_cfg, argc, argv, &config_path);
+	int config_load_failed = 0;
 
 	// 如果指定了配置文件，则尝试加载
 	if (config_path) {
 		if (kvs_config_load_file(&g_cfg, config_path) != 0) {
-			fprintf(stderr, "Warning: failed to load config file %s, using defaults/CLI overrides\n", config_path);
+			config_load_failed = 1;
 		}
 	} else {
 		// 默认配置文件名：config/kvstore.conf
@@ -231,6 +248,23 @@ int main(int argc, char *argv[]) {
 
 	// 再次应用命令行，保证命令行优先级最高
 	kvs_config_apply_cmdline(&g_cfg, argc, argv, NULL);
+
+	int log_level_valid = 1;
+	kvs_log_level_t log_level = kvs_parse_log_level_value(g_cfg.log_level, &log_level_valid);
+	const char *log_path = (g_cfg.log_file[0] != '\0') ? g_cfg.log_file : NULL;
+	if (kvs_log_init(log_path, log_level, g_cfg.log_async) != 0 && log_path) {
+		KVS_LOG_ERROR("core", "failed to open log file %s, falling back to stderr", log_path);
+	}
+	if (config_load_failed) {
+		KVS_LOG_ERROR("core", "failed to load config file %s, using defaults/CLI overrides", config_path);
+	}
+	if (!log_level_valid) {
+		KVS_LOG_ERROR("core", "invalid log_level=%s, using info", g_cfg.log_level);
+	}
+	KVS_LOG_INFO("core", "logging initialized: mode=%s level=%s output=%s",
+		kvs_log_is_async() ? "async" : "sync",
+		kvs_log_level_name(log_level),
+		log_path ? log_path : "stderr");
 
 	//根据 kvs_config role 初始化global_dist_config.role
 	memset(&global_dist_config, 0, sizeof(global_dist_config));
@@ -274,7 +308,7 @@ int main(int argc, char *argv[]) {
 
 	if (g_cfg.enable_aof) {
 		if (aof_init(g_cfg.aof_filename, g_cfg.aof_fsync_mode) != 0) {
-			fprintf(stderr, "Failed to initialize AOF: %s\n", g_cfg.aof_filename);
+			KVS_LOG_ERROR("core", "failed to initialize AOF: %s", g_cfg.aof_filename);
 			dest_kvengine();
 			return 1;
 		}
@@ -287,51 +321,50 @@ int main(int argc, char *argv[]) {
 	if (g_cfg.sync_mode == KVS_SYNC_TCP) {
 		if (g_cfg.role == KVS_ROLE_SLAVE) {
 			if (g_cfg.master_ip[0] == '\0' || g_cfg.master_port == 0) {
-				fprintf(stderr, "Error: Slave mode requires master IP and port\n");
+				KVS_LOG_ERROR("core", "slave mode requires master IP and port");
 				return 1;
 			}
 
 			// 主节点的同步端口已经在 g_cfg.sync_port 里计算好（默认 master_port+1000）
 			distributed_init(ROLE_SLAVE, g_cfg.master_ip, g_cfg.sync_port, g_cfg.port);
-			printf("Starting as SLAVE on port %d, connecting to master %s:%d\n",
+			KVS_LOG_INFO("core", "starting as SLAVE on port %d, connecting to master %s:%d",
 				g_cfg.port, g_cfg.master_ip, g_cfg.sync_port);
 		} else {
 			// 主节点同步端口 = 服务端口 + 1000（或配置文件提供）
 			int sync_port = g_cfg.sync_port;
 			if (sync_port == 0) sync_port = g_cfg.port + 1000;
 			distributed_init(ROLE_MASTER, NULL, 0, sync_port);
-			printf("Starting as MASTER on port %d, sync port %d\n", g_cfg.port, sync_port);
-			printf("AOF enabled: %s (%d), fsync mode: %d\n",
+			KVS_LOG_INFO("core", "starting as MASTER on port %d, sync port %d", g_cfg.port, sync_port);
+			KVS_LOG_INFO("core", "AOF enabled: %s (%d), fsync mode: %d",
 				g_cfg.aof_filename, g_cfg.enable_aof, g_cfg.aof_fsync_mode);
 		}
 	}else{
 		// eBPF 模式：不启动 TCP 分布式模块，仅保留 role 用于“slave 只读”判断
-    printf("Distributed sync disabled (sync_mode = eBPF). "
-           "Slave role is still enforced as read-only.\n");
+		KVS_LOG_INFO("core", "Distributed sync disabled (sync_mode = eBPF). Slave role is still enforced as read-only.");
 	}
 	#endif
 
 	if (kvs_ttl_background_start() != 0) {
-		fprintf(stderr, "Warning: failed to start TTL background scan thread\n");
+		KVS_LOG_WARN("ttl", "failed to start TTL background scan thread");
 	}
 
     int mode = g_cfg.network_mode;
 
 	if (mode == NETWORK_NTYCO) {
-		printf("Starting in NTYCO mode on port %d\n", g_cfg.port);
+		KVS_LOG_INFO("core", "starting in NTYCO mode on port %d", g_cfg.port);
         ntyco_start(g_cfg.port, kvs_filter_protocol);
     } else if (mode == NETWORK_PROACTOR) {
-		printf("Starting in PROACTOR mode on port %d\n", g_cfg.port);
+		KVS_LOG_INFO("core", "starting in PROACTOR mode on port %d", g_cfg.port);
         proactor_start(g_cfg.port, kvs_filter_protocol);
     } else if(mode == NETWORK_REACTOR){
-		printf("Starting in REACTOR mode on port %d\n", g_cfg.port);
+		KVS_LOG_INFO("core", "starting in REACTOR mode on port %d", g_cfg.port);
         reactor_start(g_cfg.port, kvs_filter_protocol);
     }else {
-		printf("network_mode=%d, no network listener started (offline mode)\n", mode);
+		KVS_LOG_INFO("core", "network_mode=%d, no network listener started (offline mode)", mode);
 	}
        
     // 保存数据并退出
-    printf("Shutdown requested, saving data...\n");
+	KVS_LOG_INFO("core", "shutdown requested, saving data...");
 
 	#if ENABLE_AOF
 	aof_fsync(1);
@@ -341,9 +374,10 @@ int main(int argc, char *argv[]) {
 	kvs_rdb_save(g_cfg.rdb_filename);
 #endif
 	kvs_ttl_background_stop();
-	printf("Data saved. Exiting.\n");
+	KVS_LOG_INFO("core", "data saved. exiting.");
     dest_kvengine();
 	pthread_rwlock_destroy(&g_kv_data_rwlock);
+	kvs_log_shutdown();
 
     return 0;    
     

@@ -4,6 +4,7 @@
 #include <time.h>
 #include <stdint.h>
 #include "kvs_memory.h"
+#include "kvs_log.h"
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -107,13 +108,13 @@ int kvs_rdb_save(const char *filename){
 
     // 构造临时文件名：<filename>.tmp
     if (snprintf(tmpname, sizeof(tmpname), "%s.tmp", filename) >= (int)sizeof(tmpname)) {
-        fprintf(stderr, "RDB filename too long\n");
+        KVS_LOG_ERROR("persistence", "RDB filename too long");
         return RDB_ERR;
     }
 
     FILE *fp = fopen(tmpname, "wb");
     if(!fp){
-        perror("Failed to open tmp RDB file for writing");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to open tmp RDB file for writing: %s", tmpname);
         return RDB_ERR;
     }
 
@@ -159,7 +160,7 @@ int kvs_rdb_save(const char *filename){
     int fd = fileno(fp);
     if (fd == -1) goto write_error;
     if (fsync(fd) == -1) {
-        perror("fsync RDB tmp file failed");
+        KVS_LOG_ERROR_ERRNO("persistence", "fsync RDB tmp file failed");
         goto write_error;
     }
 
@@ -171,16 +172,16 @@ int kvs_rdb_save(const char *filename){
 
     // 原子替换：rename(tmp, filename)
     if (rename(tmpname, filename) != 0) {
-        perror("rename RDB tmp file failed");
+        KVS_LOG_ERROR_ERRNO("persistence", "rename RDB tmp file failed: %s -> %s", tmpname, filename);
         unlink(tmpname); // 清理临时文件
         return RDB_ERR;
     }
 
-    printf("RDB snapshot saved to %s\n", filename);
+    KVS_LOG_INFO("persistence", "RDB snapshot saved to %s", filename);
     return RDB_OK;
 
 write_error:
-    perror("Write RDB tmp file failed");
+    KVS_LOG_ERROR_ERRNO("persistence", "write RDB tmp file failed");
     fclose(fp);
     fp = NULL;
 write_error_no_close:
@@ -191,39 +192,39 @@ write_error_no_close:
 //加载rdb文件
 int kvs_rdb_load(const char *filename){
     if(!file_exists(filename)){
-        printf("No RDB file found\n");
+        KVS_LOG_INFO("persistence", "No RDB file found");
         return RDB_ERR;
     }
 
     FILE *fp = fopen(filename, "rb");
     if (!fp) {
-        perror("Failed to open RDB file for reading");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to open RDB file for reading: %s", filename);
         return RDB_ERR;
     }
 
     //检查魔数和版本 
     char magic[sizeof(RDB_MAGIC)];
     if (rdb_read_exact(fp, magic, sizeof(RDB_MAGIC) - 1) != RDB_OK) {
-        fprintf(stderr, "Failed to read RDB magic\n");
+        KVS_LOG_ERROR("persistence", "failed to read RDB magic");
         fclose(fp);
         return RDB_ERR;
     }
     magic[sizeof(RDB_MAGIC) - 1] = '\0';
 
     if(strcmp(magic, RDB_MAGIC) != 0){
-        fprintf(stderr, "Invalid RDB file format\n");
+        KVS_LOG_ERROR("persistence", "invalid RDB file format");
         fclose(fp);
         return RDB_ERR;
     }
 
     uint8_t version;
     if (rdb_read_exact(fp, &version, sizeof(version)) != RDB_OK) {
-        fprintf(stderr, "Failed to read RDB version\n");
+        KVS_LOG_ERROR("persistence", "failed to read RDB version");
         fclose(fp);
         return RDB_ERR;
     }
     if(version != 1 && version != 2){
-        fprintf(stderr, "Unsupported RDB version: %d\n", version);
+        KVS_LOG_ERROR("persistence", "unsupported RDB version: %d", version);
         fclose(fp);
         return RDB_ERR;
     }
@@ -232,11 +233,11 @@ int kvs_rdb_load(const char *filename){
     //读取时间戳
     time_t timestamp;
     if (rdb_read_exact(fp, &timestamp, sizeof(timestamp)) != RDB_OK) {
-        fprintf(stderr, "Failed to read RDB timestamp\n");
+        KVS_LOG_ERROR("persistence", "failed to read RDB timestamp");
         fclose(fp);
         return RDB_ERR;
     }
-    printf("Loading RDB snapshot created at: %s", ctime(&timestamp));
+    KVS_LOG_INFO("persistence", "Loading RDB snapshot created at: %s", ctime(&timestamp));
 
     //清空当前数据
     #if ENABLE_ARRAY
@@ -302,7 +303,7 @@ int kvs_rdb_load(const char *filename){
            #endif
 
            default:
-                fprintf(stderr, "Unknown RDB data type: %d\n", type);
+             KVS_LOG_ERROR("persistence", "Unknown RDB data type: %d", type);
                 fclose(fp);
                 return RDB_ERR;
         }
@@ -353,7 +354,7 @@ static void rdb_save_array(FILE *fp, int64_t now_ms){
 static int rdb_load_array(FILE *fp, uint8_t version, int64_t now_ms){
     uint32_t count;
     if (rdb_read_exact(fp, &count, sizeof(count)) != RDB_OK) {
-        fprintf(stderr, "RDB array load failed: unable to read count\n");
+        KVS_LOG_ERROR("persistence", "RDB array load failed: unable to read count");
         return RDB_ERR;
     }
 
@@ -361,34 +362,34 @@ static int rdb_load_array(FILE *fp, uint8_t version, int64_t now_ms){
         uint32_t key_len, value_len;
 
         if (rdb_read_exact(fp, &key_len, sizeof(key_len)) != RDB_OK) {
-            fprintf(stderr, "RDB array load failed: unable to read key_len at index %u\n", i);
+            KVS_LOG_ERROR("persistence", "RDB array load failed: unable to read key_len at index %u", i);
             return RDB_ERR;
         }
         char *key = kvs_malloc(key_len + 1);
         if (!key) {
-            fprintf(stderr, "RDB array load failed: key alloc failed at index %u\n", i);
+            KVS_LOG_ERROR("persistence", "RDB array load failed: key alloc failed at index %u", i);
             return RDB_ERR;
         }
         if (rdb_read_exact(fp, key, key_len) != RDB_OK) {
-            fprintf(stderr, "RDB array load failed: unable to read key at index %u\n", i);
+            KVS_LOG_ERROR("persistence", "RDB array load failed: unable to read key at index %u", i);
             kvs_free(key);
             return RDB_ERR;
         }
         key[key_len] = '\0';
 
         if (rdb_read_exact(fp, &value_len, sizeof(value_len)) != RDB_OK) {
-            fprintf(stderr, "RDB array load failed: unable to read value_len at index %u\n", i);
+            KVS_LOG_ERROR("persistence", "RDB array load failed: unable to read value_len at index %u", i);
             kvs_free(key);
             return RDB_ERR;
         }
         char *value = kvs_malloc(value_len + 1);
         if (!value) {
-            fprintf(stderr, "RDB array load failed: value alloc failed at index %u\n", i);
+            KVS_LOG_ERROR("persistence", "RDB array load failed: value alloc failed at index %u", i);
             kvs_free(key);
             return RDB_ERR;
         }
         if (rdb_read_exact(fp, value, value_len) != RDB_OK) {
-            fprintf(stderr, "RDB array load failed: unable to read value at index %u\n", i);
+            KVS_LOG_ERROR("persistence", "RDB array load failed: unable to read value at index %u", i);
             kvs_free(key);
             kvs_free(value);
             return RDB_ERR;
@@ -398,7 +399,7 @@ static int rdb_load_array(FILE *fp, uint8_t version, int64_t now_ms){
         int64_t expire_at_ms = KV_TTL_NO_EXPIRE;
         if (version >= 2) {
             if (rdb_read_int64(fp, &expire_at_ms) != RDB_OK) {
-                fprintf(stderr, "RDB array load failed: unable to read expire_at_ms at index %u\n", i);
+                KVS_LOG_ERROR("persistence", "RDB array load failed: unable to read expire_at_ms at index %u", i);
                 kvs_free(key);
                 kvs_free(value);
                 return RDB_ERR;
@@ -416,7 +417,7 @@ static int rdb_load_array(FILE *fp, uint8_t version, int64_t now_ms){
         kvs_free(value);
 
         if (set_ret < 0) {
-            fprintf(stderr, "RDB array load failed: kvs_array_set ret=%d at index %u\n", set_ret, i);
+            KVS_LOG_ERROR("persistence", "RDB array load failed: kvs_array_set ret=%d at index %u", set_ret, i);
             return RDB_ERR;
         }
 
@@ -486,14 +487,14 @@ static void rdb_save_rbtree(FILE *fp, int64_t now_ms){
 static int rdb_load_rbtree(FILE *fp, uint8_t version, int64_t now_ms){
     uint32_t count;
     if (rdb_read_exact(fp, &count, sizeof(count)) != RDB_OK) {
-        fprintf(stderr, "RDB rbtree load failed: unable to read count\n");
+        KVS_LOG_ERROR("persistence", "RDB rbtree load failed: unable to read count");
         return RDB_ERR;
     }
 
     for (uint32_t i = 0; i < count; i++){
         uint32_t key_len, value_len;
         if (rdb_read_exact(fp, &key_len, sizeof(key_len)) != RDB_OK) {
-            fprintf(stderr, "RDB rbtree load failed: unable to read key_len at index %u\n", i);
+            KVS_LOG_ERROR("persistence", "RDB rbtree load failed: unable to read key_len at index %u", i);
             return RDB_ERR;
         }
         char *key = kvs_malloc(key_len + 1);
@@ -598,7 +599,7 @@ static void rdb_save_hash(FILE *fp, int64_t now_ms){
 static int rdb_load_hash(FILE *fp, uint8_t version, int64_t now_ms){
     uint32_t count;
     if (rdb_read_exact(fp, &count, sizeof(count)) != RDB_OK) {
-        fprintf(stderr, "RDB hash load failed: unable to read count\n");
+        KVS_LOG_ERROR("rdb", "RDB hash load failed: unable to read count");
         return RDB_ERR;
     }
     for (uint32_t i = 0; i < count; i++){

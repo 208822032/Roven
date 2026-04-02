@@ -1,22 +1,37 @@
 
 #include "resp_protocol.h"
 #include "kvs_api.h"
+#include "kvs_log.h"
 #include <ctype.h>
 
-#define DUMP_NEARBY(ptr, end) do { \
-    const char *p = ptr; \
-    int cnt = 0; \
-    fprintf(stderr, "  around: "); \
-    while (p < end && cnt < 32) { \
-        unsigned char ch = (unsigned char)*p; \
-        if (ch >= 32 && ch <= 126) fputc(ch, stderr); \
-        else if (ch == '\r') fputs("\\r", stderr); \
-        else if (ch == '\n') fputs("\\n", stderr); \
-        else fprintf(stderr, "\\x%02X", ch); \
-        p++; cnt++; \
-    } \
-    fputc('\n', stderr); \
-} while (0)
+static void resp_dump_nearby(const char *ptr, const char *end) {
+    char nearby[128];
+    size_t pos = 0;
+    int cnt = 0;
+
+    while (ptr < end && cnt < 32 && pos + 4 < sizeof(nearby)) {
+        unsigned char ch = (unsigned char)*ptr++;
+        if (ch >= 32 && ch <= 126) {
+            nearby[pos++] = (char)ch;
+        } else if (ch == '\r') {
+            nearby[pos++] = '\\';
+            nearby[pos++] = 'r';
+        } else if (ch == '\n') {
+            nearby[pos++] = '\\';
+            nearby[pos++] = 'n';
+        } else {
+            int written = snprintf(nearby + pos, sizeof(nearby) - pos, "\\x%02X", ch);
+            if (written <= 0) {
+                break;
+            }
+            pos += (size_t)written;
+        }
+        cnt++;
+    }
+
+    nearby[pos] = '\0';
+    KVS_LOG_ERROR("net", "around: %s", nearby);
+}
 
 //模仿redis RESP协议
 /*
@@ -95,8 +110,8 @@ int resp_peek_command(const char* buf, size_t len, size_t offset){
     // 2. 顶层必须是数组：*<N>\r\n
     if (remain < 1) return 0;
     if (*p != '*') {
-        fprintf(stderr, "resp_peek_command: first non-space char not '*'\n");
-        DUMP_NEARBY(p, buf + len);
+        KVS_LOG_ERROR("net", "resp_peek_command: first non-space char not '*'");
+        resp_dump_nearby(p, buf + len);
         return -1;
     }
     p++;
@@ -108,7 +123,7 @@ int resp_peek_command(const char* buf, size_t len, size_t offset){
     int ret = peek_parse_integer(p, remain, &array_len, &line_len);
     if (ret <= 0) return ret;  // 0: 不够, <0: 错误
     if (array_len < 0 || array_len > MAX_ARRAY_LENGTH) {
-        fprintf(stderr, "resp_peek_command: array_len out of range %lld\n", array_len);
+        KVS_LOG_ERROR("net", "resp_peek_command: array_len out of range %lld", array_len);
         return -1;
     }
 
@@ -120,8 +135,8 @@ int resp_peek_command(const char* buf, size_t len, size_t offset){
         // 3.1 读 '$'
         if (remain < 1) return 0;
         if (*p != '$') {
-            fprintf(stderr, "resp_peek_command: expected '$' for bulk len\n");
-            DUMP_NEARBY(p, buf + len);
+            KVS_LOG_ERROR("net", "resp_peek_command: expected '$' for bulk len");
+            resp_dump_nearby(p, buf + len);
             return -1;
         }
         p++;
@@ -133,7 +148,7 @@ int resp_peek_command(const char* buf, size_t len, size_t offset){
         if (ret <= 0) return ret;  // 0: 不够, <0: 错误
 
         if (bulk_len < -1 || bulk_len > MAX_BULK_LENGTH) {
-            fprintf(stderr, "resp_peek_command: bulk_len out of range %lld\n", bulk_len);
+            KVS_LOG_ERROR("net", "resp_peek_command: bulk_len out of range %lld", bulk_len);
             return -1;
         }
 
@@ -150,8 +165,8 @@ int resp_peek_command(const char* buf, size_t len, size_t offset){
         if (remain < need) return 0; // body 或 CRLF 不完整
 
         if (p[bulk_len] != '\r' || p[bulk_len + 1] != '\n') {
-            fprintf(stderr, "resp_peek_command: bulk missing CRLF\n");
-            DUMP_NEARBY(p, buf + len);
+            KVS_LOG_ERROR("net", "resp_peek_command: bulk missing CRLF");
+            resp_dump_nearby(p, buf + len);
             return -1;
         }
 
@@ -214,8 +229,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
         case RESP_PARSE_INIT: {
             if (end - ptr < 1) return 0;      // 等 '*'
             if (*ptr != '*') {
-                fprintf(stderr, "INIT error: first char not '*'\n");
-                DUMP_NEARBY(ptr, end);
+                KVS_LOG_ERROR("net", "INIT error: first char not '*'");
+                resp_dump_nearby(ptr, end);
                 return -1;
             }
             ptr++; 
@@ -233,14 +248,14 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
             const char* start = ptr;
 
             if (!isdigit((unsigned char)*ptr)) {
-                fprintf(stderr, "ARRAY_LEN error: not digit\n");
-                DUMP_NEARBY(ptr, end);
+                KVS_LOG_ERROR("resp", "ARRAY_LEN error: not digit");
+                resp_dump_nearby(ptr, end);
                 return -1;
             }
 
             while (ptr < end && isdigit((unsigned char)*ptr)) {
                 if (tmp_len > (INT_MAX - (*ptr - '0')) / 10) {
-                    fprintf(stderr, "ARRAY_LEN error: overflow\n");
+                    KVS_LOG_ERROR("resp", "ARRAY_LEN error: overflow");
                     return -1;
                 }
                 tmp_len = tmp_len * 10 + (*ptr - '0');
@@ -263,7 +278,7 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
             ptr += 2;
 
             if (tmp_len < 0 || tmp_len > MAX_ARRAY_LENGTH) {
-                fprintf(stderr, "ARRAY_LEN error: out of range %lld\n", tmp_len);
+                KVS_LOG_ERROR("resp", "ARRAY_LEN error: out of range %lld", tmp_len);
                 return -1;
             }
             parser->array_len = (int)tmp_len;
@@ -295,8 +310,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
         case RESP_PARSE_BULK_LEN: {
             if (end - ptr < 1) return 0;
             if (*ptr != '$') {
-                fprintf(stderr, "BULK_LEN error: expected '$'\n");
-                DUMP_NEARBY(ptr, end);
+                KVS_LOG_ERROR("resp", "BULK_LEN error: expected '$'");
+                resp_dump_nearby(ptr, end);
                 return -1;
             }
             ptr++; 
@@ -323,24 +338,24 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
                     return (int)(ptr - buffer);
                 }
                 if (!isdigit((unsigned char)*ptr)) {
-                    fprintf(stderr, "BULK_LEN_NUM error: '-' not followed by digit\n");
-                    DUMP_NEARBY(ptr - 1, end);
+                    KVS_LOG_ERROR("resp", "BULK_LEN_NUM error: '-' not followed by digit");
+                    resp_dump_nearby(ptr - 1, end);
                     return -1;
                 }
                 // local_parsed++;   // '-'
             }
 
             if (!isdigit((unsigned char)*ptr)) {
-                fprintf(stderr, "BULK_LEN_NUM error: not digit at start\n");
-                DUMP_NEARBY(ptr, end);
+                KVS_LOG_ERROR("resp", "BULK_LEN_NUM error: not digit at start");
+                resp_dump_nearby(ptr, end);
                 return -1;
             }
 
             // 读所有数字
             while (ptr < end && isdigit((unsigned char)*ptr)) {
                 if (tmp_len > (INT_MAX - (*ptr - '0')) / 10) {
-                    fprintf(stderr, "BULK_LEN_NUM error: overflow\n");
-                    DUMP_NEARBY(debug_start, end);
+                    KVS_LOG_ERROR("resp", "BULK_LEN_NUM error: overflow");
+                    resp_dump_nearby(debug_start, end);
                     return -1;
                 }
                 tmp_len = tmp_len * 10 + (*ptr - '0');
@@ -353,8 +368,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
                 return (int)(ptr - buffer);
             }
             if (*ptr != '\r') {
-                fprintf(stderr, "BULK_LEN_NUM error: missing CR\n");
-                DUMP_NEARBY(ptr, end);
+                KVS_LOG_ERROR("resp", "BULK_LEN_NUM error: missing CR");
+                resp_dump_nearby(ptr, end);
                 return -1;
             }
             if (ptr + 1 >= end){
@@ -362,8 +377,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
                 return (int)(ptr - buffer);
             }
             if (*(ptr + 1) != '\n') {
-                fprintf(stderr, "BULK_LEN_NUM error: missing LF\n");
-                DUMP_NEARBY(ptr, end);
+                KVS_LOG_ERROR("resp", "BULK_LEN_NUM error: missing LF");
+                resp_dump_nearby(ptr, end);
                 return -1;
             }
 
@@ -372,8 +387,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
 
             if (neg) tmp_len = -tmp_len;
             if (tmp_len < -1 || tmp_len > MAX_BULK_LENGTH) {
-                fprintf(stderr, "BULK_LEN_NUM error: out of range %lld\n", tmp_len);
-                DUMP_NEARBY(debug_start, end);
+                KVS_LOG_ERROR("resp", "BULK_LEN_NUM error: out of range %lld", tmp_len);
+                resp_dump_nearby(debug_start, end);
                 return -1;
             }
 
@@ -401,8 +416,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
 
         case RESP_PARSE_BULK_DATA: {
             if (parser->bulk_len < 0) {
-                fprintf(stderr, "BULK_DATA error: bulk_len < 0, state=%d\n", parser->state);
-                DUMP_NEARBY(ptr, end);
+                KVS_LOG_ERROR("resp", "BULK_DATA error: bulk_len < 0, state=%d", parser->state);
+                resp_dump_nearby(ptr, end);
                 return -1;
             }
 
@@ -418,8 +433,7 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
 
                 char* p = (char* )kvs_malloc((size_t)parser->bulk_len + 1);
                 if(!p){
-                    fprintf(stderr, "BULK_DATA error: kvs_malloc failed, bulk_len=%d\n",
-                            parser->bulk_len);
+                    KVS_LOG_ERROR("resp", "BULK_DATA error: kvs_malloc failed, bulk_len=%d", parser->bulk_len);
                     return -1;
                 }
                 parser->tokens[parser->arg_index] = p;
@@ -459,9 +473,8 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
             }
 
             if (ptr[0] != '\r' || ptr[1] != '\n') {
-                fprintf(stderr, "BULK_DATA error: missing CRLF after body, state=%d\n",
-                        parser->state);
-                DUMP_NEARBY(ptr, end);
+                KVS_LOG_ERROR("resp", "BULK_DATA error: missing CRLF after body, state=%d", parser->state);
+                resp_dump_nearby(ptr, end);
                 return -1;
             }
 

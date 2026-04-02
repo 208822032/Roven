@@ -1,5 +1,6 @@
 #include "netbuf.h"
 #include "kvs_api.h"
+#include "kvs_log.h"
 
 #include <string.h>
 #include <stdint.h>
@@ -18,7 +19,8 @@ int netbuf_init(netbuf_t* buf, size_t initial_capacity){
     }
 
     if(initial_capacity > NETBUF_MAX_CAPACITY){
-        fprintf(stderr, "netbuf_init: initial_capacity %zu exceeds NETBUF_MAX_CAPACITY %zu\n", initial_capacity, (size_t)NETBUF_MAX_CAPACITY);
+        KVS_LOG_ERROR("netbuf", "netbuf_init: initial_capacity %zu exceeds NETBUF_MAX_CAPACITY %zu",
+                      initial_capacity, (size_t)NETBUF_MAX_CAPACITY);
         return -1;
     }
 
@@ -47,7 +49,8 @@ int netbuf_reserve(netbuf_t* buf, size_t min_capacity){
     }
 
     if(new_capacity > NETBUF_MAX_CAPACITY){
-        fprintf(stderr, "netbuf_reserve: requested capacity %zu exceeds NETBUF_MAX_CAPACITY %zu\n", new_capacity, (size_t)NETBUF_MAX_CAPACITY);
+        KVS_LOG_ERROR("netbuf", "netbuf_reserve: requested capacity %zu exceeds NETBUF_MAX_CAPACITY %zu",
+                      new_capacity, (size_t)NETBUF_MAX_CAPACITY);
         return -1;
     }
 

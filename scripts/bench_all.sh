@@ -15,10 +15,8 @@ P="${P:-1}"
 VALUE_SIZE="${VALUE_SIZE:-32}"
 KEYSPACE="${KEYSPACE:-100000}"
 POP_N="${POP_N:-$KEYSPACE}"
-RANGE_LIMIT="${RANGE_LIMIT:-100}"
 VALIDATE_RATIO="${VALIDATE_RATIO:-0.01}"
 TIMEOUT_SEC="${TIMEOUT_SEC:-10}"
-ALL_RANGE_SORT_CLOSE="${ALL_RANGE_SORT_CLOSE:-0}"
 
 LOG_DIR="${LOG_DIR:-$ROOT_DIR/logs}"
 RESULT_DIR="${RESULT_DIR:-$ROOT_DIR/results}"
@@ -41,16 +39,14 @@ Options:
   -P, --pipeline N        Pipeline depth (default: $P)
   --value-size N          Value size in bytes (default: $VALUE_SIZE)
   --keyspace N            Keyspace for random keys (default: $KEYSPACE)
-  --populate N            Populate requests before read/range/sort (default: $POP_N)
-  --range-limit N         LIMIT for RRANGE/SRANGE and *SORT (default: $RANGE_LIMIT)
-  --validate-ratio R      Range/sort response type sample validation ratio [0,1] (default: $VALIDATE_RATIO)
+  --populate N            Populate requests before read benchmarks (default: $POP_N)
+  --validate-ratio R      Response type sample validation ratio [0,1] (default: $VALIDATE_RATIO)
   --timeout SEC           Socket timeout for custom RESP benchmark (default: $TIMEOUT_SEC)
   --log-dir DIR           Log output dir (default: $LOG_DIR)
   --result-dir DIR        Result output dir (default: $RESULT_DIR)
-  --all-range/sort-close   Disable range/sort benchmark for all data structures
   -h, --help              Show this help
 
-Environment variables can override defaults: KV_HOST KV_PORT REDIS_HOST REDIS_PORT C N P VALUE_SIZE KEYSPACE POP_N RANGE_LIMIT VALIDATE_RATIO TIMEOUT_SEC LOG_DIR RESULT_DIR ALL_RANGE_SORT_CLOSE
+Environment variables can override defaults: KV_HOST KV_PORT REDIS_HOST REDIS_PORT C N P VALUE_SIZE KEYSPACE POP_N VALIDATE_RATIO TIMEOUT_SEC LOG_DIR RESULT_DIR
 EOF
 }
 
@@ -66,21 +62,14 @@ while [[ $# -gt 0 ]]; do
     --value-size) VALUE_SIZE="$2"; shift 2 ;;
     --keyspace) KEYSPACE="$2"; shift 2 ;;
     --populate) POP_N="$2"; shift 2 ;;
-    --range-limit) RANGE_LIMIT="$2"; shift 2 ;;
     --validate-ratio) VALIDATE_RATIO="$2"; shift 2 ;;
     --timeout) TIMEOUT_SEC="$2"; shift 2 ;;
     --log-dir) LOG_DIR="$2"; shift 2 ;;
     --result-dir) RESULT_DIR="$2"; RAW_CSV="$RESULT_DIR/raw.csv"; SUMMARY_MD="$RESULT_DIR/summary.md"; shift 2 ;;
-    --all-range/sort-close) ALL_RANGE_SORT_CLOSE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
 done
-
-if [[ "$ALL_RANGE_SORT_CLOSE" != "0" && "$ALL_RANGE_SORT_CLOSE" != "1" ]]; then
-  echo "[ERROR] Invalid ALL_RANGE_SORT_CLOSE: $ALL_RANGE_SORT_CLOSE (allowed: 0|1)" >&2
-  exit 1
-fi
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -178,9 +167,6 @@ run_resp_bench() {
       --command "$cmd_tpl" \
       --value-size "$VALUE_SIZE" \
       --keyspace "$KEYSPACE" \
-      --start-key "key:00000000" \
-      --end-key "key:$(printf '%08d' $((KEYSPACE-1)))" \
-      --limit "$RANGE_LIMIT" \
       --timeout "$TIMEOUT_SEC" \
       --validate-ratio "$VALIDATE_RATIO" \
       --expect-type "$expect_type" \
@@ -221,28 +207,6 @@ cmd_read() {
   esac
 }
 
-cmd_range() {
-  local ds="$1"
-  case "$ds" in
-    array) echo "RANGE __start_key__ __end_key__" ;;
-    rbtree) echo "RRANGE __start_key__ __end_key__ LIMIT __limit__" ;;
-    hash) echo "HRANGE __start_key__ __end_key__" ;;
-    skiptable) echo "SRANGE __start_key__ __end_key__ LIMIT __limit__" ;;
-    *) return 1 ;;
-  esac
-}
-
-cmd_sort() {
-  local ds="$1"
-  case "$ds" in
-    array) echo "SORT low __limit__" ;;
-    rbtree) echo "RSORT low __limit__" ;;
-    hash) echo "HSORT low __limit__" ;;
-    skiptable) echo "SSORT low __limit__" ;;
-    *) return 1 ;;
-  esac
-}
-
 render_value() {
   python3 - "$VALUE_SIZE" <<'PY'
 import sys
@@ -255,22 +219,13 @@ VALUE_BLOB="$(render_value)"
 
 echo "[INFO] Run ID: $RUN_ID"
 echo "[INFO] KVStore target: $KV_HOST:$KV_PORT, Redis target: $REDIS_HOST:$REDIS_PORT"
-echo "[INFO] Params: c=$C n=$N P=$P value_size=$VALUE_SIZE keyspace=$KEYSPACE populate=$POP_N range_limit=$RANGE_LIMIT"
-echo "[INFO] all range/sort close: $ALL_RANGE_SORT_CLOSE"
+echo "[INFO] Params: c=$C n=$N P=$P value_size=$VALUE_SIZE keyspace=$KEYSPACE populate=$POP_N"
 
 declare -a DS_LIST=(array rbtree hash skiptable)
-RUN_RANGE_SORT=1
-if [[ "$ALL_RANGE_SORT_CLOSE" -eq 1 ]]; then
-  RUN_RANGE_SORT=0
-fi
 
 for ds in "${DS_LIST[@]}"; do
   write_tpl="$(cmd_write "$ds")"
   read_tpl="$(cmd_read "$ds")"
-  if [[ "$RUN_RANGE_SORT" -eq 1 ]]; then
-    range_tpl="$(cmd_range "$ds")"
-    sort_tpl="$(cmd_sort "$ds")"
-  fi
 
   write_cmd="${write_tpl//__value__/$VALUE_BLOB}"
   read -r -a write_parts <<< "$write_cmd"
@@ -288,11 +243,6 @@ for ds in "${DS_LIST[@]}"; do
     run_resp_bench "$ds" "get" "$read_tpl" "any" "fallback: kvstore get via custom RESP benchmark" "$N"
   fi
 
-  if [[ "$RUN_RANGE_SORT" -eq 1 ]]; then
-    run_resp_bench "$ds" "range" "$range_tpl" "array" "kvstore range via custom RESP benchmark"
-    run_resp_bench "$ds" "sort" "$sort_tpl" "array" "kvstore sort via custom RESP benchmark"
-  fi
-
 done
 
 for ds in "${DS_LIST[@]}"; do
@@ -305,11 +255,6 @@ for ds in "${DS_LIST[@]}"; do
   run_redis_custom "redis" "$REDIS_HOST" "$REDIS_PORT" "$POP_N" "$ds" "populate" "redis populate for aligned set/get" "${redis_set_parts[@]}"
   run_redis_custom "redis" "$REDIS_HOST" "$REDIS_PORT" "$N" "$ds" "set" "redis set aligned with kvstore set/get" "${redis_set_parts[@]}"
   run_redis_custom "redis" "$REDIS_HOST" "$REDIS_PORT" "$N" "$ds" "get" "redis get aligned with kvstore set/get" "${redis_get_parts[@]}"
-
-  if [[ "$RUN_RANGE_SORT" -eq 1 ]]; then
-    append_row "redis" "$ds" "range" "$C" "$P" "$N" "$VALUE_SIZE" "$KEYSPACE" "" "" "" "" "" "not aligned: kvstore RANGE family has different semantics than redis-benchmark default commands"
-    append_row "redis" "$ds" "sort" "$C" "$P" "$N" "$VALUE_SIZE" "$KEYSPACE" "" "" "" "" "" "not aligned: kvstore SORT family differs from Redis structure-specific operations"
-  fi
 done
 
 python3 - "$RAW_CSV" "$SUMMARY_MD" <<'PY'
@@ -331,7 +276,7 @@ for r in rows:
     latest[(r['system'], r['ds'], r['op'])] = r
 
 observed_ds = sorted({r['ds'] for r in rows if r.get('ds')})
-preferred_ops = ['set', 'get', 'range', 'sort']
+preferred_ops = ['set', 'get']
 observed_ops = [op for op in preferred_ops if any(r.get('op') == op for r in rows)]
 if not observed_ops:
   observed_ops = ['set', 'get']
@@ -350,9 +295,7 @@ for ds in dss:
         kv = latest.get(('kvstore', ds, op), {})
         rd = latest.get(('redis', ds, op), {})
         note = ''
-        if op in ('range', 'sort'):
-            note = 'range/sort are not strictly aligned between KVStore and Redis; set/get are primary aligned baseline'
-        elif kv.get('qps') and rd.get('qps'):
+        if kv.get('qps') and rd.get('qps'):
             try:
                 kq = float(kv['qps'])
                 rq = float(rd['qps'])
@@ -388,10 +331,6 @@ else:
     r = worst[1]
     md.append(f"- KVStore lowest observed throughput is ds={r['ds']} op={r['op']} qps={r['qps']}, likely first bottleneck candidate.")
 md.append('- SET/GET are directly aligned using redis-benchmark custom commands and same c/n/P/value_size/keyspace.')
-if 'range' in ops or 'sort' in ops:
-  md.append('- RANGE/SORT use custom RESP benchmark on KVStore; Redis side is marked not aligned due to semantic mismatch.')
-else:
-  md.append('- RANGE/SORT were skipped in this run scope.')
 
 with open(summary_md, 'w', encoding='utf-8') as f:
     f.write('\n'.join(md) + '\n')

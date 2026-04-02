@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include "kvs_memory.h"
+#include "kvs_log.h"
 
 typedef struct sync_msg {
     size_t len;
@@ -62,9 +63,7 @@ static void *tcp_backend_worker(void *arg)
                     slaves_snapshot[i].addr   = slave->addr; // sockaddr_in 直接拷贝
                 }
             } else {
-                fprintf(stderr,
-                        "[SYNC_TCP] WARNING: alloc slaves_snapshot failed, "
-                        "fallback to dropping this msg\n");
+                KVS_LOG_WARN("dist", "alloc slaves_snapshot failed, fallback to dropping this msg");
             }
         }
         pthread_mutex_unlock(&global_dist_config.slave_mutex);
@@ -82,24 +81,20 @@ static void *tcp_backend_worker(void *arg)
 
                 if (n < 0) {
                     int err = errno;
-                    fprintf(stderr,
-                            "[SYNC_TCP] send to slave %s:%d failed after "
-                            "%zu/%zu bytes: %s\n",
-                            inet_ntoa(t->addr.sin_addr),
-                            ntohs(t->addr.sin_port),
-                            total_sent, msg->len,
-                            strerror(err));
+                    errno = err;
+                    KVS_LOG_ERROR_ERRNO("dist", "send to slave %s:%d failed after %zu/%zu bytes",
+                                        inet_ntoa(t->addr.sin_addr),
+                                        ntohs(t->addr.sin_port),
+                                        total_sent, msg->len);
                     // 出错就放弃该 slave，本线程不做清理，交给其它逻辑处理
                     break;
                 }
 
                 if (n == 0) {
-                    fprintf(stderr,
-                            "[SYNC_TCP] send returned 0 to slave %s:%d "
-                            "(sent=%zu/%zu), closing stream\n",
-                            inet_ntoa(t->addr.sin_addr),
-                            ntohs(t->addr.sin_port),
-                            total_sent, msg->len);
+                    KVS_LOG_WARN("dist", "send returned 0 to slave %s:%d (sent=%zu/%zu), closing stream",
+                                 inet_ntoa(t->addr.sin_addr),
+                                 ntohs(t->addr.sin_port),
+                                 total_sent, msg->len);
                     break;
                 }
 
@@ -152,22 +147,20 @@ static void *tcp_backend_worker(void *arg)
 
                 if (n < 0) {
                     int err = errno;
-                    fprintf(stderr,
-                            "[SYNC_TCP] send to slave %s:%d failed after %zu/%zu bytes: %s\n",
-                            inet_ntoa(slave->addr.sin_addr),
-                            ntohs(slave->addr.sin_port),
-                            total_sent, msg->len,
-                            strerror(err));
+                    errno = err;
+                    KVS_LOG_ERROR_ERRNO("dist", "send to slave %s:%d failed after %zu/%zu bytes",
+                                        inet_ntoa(slave->addr.sin_addr),
+                                        ntohs(slave->addr.sin_port),
+                                        total_sent, msg->len);
                     // 出错就放弃该 slave，交由其它逻辑清理
                     break;
                 }
 
                 if (n == 0) {
-                    fprintf(stderr,
-                            "[SYNC_TCP] send returned 0 to slave %s:%d (sent=%zu/%zu), closing stream\n",
-                            inet_ntoa(slave->addr.sin_addr),
-                            ntohs(slave->addr.sin_port),
-                            total_sent, msg->len);
+                    KVS_LOG_WARN("dist", "send returned 0 to slave %s:%d (sent=%zu/%zu), closing stream",
+                                 inet_ntoa(slave->addr.sin_addr),
+                                 ntohs(slave->addr.sin_port),
+                                 total_sent, msg->len);
                     break;
                 }
 
@@ -196,13 +189,13 @@ int sync_backend_init(int sync_port){
     (void)sync_port; // TCP backend 不需要额外端口配置
 
     if (msg_queue_init(&g_tcp_queue, 1048576) != 0) {
-        fprintf(stderr, "[SYNC_TCP] msg_queue_init failed\n");
+        KVS_LOG_ERROR("dist", "msg_queue_init failed");
         return -1;
     }
     g_tcp_running = 1;
 
     if (pthread_create(&g_tcp_thread, NULL, tcp_backend_worker, NULL) != 0) {
-        fprintf(stderr, "[SYNC_TCP] create worker thread failed\n");
+        KVS_LOG_ERROR_ERRNO("dist", "create worker thread failed");
         g_tcp_running = 0;
         msg_queue_destroy(&g_tcp_queue);
         return -1;
@@ -216,13 +209,13 @@ int sync_backend_broadcast(const void *data, size_t len){
     if (!g_tcp_running)   return -1;
 
     if(len > KVS_MAX_RESPONSE_SIZE){
-        fprintf(stderr, "[SYNC_TCP] message too large to broadcast: %zu bytes\n", len);
+        KVS_LOG_ERROR("dist", "message too large to broadcast: %zu bytes", len);
         return -1;
     }
 
     sync_msg_t *msg = (sync_msg_t*)kvs_malloc(sizeof(sync_msg_t) + len);
     if (!msg) {
-        fprintf(stderr, "[SYNC_TCP] alloc sync_msg failed\n");
+        KVS_LOG_ERROR("dist", "alloc sync_msg failed");
         return -1;
     }
     // msg->len = len <= sizeof(msg->data) ? len : sizeof(msg->data);
@@ -231,7 +224,7 @@ int sync_backend_broadcast(const void *data, size_t len){
     memcpy(msg->payload, data, len);
 
     if (msg_queue_push(&g_tcp_queue, msg) != 0) {
-        fprintf(stderr, "[SYNC_TCP] msg_queue_push failed\n");
+        KVS_LOG_ERROR("dist", "msg_queue_push failed");
         kvs_free(msg);
         return -1;
     }

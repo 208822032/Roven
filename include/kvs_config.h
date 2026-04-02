@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 
+#include "kvs_log.h"
+
 // 集中管理基础配置 + 运行时配置结构
 
 // 基础常量
@@ -92,6 +94,11 @@ typedef struct kvs_config {
 
 	//同步模式选择
 	kvs_sync_mode_t sync_mode;
+
+	// 日志配置
+	char log_level[16];
+	int  log_async;
+	char log_file[256];
 	char ebpf_conf[256];          // eBPF 配置文件路径
 } kvs_config_t;
 
@@ -110,6 +117,9 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path);
 //  <port>                // 仅 master：第一个非选项参数
 //  --aof_fsync [no|everysec|always]
 //  --aof_filename <name>
+//  --log_level <error|warn|info|debug>
+//  --log_async <yes|no>
+//  --log_file <path>
 void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const char **config_path_out);
 
 #endif // KVS_CONFIG_H

@@ -10,6 +10,7 @@
 #include <netinet/tcp.h>
 
 #include "kvs_api.h"
+#include "kvs_log.h"
 #include "resp_protocol.h"
 #include "distributed.h"
 #include "net_session.h" //通用会话层
@@ -293,21 +294,21 @@ int p_init_server(unsigned short port) {
 
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);	
 	if (sockfd < 0) {
-        perror("socket");
+    KVS_LOG_ERROR_ERRNO("network", "socket failed");
         return -1;
     }
 
 	// 设置SO_REUSEADDR和SO_REUSEPORT选项
     int reuse = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt SO_REUSEADDR");
+        KVS_LOG_ERROR_ERRNO("network", "setsockopt SO_REUSEADDR failed");
         close(sockfd);
         return -1;
     }
     
     #ifdef SO_REUSEPORT
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt SO_REUSEPORT");
+        KVS_LOG_ERROR_ERRNO("network", "setsockopt SO_REUSEPORT failed");
         close(sockfd);
         return -1;
     }
@@ -320,7 +321,8 @@ int p_init_server(unsigned short port) {
 	serveraddr.sin_port = htons(port);	
 
 	if (-1 == bind(sockfd, (struct sockaddr*)&serveraddr, sizeof(struct sockaddr))) {		
-		perror("bind");		
+        KVS_LOG_ERROR_ERRNO("network", "bind failed on port %u", port);
+        close(sockfd);
 		return -1;	
 	}	
 
@@ -328,7 +330,7 @@ int p_init_server(unsigned short port) {
     p_set_nonblocking(sockfd);
 
 	if(listen(sockfd, 10)){
-        perror("listen");
+        KVS_LOG_ERROR_ERRNO("network", "listen failed on port %u", port);
         close(sockfd);
         return -1;
     }
@@ -349,7 +351,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
 	memset(&params, 0, sizeof(params));
 	struct io_uring ring;
 	if (io_uring_queue_init_params(ENTRIES_LENGTH, &ring, &params) < 0) {
-        perror("io_uring_queue_init_params");
+    KVS_LOG_ERROR_ERRNO("network", "io_uring_queue_init_params failed");
         close(sockfd);
         return -1;
     }
@@ -362,7 +364,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
 	while (!g_shutdown_flag) {
 
 		if (io_uring_submit(&ring) < 0) {
-            perror("io_uring_submit");
+            KVS_LOG_ERROR_ERRNO("network", "io_uring_submit failed");
             break;
         }
 
@@ -454,7 +456,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
 
 	close(sockfd);
 	io_uring_queue_exit(&ring);
-	printf("Proactor network exited\n");
+    KVS_LOG_INFO("network", "Proactor network exited");
 
 	return 0;
 

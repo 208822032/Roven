@@ -7,6 +7,7 @@
 #include "kvs_aof_internal.h"
 #include "resp_protocol.h"
 #include "distributed.h"
+#include "kvs_log.h"
 
 
 
@@ -43,13 +44,13 @@ int aof_init(const char *filename, int fsync_mode){
     if (fsync_mode != AOF_FSYNC_NO && 
         fsync_mode != AOF_FSYNC_EVERYSEC && 
         fsync_mode != AOF_FSYNC_ALWAYS) {
-        fprintf(stderr, "Invalid AOF sync mode: %d\n", fsync_mode);
+        KVS_LOG_ERROR("persistence", "invalid AOF sync mode: %d", fsync_mode);
         return -1;
     }
 
     aof_state.filename = strdup(filename);
     if(!aof_state.filename){
-        perror("Failed to allocate memory for AOF filename");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to allocate memory for AOF filename");
         return -1;
     }
 
@@ -57,7 +58,7 @@ int aof_init(const char *filename, int fsync_mode){
     aof_state.buf_size = AOF_BUFFER_SIZE;
     aof_state.buf = kvs_malloc(aof_state.buf_size);
     if(!aof_state.buf){
-    perror("Failed to allocate AOF buffer");
+    KVS_LOG_ERROR("persistence", "failed to allocate AOF buffer");
     free(aof_state.filename);
     return -1;
     }
@@ -65,7 +66,7 @@ int aof_init(const char *filename, int fsync_mode){
     //初始化临时文件名
     aof_state.temp_filename = kvs_malloc(strlen(filename) + 10);
     if(!aof_state.temp_filename){
-        perror("Failed to allocate memory for temp filename");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to allocate memory for temp filename");
         free(aof_state.filename);
         kvs_free(aof_state.buf);
         return -1;
@@ -75,7 +76,7 @@ int aof_init(const char *filename, int fsync_mode){
     //打开或创建AOF文件
     aof_state.fp = fopen(filename, "a+");
     if(!aof_state.fp){
-        perror("Failed to open AOF file");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to open AOF file %s", filename);
         free(aof_state.filename);
         kvs_free(aof_state.temp_filename);
         kvs_free(aof_state.buf);
@@ -94,7 +95,7 @@ int aof_init(const char *filename, int fsync_mode){
 
     // 初始化互斥锁和条件变量
     if (pthread_mutex_init(&aof_state.mutex, NULL) != 0) {
-        perror("Failed to initialize AOF mutex");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to initialize AOF mutex");
         fclose(aof_state.fp);
         free(aof_state.filename);
         kvs_free(aof_state.temp_filename);
@@ -103,7 +104,7 @@ int aof_init(const char *filename, int fsync_mode){
     }
 
     if (pthread_cond_init(&aof_state.cond, NULL) != 0) {
-        perror("Failed to initialize AOF condition variable");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to initialize AOF condition variable");
         pthread_mutex_destroy(&aof_state.mutex);
         fclose(aof_state.fp);
         free(aof_state.filename);
@@ -114,7 +115,7 @@ int aof_init(const char *filename, int fsync_mode){
 
     // 初始化重写互斥锁
     if (pthread_mutex_init(&aof_state.rewrite_mutex, NULL) != 0) {
-        perror("Failed to initialize AOF rewrite mutex");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to initialize AOF rewrite mutex");
         pthread_mutex_destroy(&aof_state.mutex);
         pthread_cond_destroy(&aof_state.cond);
         fclose(aof_state.fp);
@@ -127,7 +128,7 @@ int aof_init(const char *filename, int fsync_mode){
     //创建后台同步线程
     aof_state.stop = 0;
     if(pthread_create(&aof_state.bgthread, NULL, (void*(*)(void *))aof_background_fsync, NULL) != 0){
-        perror("Failed to create AOF background thread");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to create AOF background thread");
         pthread_mutex_destroy(&aof_state.rewrite_mutex);
         pthread_mutex_destroy(&aof_state.mutex);
         pthread_cond_destroy(&aof_state.cond);
@@ -140,7 +141,7 @@ int aof_init(const char *filename, int fsync_mode){
 
     // 初始化 COW 机制
     if (pthread_rwlock_init(&aof_state.data_rwlock, NULL) != 0) {
-        perror("Failed to initialize data RW lock");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to initialize data RW lock");
         aof_state.stop = 1;
         pthread_cond_signal(&aof_state.cond);
         pthread_join(aof_state.bgthread, NULL);
@@ -166,7 +167,7 @@ int aof_init(const char *filename, int fsync_mode){
         default: sync_mode_str = "unknown"; break;
     }
     
-        printf("AOF initialized: %s (%ld bytes), sync mode: %s\n", 
+        KVS_LOG_INFO("persistence", "AOF initialized: %s (%ld bytes), sync mode: %s",
             filename, aof_state.current_size, sync_mode_str);
 
         // 标记为已初始化
@@ -238,24 +239,24 @@ void aof_append(int argc, char **argv){
 
         /* 直接向文件写 RESP 编码，避免占用大缓冲区 */
         if (fprintf(fp, "*%d\r\n", argc) < 0) {
-            perror("Failed to write big AOF command header");
+            KVS_LOG_ERROR_ERRNO("persistence", "failed to write big AOF command header");
             pthread_mutex_unlock(&aof_state.mutex);
             return;
         }
         for (int i = 0; i < argc; i++) {
             size_t arglen = strlen(argv[i]);
             if (fprintf(fp, "$%zu\r\n", arglen) < 0) {
-                perror("Failed to write big AOF arg header");
+                KVS_LOG_ERROR_ERRNO("persistence", "failed to write big AOF arg header");
                 pthread_mutex_unlock(&aof_state.mutex);
                 return;
             }
             if (fwrite(argv[i], 1, arglen, fp) != arglen) {
-                perror("Failed to write big AOF arg body");
+                KVS_LOG_ERROR_ERRNO("persistence", "failed to write big AOF arg body");
                 pthread_mutex_unlock(&aof_state.mutex);
                 return;
             }
             if (fwrite("\r\n", 1, 2, fp) != 2) {
-                perror("Failed to write big AOF arg CRLF");
+                KVS_LOG_ERROR_ERRNO("persistence", "failed to write big AOF arg CRLF");
                 pthread_mutex_unlock(&aof_state.mutex);
                 return;
             }
@@ -265,7 +266,7 @@ void aof_append(int argc, char **argv){
         if (aof_state.fsync_mode == AOF_FSYNC_ALWAYS) {
             int fd = fileno(fp);
             if (fsync(fd) == -1) {
-                perror("Failed to fsync big AOF command");
+                KVS_LOG_ERROR_ERRNO("persistence", "failed to fsync big AOF command");
             }
         }
 
@@ -340,7 +341,7 @@ void aof_fsync(int force){
 
     size_t written = fwrite(aof_state.buf, 1, aof_state.buf_len, aof_state.fp);
     if(written != aof_state.buf_len){
-        perror("Failed to write AOF buffer");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to write AOF buffer");
     }else{
         fflush(aof_state.fp);
 
@@ -349,7 +350,7 @@ void aof_fsync(int force){
             int fd = fileno(aof_state.fp);
             if(fsync(fd) == -1){
                 //fsync 将文件描述符 fd 对应的文件数据从操作系统内核缓冲区强制同步到物理磁盘
-                perror("Failed to fsync AOF file");
+                KVS_LOG_ERROR_ERRNO("persistence", "failed to fsync AOF file");
             }
             aof_state.last_fsync = time(NULL);
         }
@@ -370,13 +371,13 @@ static int file_exists(const char *filename){
 //加载函数
 int aof_load(const char *filename){
     if(!file_exists(filename)){
-        printf("No AOF file found\n");
+        KVS_LOG_INFO("persistence", "No AOF file found");
         return 0;
     }
 
     FILE *fp = fopen(filename, "r");
     if(!fp){
-        perror("Failed to open AOF file for reading");
+        KVS_LOG_ERROR_ERRNO("persistence", "failed to open AOF file for reading: %s", filename);
         return -1;
     }
 
@@ -391,7 +392,7 @@ int aof_load(const char *filename){
     size_t buf_cap = 1024 * 1024; // 初始 1MB
     char  *buf = (char *)kvs_malloc(buf_cap);
     if (!buf) {
-        perror("AOF malloc buf");
+        KVS_LOG_ERROR("persistence", "AOF malloc buf failed");
         fclose(fp);
         return -1;
     }
@@ -415,7 +416,7 @@ int aof_load(const char *filename){
                 }
                 char *nbuf = (char *)kvs_realloc(buf, new_cap);
                 if (!nbuf) {
-                    perror("AOF realloc buf");
+                    KVS_LOG_ERROR("persistence", "AOF realloc buf failed");
                     break;
                 }
                 buf = nbuf;
@@ -428,7 +429,7 @@ int aof_load(const char *filename){
                 total_read += n;
             } else {
                 if (ferror(fp)) {
-                    perror("AOF fread error");
+                    KVS_LOG_ERROR_ERRNO("persistence", "AOF fread error");
                     break;
                 }
                 // n==0 且 !ferror，说明 EOF

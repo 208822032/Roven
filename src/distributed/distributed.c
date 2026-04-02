@@ -16,6 +16,7 @@
 #include "kvstore.h"
 #include "sync_backend.h"
 #include <stdint.h>
+#include "kvs_log.h"
 
 distributed_config_t global_dist_config;
 
@@ -114,9 +115,9 @@ void* slave_sync_thread(void *arg){
     slave_info_t *slave = (slave_info_t*)arg;
     int sockfd = slave->sockfd;
 
-    printf("[DIST] Slave connected from %s:%d\n",
-           inet_ntoa(slave->addr.sin_addr),
-           ntohs(slave->addr.sin_port));
+    KVS_LOG_INFO("dist", "slave connected from %s:%d",
+                 inet_ntoa(slave->addr.sin_addr),
+                 ntohs(slave->addr.sin_port));
 
     // 全量同步：遍历本地所有数据结构，对每个 key 调用 master_sync_command()
     int64_t now_ms = kv_now_ms();
@@ -210,7 +211,7 @@ void *master_sync_server(void *arg){
     int addrlen = sizeof(address);
 
     if((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0){
-        perror("socket failed");
+        KVS_LOG_ERROR_ERRNO("dist", "socket failed in master sync server");
         exit(EXIT_FAILURE);
     }
 
@@ -219,20 +220,20 @@ void *master_sync_server(void *arg){
     address.sin_port = htons(global_dist_config.sync_port);
 
     if(bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0){
-        perror("bind failed");
+        KVS_LOG_ERROR_ERRNO("dist", "bind failed in master sync server on port %d", global_dist_config.sync_port);
         exit(EXIT_FAILURE);
     }
 
     if(listen(server_fd, 3) < 0){
-        perror("listen failed");
+        KVS_LOG_ERROR_ERRNO("dist", "listen failed in master sync server on port %d", global_dist_config.sync_port);
         exit(EXIT_FAILURE);
     }
 
-    printf("Master sync server listening on port %d\n", global_dist_config.sync_port);
+    KVS_LOG_INFO("dist", "master sync server listening on port %d", global_dist_config.sync_port);
 
     while(1){
         if((client_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0){
-            perror("accept");
+            KVS_LOG_ERROR_ERRNO("dist", "accept failed in master sync server");
             continue;
         }
 
@@ -242,7 +243,7 @@ void *master_sync_server(void *arg){
         if(global_dist_config.slave_count < global_dist_config.max_slaves){
             slave_info_t *slave = kvs_malloc(sizeof(slave_info_t));
             if (!slave) {
-                fprintf(stderr, "[DIST] malloc slave_info failed\n");
+                KVS_LOG_ERROR("dist", "malloc slave_info failed");
                 close(client_fd);
                 pthread_mutex_unlock(&global_dist_config.slave_mutex);
                 continue;
@@ -257,14 +258,14 @@ void *master_sync_server(void *arg){
             //开辟线程处理从节点
             // 启动该 slave 的「全量 + 增量」同步线程
             if (pthread_create(&slave->thread, NULL, slave_sync_thread, slave) != 0) {
-                fprintf(stderr, "[DIST] create slave_sync_thread failed\n");
+                KVS_LOG_ERROR_ERRNO("dist", "create slave_sync_thread failed");
                 global_dist_config.slave_count--;
                 close(client_fd);
                 kvs_free(slave);
             } 
         }else{
             close(client_fd);
-            printf("Max slave reached, connection refused\n");
+            KVS_LOG_WARN("dist", "max slave reached, connection refused");
         }
 
         pthread_mutex_unlock(&global_dist_config.slave_mutex);
@@ -341,18 +342,18 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
 
         // 初始化 sync backend（当前实现为 TCP backend）
         if (sync_backend_init(sync_port) != 0) {
-            fprintf(stderr, "[DIST] sync_backend_init failed\n");
+            KVS_LOG_ERROR("dist", "sync_backend_init failed");
             return -1;
         }
 
-        printf("[DISTRIBUTED] Running as MASTER, sync port: %d\n", sync_port);
+        KVS_LOG_INFO("dist", "running as MASTER, sync port: %d", sync_port);
 
     }else{
         //从节点
         strncpy(global_dist_config.master_ip, master_ip, sizeof(global_dist_config.master_ip)-1);
         global_dist_config.master_port = master_port;
 
-        printf("Running ad SLAVE, connecting to master %s:%d\n", master_ip, master_port);
+        KVS_LOG_INFO("dist", "running as SLAVE, connecting to master %s:%d", master_ip, master_port);
 
         // 启动连接线程
         pthread_t connect_thread;
@@ -369,7 +370,7 @@ void slave_connect_master(){
     struct sockaddr_in serv_addr;
 
     if((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0){
-        printf("\n Socket creation error\n");
+        KVS_LOG_ERROR_ERRNO("dist", "socket creation error while connecting to master");
         return;
     }
 
@@ -377,16 +378,16 @@ void slave_connect_master(){
     serv_addr.sin_port = htons(global_dist_config.master_port);
 
     if(inet_pton(AF_INET, global_dist_config.master_ip, &serv_addr.sin_addr) <= 0){
-        printf("\nInvalid address/ Address not supported \n");
+        KVS_LOG_ERROR("dist", "invalid master address %s", global_dist_config.master_ip);
         return;
     }
 
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        printf("\nConnection Failed \n");
+        KVS_LOG_ERROR_ERRNO("dist", "connection to master %s:%d failed", global_dist_config.master_ip, global_dist_config.master_port);
         return;
     }
 
-    printf("Connected to master, starting synchronization...\n");
+    KVS_LOG_INFO("dist", "connected to master, starting synchronization...");
 
 
     //接收同步数据
@@ -394,7 +395,7 @@ void slave_connect_master(){
     size_t buf_cap = KVS_MAX_RESPONSE_SIZE;
     uint8_t *buffer = kvs_malloc(buf_cap);
     if(!buffer){
-        fprintf(stderr, "[SLAVE] malloc buffer failed\n");
+        KVS_LOG_ERROR("dist", "malloc buffer failed on slave sync thread");
         close(sock);
         return;
     }
@@ -405,12 +406,12 @@ void slave_connect_master(){
         if(recv_len >= buf_cap){
             size_t new_cap = buf_cap * 2;
             if(new_cap < buf_cap){
-                fprintf(stderr, "[SLAVE] buffer size overflow\n");
+                KVS_LOG_ERROR("dist", "buffer size overflow on slave sync thread");
                 break;
             }
             uint8_t* tmp = (uint8_t*)kvs_realloc(buffer, new_cap);
             if(!tmp){
-                fprintf(stderr, "[SLAVE] realloc buffer failed\n");
+                KVS_LOG_ERROR("dist", "realloc buffer failed on slave sync thread");
                 break;
             }
             buffer = tmp;
@@ -420,11 +421,11 @@ void slave_connect_master(){
         ssize_t n = recv(sock, buffer + recv_len, buf_cap - recv_len, 0);
 
         if(n == 0){
-            printf("Master closed connection\n");
+            KVS_LOG_WARN("dist", "master closed connection");
             break;
         }else if(n < 0){
             if (errno == EINTR) continue;
-            fprintf(stderr, "[SLAVE] recv error: %s\n", strerror(errno));
+            KVS_LOG_ERROR_ERRNO("dist", "recv error on slave sync thread");
             break;
         }
         recv_len += (size_t)n;
@@ -447,7 +448,7 @@ void slave_connect_master(){
                 // 数据不够一条完整消息，等待更多
                 break;
             } else if (consumed < 0) {
-                fprintf(stderr, "[SLAVE] ms_decode_message error, drop buffer\n");
+                KVS_LOG_ERROR("dist", "ms_decode_message error, drop buffer");
                 recv_len = 0;
                 break;
             }
@@ -458,7 +459,7 @@ void slave_connect_master(){
             char *key  = (char *)kvs_malloc(klen + 1);
             char *val  = NULL;
             if (!key) {
-                fprintf(stderr, "[SLAVE] malloc key failed\n");
+                KVS_LOG_ERROR("dist", "malloc key failed on slave sync thread");
                 parsed_total += (size_t)consumed;
                 continue;
             }
@@ -468,7 +469,7 @@ void slave_connect_master(){
             if (vlen > 0) {
                 val = (char *)kvs_malloc(vlen + 1);
                 if (!val) {
-                    fprintf(stderr, "[SLAVE] malloc val failed\n");
+                    KVS_LOG_ERROR("dist", "malloc val failed on slave sync thread");
                     kvs_free(key);
                     parsed_total += (size_t)consumed;
                     continue;
@@ -558,26 +559,26 @@ void slave_connect_master(){
                     errno = 0;
                     long long parsed_expire = 0;
                     if (!val) {
-                        fprintf(stderr, "[SLAVE] missing PEXPIREAT payload for key=%s\n", key);
+                        KVS_LOG_ERROR("dist", "missing PEXPIREAT payload for key=%s", key);
                         break;
                     }
                     parsed_expire = strtoll(val, &endptr, 10);
                     if (endptr == val || *endptr != '\0' || errno == ERANGE) {
-                        fprintf(stderr, "[SLAVE] invalid PEXPIREAT payload for key=%s\n", key);
+                        KVS_LOG_ERROR("dist", "invalid PEXPIREAT payload for key=%s", key);
                         break;
                     }
                     if (ttl_set_any_key_expire_at_ms(key, (int64_t)parsed_expire) < 0) {
-                        fprintf(stderr, "[SLAVE] apply PEXPIREAT failed for key=%s\n", key);
+                        KVS_LOG_ERROR("dist", "apply PEXPIREAT failed for key=%s", key);
                     }
                     break;
                 }
                 case MS_OP_TTL_PERSIST:
                     if (ttl_set_any_key_expire_at_ms(key, KV_TTL_NO_EXPIRE) < 0) {
-                        fprintf(stderr, "[SLAVE] apply PERSIST failed for key=%s\n", key);
+                        KVS_LOG_ERROR("dist", "apply PERSIST failed for key=%s", key);
                     }
                     break;
                 default:
-                    fprintf(stderr, "[SLAVE] Unknown operation %d\n", op);
+                    KVS_LOG_WARN("dist", "unknown operation %d on slave sync thread", op);
                     break;
             }
 
@@ -658,8 +659,7 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     size_t needed = (size_t)MS_HEADER_LEN + key_len + val_len;
     uint8_t *buffer = (uint8_t *)kvs_malloc(needed);
     if (!buffer) {
-        fprintf(stderr, "[DIST] master_sync_command malloc failed, cmd=%s key=%s\n",
-                cmd, key);
+        KVS_LOG_ERROR("dist", "master_sync_command malloc failed, cmd=%s key=%s", cmd, key);
         return;
     }
 
@@ -671,8 +671,7 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
         value, val_len
     );
     if (len <= 0) {
-        fprintf(stderr, "[DIST] master_sync_command encode error, cmd=%s key=%s\n",
-                cmd, key);
+        KVS_LOG_ERROR("dist", "master_sync_command encode error, cmd=%s key=%s", cmd, key);
         kvs_free(buffer);
         return;
     }
@@ -681,8 +680,7 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     //         op, cmd, key);
 
     if (sync_backend_broadcast(buffer, (size_t)len) != 0) {
-        fprintf(stderr, "[DIST] sync_backend_broadcast failed, cmd=%s key=%s\n",
-                cmd, key);
+        KVS_LOG_ERROR("dist", "sync_backend_broadcast failed, cmd=%s key=%s", cmd, key);
     }else {
         // fprintf(stderr, "[DIST] sync_backend_broadcast ok, len=%d\n", len);
     }

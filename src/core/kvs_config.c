@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <strings.h>
 
 #include "kvs_config.h"
 
@@ -45,6 +46,9 @@ void kvs_config_init_default(kvs_config_t *cfg) {
 
     //初始化 同步模式默认选择TCP
     cfg->sync_mode = KVS_SYNC_TCP;
+    snprintf(cfg->log_level, sizeof(cfg->log_level), "%s", "info");
+    cfg->log_async = 0;
+    cfg->log_file[0] = '\0';
     snprintf(cfg->ebpf_conf, sizeof(cfg->ebpf_conf), "%s", "config/ebpf_sync.conf");
 }
 
@@ -129,6 +133,12 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             long long v = atoll(val);
             if (v < 0) v = 0; // 负数按 0 处理，表示不限制
             cfg->max_value_size = (size_t)v;
+        } else if (strcasecmp(key, "log_level") == 0) {
+            snprintf(cfg->log_level, sizeof(cfg->log_level), "%s", val);
+        } else if (strcasecmp(key, "log_async") == 0) {
+            cfg->log_async = parse_bool(val, cfg->log_async);
+        } else if (strcasecmp(key, "log_file") == 0) {
+            snprintf(cfg->log_file, sizeof(cfg->log_file), "%s", val);
         } else if (strcasecmp(key, "sync_mode") == 0) {
             if (strcasecmp(val, "tcp") == 0) cfg->sync_mode = KVS_SYNC_TCP;
             else if (strcasecmp(val, "ebpf") == 0) cfg->sync_mode = KVS_SYNC_EBPF;
@@ -168,6 +178,18 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
         } else if (strcmp(argv[i], "--aof_filename") == 0) {
             if (i + 1 < argc) {
                 snprintf(cfg->aof_filename, sizeof(cfg->aof_filename), "%s", argv[++i]);
+            }
+        } else if (strcmp(argv[i], "--log_level") == 0) {
+            if (i + 1 < argc) {
+                snprintf(cfg->log_level, sizeof(cfg->log_level), "%s", argv[++i]);
+            }
+        } else if (strcmp(argv[i], "--log_async") == 0) {
+            if (i + 1 < argc) {
+                cfg->log_async = parse_bool(argv[++i], cfg->log_async);
+            }
+        } else if (strcmp(argv[i], "--log_file") == 0) {
+            if (i + 1 < argc) {
+                snprintf(cfg->log_file, sizeof(cfg->log_file), "%s", argv[++i]);
             }
         } /*else if (argv[i][0] != '-') {
             // 第一个非选项参数，如果仍是 master，视为 port

@@ -21,6 +21,7 @@
 #include "kvs_api.h"
 #include "resp_protocol.h"
 #include "distributed.h"
+#include "kvs_log.h"
 
 #include "net_session.h" //通用会话层
 
@@ -189,7 +190,7 @@ int accept_cb(int fd) {
 
 	int clientfd = accept(fd, (struct sockaddr*)&clientaddr, &len);
 	if (clientfd < 0) {
-		printf("accept errno: %d --> %s\n", errno, strerror(errno));
+        KVS_LOG_ERROR_ERRNO("net", "accept failed: fd=%d", fd);
 		return -1;
 	}
 
@@ -316,7 +317,7 @@ int recv_cb(int fd) {
         if(recv_buf->capacity - recv_buf->size < min_space){
             // 扩展缓冲区
             if(netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0){
-                printf("Failed to reserve space in recv buffer for fd %d\n", fd);
+                KVS_LOG_ERROR("net", "failed to reserve space in recv buffer for fd %d", fd);
                 event_unregister(fd);
                 return -1;
             }
@@ -344,7 +345,7 @@ int recv_cb(int fd) {
                 break;
             } else {
                 // 其他错误
-                printf("recv error for fd %d: %s\n", fd, strerror(errno));
+                KVS_LOG_ERROR_ERRNO("net", "recv error for fd %d", fd);
                 event_unregister(fd);
                 return -1;
             }
@@ -421,11 +422,11 @@ int send_cb(int fd) {
                 set_event(fd, EPOLLOUT | EPOLLIN, 0);
                 return 0;
             }
-            printf("Send error for fd %d: %s\n", fd, strerror(errno));
+            KVS_LOG_ERROR_ERRNO("net", "send error for fd %d", fd);
             event_unregister(fd);
             return -1;
         } else if (sent == 0) {
-            printf("Connection closed during send for fd %d\n", fd);
+            KVS_LOG_WARN("net", "connection closed during send for fd %d", fd);
             event_unregister(fd);
             return -1;
         }
@@ -452,7 +453,7 @@ int r_init_server(unsigned short port) {
 
 	int sockfd = socket(AF_INET, SOCK_STREAM, 0);
 	if (sockfd < 0) {
-        perror("socket");
+		KVS_LOG_ERROR_ERRNO("net", "socket failed");
         return -1;
     }
 
@@ -460,14 +461,14 @@ int r_init_server(unsigned short port) {
     // 设置SO_REUSEADDR和SO_REUSEPORT选项
     int reuse = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt SO_REUSEADDR");
+        KVS_LOG_ERROR_ERRNO("net", "setsockopt SO_REUSEADDR failed");
         close(sockfd);
         return -1;
     }
 
     #ifdef SO_REUSEPORT
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt SO_REUSEPORT");
+		KVS_LOG_ERROR_ERRNO("net", "setsockopt SO_REUSEPORT failed");
         close(sockfd);
         return -1;
     }
@@ -481,13 +482,13 @@ int r_init_server(unsigned short port) {
 	servaddr.sin_port = htons(port); // 0-1023, 
 
 	if (bind(sockfd, (struct sockaddr*)&servaddr, sizeof(struct sockaddr)) < 0) {
-		printf("bind failed: %s\n", strerror(errno));
+        KVS_LOG_ERROR_ERRNO("net", "bind failed on port %u", port);
 		close(sockfd);
         return -1;
 	}
 
 	if (listen(sockfd, 1024) < 0) {
-        perror("listen");
+        KVS_LOG_ERROR_ERRNO("net", "listen failed on port %u", port);
         close(sockfd);
         return -1;
     }
@@ -507,7 +508,7 @@ int reactor_start(unsigned short port, msg_handler handler) {
 
 	epfd = epoll_create(1);
 	if (epfd < 0) {
-        perror("epoll_create1");
+		KVS_LOG_ERROR_ERRNO("net", "epoll_create1 failed");
         return -1;
     }
 
@@ -531,7 +532,7 @@ int reactor_start(unsigned short port, msg_handler handler) {
 
 		int nready = epoll_wait(epfd, events, 1024, -1); //-1
 		if (nready < 0 && errno != EINTR) {
-            perror("epoll_wait");
+			KVS_LOG_ERROR_ERRNO("net", "epoll_wait failed");
             break;
         }
 

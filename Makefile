@@ -46,6 +46,8 @@ BASE_SRCS = \
 	$(SRC_PERSIST)/kvs_aof_rewrite.c \
 	$(SRC_UTILS)/msg_queue.c \
 	$(SRC_UTILS)/master_slave_proto.c \
+	$(SRC_UTILS)/kvs_log.c \
+	$(SRC_UTILS)/kvs_log_writer.c \
 	$(SRC_UTILS)/netbuf.c \
 	$(SRC_UTILS)/tx_batcher.c
 	
@@ -143,6 +145,8 @@ MEMPOOL_OBJS := \
 	$(SRC_STORAGE)/kvs_mempool.o \
 	$(SRC_CORE)/kvs_config.o \
 	$(SRC_CORE)/kvs_globals.o \
+	$(SRC_UTILS)/kvs_log.o \
+	$(SRC_UTILS)/kvs_log_writer.o \
 	$(SRC_STORAGE)/jemalloc_wrapper.o \
 	$(SRC_STORAGE)/kvs_array.o \
 	$(SRC_STORAGE)/kvs_rbtree.o \
@@ -170,6 +174,8 @@ $(EBPF_SYNCD_BIN): \
 	$(SRC_NETWORK)/resp_protocol.c \
 	$(SRC_UTILS)/msg_queue.c \
 	$(SRC_STORAGE)/kvs_mempool.c \
+	$(SRC_UTILS)/kvs_log.c \
+	$(SRC_UTILS)/kvs_log_writer.c \
 	$(SRC_STORAGE)/jemalloc_wrapper.c \
 	$(SRC_STORAGE)/kvs_array.c \
 	$(SRC_STORAGE)/kvs_hash.c \

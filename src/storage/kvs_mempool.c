@@ -1,6 +1,7 @@
 #include "kvs_memory_internal.h"
 #include "kvs_memory.h"
 #include "kvs_config.h"
+#include "kvs_log.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -127,17 +128,23 @@ void memleak_free(void *ptr, const char *filename, const char *funcname, int lin
             ? "可能重复释放，或未通过 memleak_alloc 分配导致未创建跟踪文件"
             : "unlink 失败，请检查路径/权限";
 
-        printf("[DOUBLE-FREE][%s:%s:%d] ptr=%p, path=%s, errno=%d(%s). 提示: %s\n",
-               filename, funcname, line, ptr, buff, err, err_str, hint);
+        KVS_LOG_ERROR("mempool", "[DOUBLE-FREE][%s:%s:%d] ptr=%p path=%s errno=%d(%s) hint=%s",
+                      filename, funcname, line, ptr, buff, err, err_str, hint);
 
 		#ifdef __linux__
         // 可选：打印简单栈回溯（仅Linux）
         void *bt[16];
         int n = backtrace(bt, 16);
-        printf("[BACKTRACE] 深度=%d\n", n);
-        backtrace_symbols_fd(bt, n, fileno(stdout));
+        char **symbols = backtrace_symbols(bt, n);
+        if (symbols) {
+            for (int i = 0; i < n; ++i) {
+                KVS_LOG_ERROR("mempool", "[BACKTRACE][%d] %s", i, symbols[i]);
+            }
+            free(symbols);
+        } else {
+            KVS_LOG_ERROR("mempool", "[BACKTRACE] depth=%d", n);
+        }
         #endif
-        fflush(stdout);
 		return ;
 	}
 	
@@ -340,18 +347,22 @@ void mem_free(void* ptr) {
     //大内存处理
     if(header->is_large){
         if (header->large_record == NULL || header->large_record->block != header) {
-        printf("错误：无效的大内存记录\n");
-        // 直接释放header？但是这样可能会崩溃，因为记录可能已经无效
-        #ifdef __linux__
-                void *bt[16];
-                int n = backtrace(bt, 16);
-                printf("[POOL_INVALID_LARGE] backtrace depth=%d\n", n);
-                backtrace_symbols_fd(bt, n, fileno(stdout));
-                fflush(stdout);
-        #endif
-        // free(header);
-        return;
-    }
+            KVS_LOG_ERROR("mempool", "invalid large block record: ptr=%p", ptr);
+#ifdef __linux__
+            void *bt[16];
+            int n = backtrace(bt, 16);
+            char **symbols = backtrace_symbols(bt, n);
+            if (symbols) {
+                for (int i = 0; i < n; ++i) {
+                    KVS_LOG_ERROR("mempool", "[POOL_INVALID_LARGE][%d] %s", i, symbols[i]);
+                }
+                free(symbols);
+            } else {
+                KVS_LOG_ERROR("mempool", "[POOL_INVALID_LARGE] depth=%d", n);
+            }
+#endif
+            return;
+        }
 
         pthread_mutex_lock(&g_mem_manager.large_blocks_lock);
 

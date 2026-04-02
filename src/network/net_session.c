@@ -1,5 +1,6 @@
 #include "net_session.h"
 #include "kvs_api.h"
+#include "kvs_log.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -95,7 +96,7 @@ int net_session_process_resp(int fd,
 
         if(session->recv_buf.data[i] != '*'){
             //不是合法RESP起始数组 认为协议错误
-            fprintf(stderr, "Protocol error: first non-whitespace byte is not '*'\n");
+            KVS_LOG_ERROR("net", "fd=%d protocol error: first non-whitespace byte is not '*'", fd);
             session->processing = 0;
             return -1;
         }
@@ -120,7 +121,7 @@ int net_session_process_resp(int fd,
                                         parsed_total);
         
         if(cmd_len < 0){
-            printf("Incomplete command or protocol error detected by resp_peek_command\n");
+            KVS_LOG_ERROR("net", "fd=%d incomplete command or protocol error detected by resp_peek_command", fd);
             session->processing = 0;
             return -1;
         }else if(cmd_len == 0){
@@ -141,14 +142,14 @@ int net_session_process_resp(int fd,
         );
 
         if(parsed < 0){
-            printf("Protocol error detected by resp_parser\n");
+            KVS_LOG_ERROR("net", "fd=%d protocol error detected by resp_parser", fd);
             session->processing = 0;
             return -1;
         }
 
         if(parsed != cmd_len || parser->state != RESP_PARSE_COMPLETE){
             //解析器没有消费完数据 或者没有完成解析 认为协议错误
-            printf("Protocol error: resp_parser did not consume expected bytes or did not complete\n");
+            KVS_LOG_ERROR("net", "fd=%d protocol error: resp_parser did not consume expected bytes or did not complete", fd);
             session->processing = 0;
             return -1;
         }
@@ -156,7 +157,7 @@ int net_session_process_resp(int fd,
         //一条完整命令解析成功 交给上层handler 生成响应
         char* response_buf = kvs_malloc(KVS_MAX_RESPONSE_LENGTH);
         if(!response_buf){
-            printf("Memory allocation failed for response buffer\n");
+            KVS_LOG_ERROR("net", "fd=%d memory allocation failed for response buffer", fd);
             session->processing = 0;
             return -1;
         }
@@ -168,7 +169,7 @@ int net_session_process_resp(int fd,
             user_data
         );
         if(resp_len <= 0 || resp_len > (int)KVS_MAX_RESPONSE_LENGTH){
-            printf("Handler returned invalid response length: %d\n", resp_len);
+            KVS_LOG_ERROR("net", "fd=%d handler returned invalid response length: %d", fd, resp_len);
             kvs_free(response_buf);
             session->processing = 0;
             return -1;
@@ -178,7 +179,7 @@ int net_session_process_resp(int fd,
         if(session->send_buf.size + resp_len > session->send_buf.capacity){
             size_t needed = session->send_buf.size + resp_len;
             if(netbuf_reserve(&session->send_buf, needed) < 0){
-                printf("Failed to reserve space in send buffer\n");
+                KVS_LOG_ERROR("net", "fd=%d failed to reserve space in send buffer", fd);
                 kvs_free(response_buf);
                 session->processing = 0;
                 return -1;

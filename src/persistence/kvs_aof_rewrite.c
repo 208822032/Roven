@@ -3,6 +3,7 @@
 //处理AOF重写功能
 #include "kvs_api.h"
 #include "kvs_aof_internal.h"
+#include "kvs_log.h"
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <time.h>
@@ -43,13 +44,13 @@ static int acquire_cow_snapshot(void){
     // Proactor 模式下不使用 COW 机制，直接返回成功
     #if (NETWORK_SELECT == NETWORK_PROACTOR)
     aof_state.cow_snapshot_ready = 0;
-    printf("Proactor mode: COW snapshot disabled\n");
+    KVS_LOG_INFO("aof", "Proactor mode: COW snapshot disabled");
     return 0;
     #endif
 
     //获取写锁阻塞新的写操作
     if(pthread_rwlock_wrlock(&aof_state.data_rwlock) != 0){
-        perror("Failed to acquire data write lock for COW snapshot");
+        KVS_LOG_ERROR_ERRNO("aof", "failed to acquire data write lock for COW snapshot");
         return -1;
     }
 
@@ -89,7 +90,7 @@ static int create_rewrite_tempfile(void){
     snprintf(tmp_filename, sizeof(tmp_filename), "%s.tmp", aof_state.filename);
     int fd = open(tmp_filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd == -1) {
-        perror("Failed to create temporary AOF file");
+        KVS_LOG_ERROR_ERRNO("aof", "failed to create temporary AOF file: %s", tmp_filename);
         return -1;
     }
 
@@ -207,7 +208,7 @@ static void rbtree_rewrite_callback(rbtree_node *node, void *userdata) {
     }
 
     if (time(NULL) - ctx->start_time > 290) {
-        fprintf(stderr, "Child process: Rewrite timeout approaching during rbtree processing\n");
+        KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during rbtree processing");
         ctx->error = 1;
         return;
     }
@@ -220,13 +221,13 @@ static void rbtree_rewrite_callback(rbtree_node *node, void *userdata) {
 
     if (key_ptr && value_ptr && !kv_is_expired(expire_at_ms, ctx->now_ms)) {
         if (write_command_parts_len(ctx->fd, "RSET", 4, key_ptr, key_len, value_ptr, value_len) == -1) {
-            perror("Failed to write rbtree data to temp file");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to write rbtree data to temp file");
             ctx->error = 1;
             return;
         }
 
         if (write_ttl_command_if_needed(ctx->fd, key_ptr, expire_at_ms) == -1) {
-            perror("Failed to write rbtree TTL command to temp file");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to write rbtree TTL command to temp file");
             ctx->error = 1;
             return;
         }
@@ -252,7 +253,7 @@ static int write_data_to_tempfile(int fd) {
 
     // 检查文件描述符有效性
     if (fd < 0) {
-        fprintf(stderr, "Invalid file descriptor in child process\n");
+        KVS_LOG_ERROR("aof", "invalid file descriptor in child process");
         return -1;
     }
 
@@ -292,7 +293,7 @@ static int write_data_to_tempfile(int fd) {
                 
                 // 超时检查
                 if (time(NULL) - start_time > 290) {
-                    fprintf(stderr, "Child process: Rewrite timeout approaching during array snapshot\n");
+                    KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during array snapshot");
                     break;
                 }
             }
@@ -302,18 +303,18 @@ static int write_data_to_tempfile(int fd) {
     // 第二步：写入收集到的数据
     for (int i = 0; i < valid_count; i++) {
         if (time(NULL) - start_time > 290) {
-            fprintf(stderr, "Child process: Rewrite timeout approaching during array write\n");
+            KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during array write");
             break;
         }
-        
+
         if(write_command_parts(fd, "SET", array_snapshot[i].key, array_snapshot[i].value) == -1){
-            perror("Failed to write array data to temp file");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to write array data to temp file");
             if(array_snapshot) kvs_free(array_snapshot);
             return -1;
         }
 
         if (write_ttl_command_if_needed(fd, array_snapshot[i].key, array_snapshot[i].expire_at_ms) == -1) {
-            perror("Failed to write array TTL command to temp file");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to write array TTL command to temp file");
             if(array_snapshot) kvs_free(array_snapshot);
             return -1;
         }
@@ -349,7 +350,7 @@ static int write_data_to_tempfile(int fd) {
     int hash_commands = 0;
     for (int i = 0; i < global_hash.max_slots; i++) {
         if (time(NULL) - start_time > 290) {
-            // fprintf(stderr, "Child process: Rewrite timeout approaching during hash processing\n");
+            KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during hash processing");
             break;
         }
 
@@ -365,11 +366,11 @@ static int write_data_to_tempfile(int fd) {
 
         if (key_ptr && value_ptr && key_ptr[0] != '\0' && value_ptr[0] != '\0' && !kv_is_expired(slot->expire_at_ms, now_ms)) {
             if (write_command_parts(fd, "HSET", key_ptr, value_ptr) == -1) {
-                perror("Failed to write hash data to temp file");
+                KVS_LOG_ERROR_ERRNO("aof", "failed to write hash data to temp file");
                 return -1;
             }
             if (write_ttl_command_if_needed(fd, key_ptr, slot->expire_at_ms) == -1) {
-                perror("Failed to write hash TTL command to temp file");
+                KVS_LOG_ERROR_ERRNO("aof", "failed to write hash TTL command to temp file");
                 return -1;
             }
             hash_commands++;
@@ -391,7 +392,7 @@ static int write_data_to_tempfile(int fd) {
         while (current) {
             // 超时检查
             if (time(NULL) - start_time > 290) {
-                fprintf(stderr, "Child process: Rewrite timeout approaching during skiplist processing\n");
+                KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during skiplist processing");
                 break;
             }
             
@@ -400,7 +401,7 @@ static int write_data_to_tempfile(int fd) {
                 if (write_command_parts_len(fd, "SSET", 4,
                                             current->key, current->key_len,
                                             current->value, current->value_len) == -1) {
-                    perror("Failed to write skiplist data to temp file");
+                    KVS_LOG_ERROR_ERRNO("aof", "failed to write skiplist data to temp file");
                     return -1;
                 }
                 if (current->expire_at_ms >= 0) {
@@ -409,7 +410,7 @@ static int write_data_to_tempfile(int fd) {
                     if (write_command_parts_len(fd, "PEXPIREAT", 9,
                                                 current->key, current->key_len,
                                                 expire_buf, strlen(expire_buf)) == -1) {
-                        perror("Failed to write skiplist TTL command to temp file");
+                        KVS_LOG_ERROR_ERRNO("aof", "failed to write skiplist TTL command to temp file");
                         return -1;
                     }
                 }
@@ -445,12 +446,12 @@ static int wait_for_child_with_timeout(pid_t pid, int timeout_secondes){
         pid_t result = waitpid(pid, &status, WNOHANG);
 
         if (result == -1) {
-            perror("waitpid failed");
+            KVS_LOG_ERROR_ERRNO("aof", "waitpid failed");
             return -1;
         }else if(result == 0){
             // 子进程还在运行
             if (time(NULL) - start_time > timeout_secondes) {
-                fprintf(stderr, "AOF rewrite timeout, killing child process\n");
+                KVS_LOG_ERROR("aof", "AOF rewrite timeout, killing child process %d", pid);
 
                 kill(pid, SIGTERM);
 
@@ -478,7 +479,7 @@ static int finish_rewrite(int temp_fd){
         // printf("AOF rewrite: appending %zu bytes from rewrite buffer\n", aof_state.rewrite_buf_len);
 
         if (safe_write(temp_fd, aof_state.rewrite_buf, aof_state.rewrite_buf_len) == -1) {
-            perror("Failed to write rewrite buffer to temp file");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to write rewrite buffer to temp file");
             pthread_mutex_unlock(&aof_state.rewrite_mutex);
             return -1;
         }
@@ -497,13 +498,13 @@ static int atomic_replace_file(const char *temp_file, const char *final_file){
 
     // 首先备份原文件
     if (rename(final_file, backup_file) == -1 && errno != ENOENT) {
-        perror("Failed to backup original AOF file");
+        KVS_LOG_ERROR_ERRNO("aof", "failed to backup original AOF file %s", final_file);
         return -1;
     }
 
     // 然后重命名临时文件
     if (rename(temp_file, final_file) == -1) {
-        perror("Failed to rename temp AOF file");
+        KVS_LOG_ERROR_ERRNO("aof", "failed to rename temp AOF file %s -> %s", temp_file, final_file);
         // 尝试恢复备份
         rename(backup_file, final_file);
         return -1;
@@ -526,14 +527,14 @@ static int aof_reopen_after_rewrite_locked(void){
 
     aof_state.fp = fopen(aof_state.filename, "a");
     if(!aof_state.fp){
-        perror("Failed to reopen AOF file after rewrite");
+        KVS_LOG_ERROR_ERRNO("aof", "failed to reopen AOF file after rewrite: %s", aof_state.filename);
         return -1;
     }
 
     fseek(aof_state.fp, 0, SEEK_END);
     long pos = ftell(aof_state.fp);
     if(pos < 0){
-        perror("ftell after reopen AOF");
+        KVS_LOG_ERROR_ERRNO("aof", "ftell after reopen AOF failed");
         return -1;
     }
 
@@ -565,7 +566,7 @@ static int rewrite_buffer_append(int argc, char **argv){
 
         char *new_buf = kvs_realloc(aof_state.rewrite_buf, new_size);
         if(!new_buf){
-            perror("Failed to reallocate rewrite buffer");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to reallocate rewrite buffer");
             pthread_mutex_unlock(&aof_state.rewrite_mutex);
             return -1;
         }
@@ -590,7 +591,7 @@ void aof_rewrite_append_command(int argc, char **argv){
     if(!aof_state.rewrite_in_progress) return;
 
     if(rewrite_buffer_append(argc, argv) == -1){
-        fprintf(stderr, "Failed to append command to rewrite buffer\n");
+        KVS_LOG_ERROR("aof", "failed to append command to rewrite buffer");
     }
 }
 
@@ -617,7 +618,7 @@ static void* aof_rewrite_thread(void *arg) {
 #if (NETWORK_SELECT == NETWORK_PROACTOR)
     // 读锁保护遍历，避免并发释放导致段错误
     if (pthread_rwlock_rdlock(&aof_state.data_rwlock) != 0) {
-        perror("rewrite thread: rdlock failed");
+        KVS_LOG_ERROR_ERRNO("aof", "rewrite thread: rdlock failed");
         close(fd);
         aof_state.rewrite_in_progress = 0;
         pthread_exit(NULL);
@@ -641,7 +642,7 @@ static void* aof_rewrite_thread(void *arg) {
 
     // 确保数据刷到磁盘
     if (fsync(fd) == -1) {
-        perror("fsync failed in rewrite thread");
+        KVS_LOG_ERROR_ERRNO("aof", "fsync failed in rewrite thread");
         close(fd);
         aof_state.rewrite_in_progress = 0;
         pthread_exit(NULL);
@@ -666,7 +667,7 @@ void aof_rewrite_background(void){
         aof_state.rewrite_buf = kvs_malloc(aof_state.rewrite_buf_size);
         if (!aof_state.rewrite_buf) {
             pthread_mutex_unlock(&aof_state.rewrite_mutex);
-            fprintf(stderr, "Failed to allocate rewrite buffer\n");
+            KVS_LOG_ERROR("aof", "failed to allocate rewrite buffer");
             return;
         }
     }
@@ -685,7 +686,7 @@ void aof_rewrite_background(void){
         
         pthread_t rewrite_tid;
         if (pthread_create(&rewrite_tid, NULL, aof_rewrite_thread, NULL) != 0) {
-            perror("Failed to create rewrite thread");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to create rewrite thread");
             aof_state.rewrite_in_progress = 0;
             return;
         }
@@ -693,7 +694,7 @@ void aof_rewrite_background(void){
         // 等待线程完成
         void *thread_result;
         if (pthread_join(rewrite_tid, &thread_result) != 0) {
-            perror("Failed to join rewrite thread");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to join rewrite thread");
             aof_state.rewrite_in_progress = 0;
             return;
         }
@@ -701,7 +702,7 @@ void aof_rewrite_background(void){
         // 追加重写期间的新命令
         int temp_fd = open(aof_state.temp_filename, O_WRONLY | O_APPEND);
         if (temp_fd == -1) {
-            perror("Failed to open temp file for appending");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to open temp file for appending: %s", aof_state.temp_filename);
             aof_state.rewrite_in_progress = 0;
             return;
         }
@@ -713,7 +714,7 @@ void aof_rewrite_background(void){
         }
 
         if (fsync(temp_fd) == -1) {
-            perror("Failed to fsync temp file");
+            KVS_LOG_ERROR_ERRNO("aof", "failed to fsync temp file");
             close(temp_fd);
             aof_state.rewrite_in_progress = 0;
             return;
@@ -729,7 +730,7 @@ void aof_rewrite_background(void){
             pthread_mutex_unlock(&aof_state.mutex);
             // printf("AOF rewrite completed successfully (thread mode)\n");
         } else {
-            fprintf(stderr, "AOF rewrite failed during file replacement\n");
+            KVS_LOG_ERROR("aof", "AOF rewrite failed during file replacement");
         }
 
         aof_state.cow_snapshot_ready = 0;
@@ -741,7 +742,7 @@ void aof_rewrite_background(void){
     // 获取 COW 快照保护
     if (acquire_cow_snapshot() != 0) {
         aof_state.rewrite_in_progress = 0;
-        fprintf(stderr, "Failed to acquire COW snapshot\n");
+        KVS_LOG_ERROR("aof", "failed to acquire COW snapshot");
         return;
     }
 
@@ -767,7 +768,7 @@ void aof_rewrite_background(void){
 
         // 确保数据刷到磁盘
         if (fsync(fd) == -1) {
-            perror("fsync failed in child process");
+            KVS_LOG_ERROR_ERRNO("aof", "fsync failed in child process");
             close(fd);
             _exit(1);
         }
@@ -789,7 +790,7 @@ void aof_rewrite_background(void){
         int status = wait_for_child_with_timeout(childpid, 300); // 5分钟超时
 
         if (status == -1) {
-            fprintf(stderr, "AOF rewrite failed due to timeout or error\n");
+            KVS_LOG_ERROR("aof", "AOF rewrite failed due to timeout or error");
             aof_state.rewrite_in_progress = 0;
             return;
         }
@@ -799,7 +800,7 @@ void aof_rewrite_background(void){
             int temp_fd = open(aof_state.temp_filename, O_WRONLY | O_APPEND);
 
             if (temp_fd == -1) {
-                perror("Failed to open temp file for appending");
+                KVS_LOG_ERROR_ERRNO("aof", "failed to open temp file for appending: %s", aof_state.temp_filename);
                 aof_state.rewrite_in_progress = 0;
                 return;
             }
@@ -812,7 +813,7 @@ void aof_rewrite_background(void){
 
             // 最终同步
             if (fsync(temp_fd) == -1) {
-                perror("Failed to fsync temp file");
+                KVS_LOG_ERROR_ERRNO("aof", "failed to fsync temp file");
                 close(temp_fd);
                 aof_state.rewrite_in_progress = 0;
                 return;
@@ -830,10 +831,10 @@ void aof_rewrite_background(void){
 
                 // printf("AOF rewrite completed successfully\n");
             }else {
-                fprintf(stderr, "AOF rewrite failed during file replacement\n");
+                KVS_LOG_ERROR("aof", "AOF rewrite failed during file replacement");
             }
         }else {
-            fprintf(stderr, "AOF rewrite failed in child process\n");
+            KVS_LOG_ERROR("aof", "AOF rewrite failed in child process");
             // 清理临时文件
             unlink(aof_state.temp_filename);
         }
@@ -844,14 +845,14 @@ void aof_rewrite_background(void){
 
     }else{
         //错误
-        perror("Fork failed for AOF rewrite");
+        KVS_LOG_ERROR_ERRNO("aof", "fork failed for AOF rewrite");
     }
 }
 
 //停止重写
 void aof_stop_rewrite(void) {
     if (aof_state.rewrite_in_progress && aof_state.rewrite_child_pid > 0) {
-        printf("Stopping AOF rewrite process %d\n", aof_state.rewrite_child_pid);
+        KVS_LOG_INFO("aof", "Stopping AOF rewrite process %d", aof_state.rewrite_child_pid);
         kill(aof_state.rewrite_child_pid, SIGTERM);
         
         // 设置停止标志
@@ -885,7 +886,7 @@ int aof_rewrite_buffer_write(int fd){
                                 strlen(global_array.table[i].value), global_array.table[i].value);
                 
                 if (write(fd, cmd, len) != len) {
-                    perror("Failed to write to AOF temp file");
+                    KVS_LOG_ERROR_ERRNO("aof", "failed to write to AOF temp file");
                     return -1;
                 }
                 total_commands++;
@@ -904,7 +905,7 @@ int aof_rewrite_buffer_write(int fd){
                             strlen(node->key), node->key,
                             strlen((char*)node->value), (char*)node->value);
             if (write(fd, cmd, len) != len) {
-                perror("Failed to write to AOF temp file");
+                KVS_LOG_ERROR_ERRNO("aof", "failed to write to AOF temp file");
                 exit(1); // 子进程中直接退出
             }
             write_rbtree_node(node->right, &fd);
@@ -926,7 +927,7 @@ int aof_rewrite_buffer_write(int fd){
                                (size_t)slot->value_len, slot->value);
 
             if (write(fd, cmd, len) != len) {
-                perror("Failed to write to AOF temp file");
+                KVS_LOG_ERROR_ERRNO("aof", "failed to write to AOF temp file");
                 return -1;
             }
             total_commands++;
@@ -939,12 +940,12 @@ int aof_rewrite_buffer_write(int fd){
             char cmd[2048];
             int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%u\r\n", current->key_len);
             if (len < 0 || len >= (int)sizeof(cmd)) {
-                perror("Failed to write to AOF temp file");
+                KVS_LOG_ERROR("aof", "failed to write to AOF temp file");
                 return -1;
             }
             int off = len;
             if (off + (int)current->key_len + 4 >= (int)sizeof(cmd)) {
-                perror("Failed to write to AOF temp file");
+                KVS_LOG_ERROR("aof", "failed to write to AOF temp file");
                 return -1;
             }
             memcpy(cmd + off, current->key, current->key_len);
@@ -953,12 +954,12 @@ int aof_rewrite_buffer_write(int fd){
             off += 3;
             len = snprintf(cmd + off, sizeof(cmd) - (size_t)off, "%u\r\n", current->value_len);
             if (len < 0 || len >= (int)(sizeof(cmd) - (size_t)off)) {
-                perror("Failed to write to AOF temp file");
+                KVS_LOG_ERROR("aof", "failed to write to AOF temp file");
                 return -1;
             }
             off += len;
             if (off + (int)current->value_len + 2 >= (int)sizeof(cmd)) {
-                perror("Failed to write to AOF temp file");
+                KVS_LOG_ERROR("aof", "failed to write to AOF temp file");
                 return -1;
             }
             memcpy(cmd + off, current->value, current->value_len);
@@ -966,7 +967,7 @@ int aof_rewrite_buffer_write(int fd){
             memcpy(cmd + off, "\r\n", 2);
             off += 2;
             if (write(fd, cmd, off) != off) {
-                perror("Failed to write to AOF temp file");
+                KVS_LOG_ERROR_ERRNO("aof", "failed to write to AOF temp file");
                 return -1;
             }
             total_commands++;

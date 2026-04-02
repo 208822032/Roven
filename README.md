@@ -363,21 +363,19 @@ if(g_cfg.mem_backend == KVS_MEM_BACKEND_JEMALLOC){
 - 对齐范围：`populate / set / get`（KVStore 与 Redis 使用同一工具与同口径参数，仅目标地址不同）
 - 参数口径：`-c 50 -n 100000 -P 1 -d 32 -r 100000`
 
-| ds | op | kvstore_qps | redis_qps | kv/redis |
-|---|---:|---:|---:|---:|
-| array | set | 1226.890000 | 108577.630000 | 0.011 |
-| array | get | 1191.280000 | 129032.270000 | 0.009 |
-| rbtree | set | 95785.440000 | 121802.680000 | 0.786 |
-| rbtree | get | 94786.730000 | 112359.550000 | 0.844 |
-| hash | set | 88967.980000 | 123001.230000 | 0.723 |
-| hash | get | 90579.710000 | 124378.110000 | 0.728 |
-| skiptable | set | 88495.580000 | 122699.390000 | 0.721 |
-| skiptable | get | 93632.960000 | 121802.680000 | 0.769 |
+| ds | op | kvstore_qps | redis_qps | kvstore_p50(ms) | kvstore_p95(ms) | kvstore_p99(ms) | redis_p50(ms) | redis_p95(ms) | redis_p99(ms) | notes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| array | set | 139664.800000 | 128369.710000 | 0.207000 | 0.343000 | 0.535000 | 0.199000 | 0.303000 | 0.447000 | set/get aligned; kv/redis qps=1.088 |
+| array | get | 133868.810000 | 123915.740000 | 0.239000 | 0.431000 | 0.711000 | 0.191000 | 0.351000 | 0.567000 | set/get aligned; kv/redis qps=1.080 |
+| hash | set | 138504.160000 | 136239.780000 | 0.191000 | 0.311000 | 0.551000 | 0.183000 | 0.279000 | 0.439000 | set/get aligned; kv/redis qps=1.017 |
+| hash | get | 136612.020000 | 129870.130000 | 0.183000 | 0.311000 | 0.567000 | 0.199000 | 0.295000 | 0.487000 | set/get aligned; kv/redis qps=1.052 |
+| rbtree | set | 111731.840000 | 127877.230000 | 0.375000 | 0.639000 | 0.847000 | 0.191000 | 0.319000 | 0.503000 | set/get aligned; kv/redis qps=0.874 |
+| rbtree | get | 112233.450000 | 126742.720000 | 0.383000 | 0.631000 | 0.815000 | 0.199000 | 0.311000 | 0.463000 | set/get aligned; kv/redis qps=0.886 |
+| skiptable | set | 92081.030000 | 132978.730000 | 0.479000 | 0.767000 | 1.087000 | 0.191000 | 0.263000 | 0.391000 | set/get aligned; kv/redis qps=0.692 |
+| skiptable | get | 95969.280000 | 131752.310000 | 0.455000 | 0.743000 | 0.991000 | 0.183000 | 0.335000 | 0.543000 | set/get aligned; kv/redis qps=0.728 |
 
-- 当前瓶颈集中在 `array` 路径（最低 `array/get = 1191.28 qps`）
-- `rbtree/hash/skiptable` 的 `set/get` 已进入高吞吐区间，与 Redis 差距显著缩小
-- TCP 主从模式下吞吐损耗较小；eBPF 模式在启用批处理后，吞吐显著优于无批处理路径
-- 后续优化优先级：`array` 路径、eBPF 大包与分片处理、内存后端按场景调优
+- `array/hash` 在本轮压测中保持在 `13w+ qps` 区间，`rbtree` 在 `11w+ qps` 区间
+- `skiptable` 的写读路径开销更高
 
 > 原始数据：`results/raw.csv`  
 > 汇总报告：`results/summary.md`
@@ -505,8 +503,7 @@ scripts/bench_all.sh
 
 ### 7.6 对齐说明
 
-- `set/get/populate`：同工具（`redis-benchmark`）同参数口径对齐
-- `range/sort`：KVStore 与 Redis 语义不完全一致，报告中标记为 **not aligned**，用于 KVStore 内部分析
+- `populate / set / get`：使用 `redis-benchmark` 与 Redis 做同口径对比
 
 ### 7.7 自定义压测复现命令
 
@@ -571,10 +568,7 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 # 全后端 TTL 主入口
 ./tests/test_ttl_all_backends.sh
 
-# 兼容入口，实际调用同一个脚本
-./tests/test_ttl_mvp.sh
-
-# 按持久化 / 复制链路拆分验证
+# 持久化 / 复制链路拆分验证
 ./tests/test_ttl_rdb.sh
 ./tests/test_ttl_aof.sh
 ./tests/test_ttl_tcp_replication.sh
@@ -589,7 +583,7 @@ sudo ./src/eBPF/ebpf_syncd config/ebpf_sync.conf
 - `TCP_TTL_BACKENDS` / `EBPF_TTL_BACKENDS`：限制 TCP / eBPF 复制测试的后端集合
 - `AOF_REWRITE_ITERATIONS`、`AOF_REWRITE_MAX_FILE_SIZE`：AOF 回归测试参数
 
-测试脚本会自行拉起服务、发送 RESP 命令并断言 TTL 语义，适合做回归验证。
+测试脚本会自行拉起服务、发送 RESP 命令并断言 TTL 语义。
 ---
 
 ## 8. 功能与命令覆盖

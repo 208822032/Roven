@@ -797,6 +797,13 @@ int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int 
     }
 
     int len = kvs_array_append_sorted_candidates(items, count, order, limit, response, max_len);
+    if (len >= 0) {
+        if (len < max_len) {
+            response[len] = '\0';
+        } else {
+            response[max_len - 1] = '\0';
+        }
+    }
     kvs_free(items);
     return len;
 }
@@ -816,6 +823,13 @@ int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *res
     }
 
     int len = kvs_array_append_sorted_range(items, count, start_key, end_key, response, max_len);
+    if (len >= 0) {
+        if (len < max_len) {
+            response[len] = '\0';
+        } else {
+            response[max_len - 1] = '\0';
+        }
+    }
     kvs_free(items);
     return len;
 }

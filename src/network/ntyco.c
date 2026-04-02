@@ -15,6 +15,7 @@
 #include "nty_coroutine.h"   
 #include "net_session.h"     
 #include "kvs_api.h"
+#include "kvs_log.h"
 #include "resp_protocol.h"
 #include "distributed.h"
 
@@ -214,14 +215,14 @@ static void ntyco_conn_routine(void *arg) {
             size_t min_space = 64 * 1024;
             if (recv_buf->capacity - recv_buf->size < min_space) {
                 if (netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0) {
-                    fprintf(stderr, "Failed to reserve recv buffer for fd %d\n", ctx->fd);
+                    KVS_LOG_ERROR("ntyco", "failed to reserve recv buffer for fd %d", ctx->fd);
                     break;
                 }
             }
 
             size_t remaining = recv_buf->capacity - recv_buf->size;
             if (remaining == 0) {
-                fprintf(stderr, "No recv buffer remaining for fd %d\n", ctx->fd);
+                KVS_LOG_ERROR("ntyco", "no recv buffer remaining for fd %d", ctx->fd);
                 break;
             }
 
@@ -236,7 +237,7 @@ static void ntyco_conn_routine(void *arg) {
                 while(1) {
                     int cmd_cnt = ntyco_process_received_data(ctx);
                     if (cmd_cnt < 0) {
-                        fprintf(stderr, "[ntyco] process error\n");
+                        KVS_LOG_ERROR("ntyco", "process error for fd %d", ctx->fd);
                         goto out;
                     } else if (cmd_cnt == 0) {
                         break;
@@ -276,20 +277,20 @@ static void ntyco_accept_routine(void *arg) {
                 continue;
             } else {
                 // 其他错误，可以选择 break 或继续重试
-                fprintf(stderr, "nty_accept error: %s\n", strerror(errno));
+                KVS_LOG_ERROR_ERRNO("ntyco", "nty_accept error");
                 continue;
             }
         }
 
         ntyco_conn_ctx_t *ctx = (ntyco_conn_ctx_t *)kvs_malloc(sizeof(ntyco_conn_ctx_t));
         if (!ctx) {
-            fprintf(stderr, "malloc conn ctx failed\n");
+            KVS_LOG_ERROR("ntyco", "malloc conn ctx failed");
             nty_close(connfd);
             continue;
         }
 
         if (ntyco_init_conn_ctx(ctx, connfd) < 0) {
-            fprintf(stderr, "init conn ctx failed\n");
+            KVS_LOG_ERROR("ntyco", "init conn ctx failed");
             nty_close(connfd);
             kvs_free(ctx);
             continue;
@@ -298,7 +299,7 @@ static void ntyco_accept_routine(void *arg) {
         // 为每个连接创建一个协程
         nty_coroutine *co = NULL;
         if (nty_coroutine_create(&co, ntyco_conn_routine, ctx) != 0) {
-            fprintf(stderr, "nty_coroutine_create failed\n");
+            KVS_LOG_ERROR("ntyco", "nty_coroutine_create failed");
             ntyco_free_conn_ctx(ctx);
             continue;
         }
@@ -311,20 +312,20 @@ static void ntyco_accept_routine(void *arg) {
 static int ntyco_init_server(unsigned short port) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);  
     if (sockfd < 0) {
-        perror("nty_socket");
+        KVS_LOG_ERROR_ERRNO("ntyco", "nty_socket failed");
         return -1;
     }
 
     int reuse = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt SO_REUSEADDR");
+        KVS_LOG_ERROR_ERRNO("ntyco", "setsockopt SO_REUSEADDR failed");
         nty_close(sockfd);
         return -1;
     }
 
 #ifdef SO_REUSEPORT
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt SO_REUSEPORT");
+        KVS_LOG_ERROR_ERRNO("ntyco", "setsockopt SO_REUSEPORT failed");
         // 不一定要立刻失败，根据需要决定
     }
 #endif
@@ -337,13 +338,13 @@ static int ntyco_init_server(unsigned short port) {
     servaddr.sin_port = htons(port);
 
     if (bind(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-        perror("bind");
+        KVS_LOG_ERROR_ERRNO("ntyco", "bind failed on port %u", port);
         nty_close(sockfd);
         return -1;
     }
 
     if (listen(sockfd, 1024) < 0) {
-        perror("listen");
+        KVS_LOG_ERROR_ERRNO("ntyco", "listen failed on port %u", port);
         nty_close(sockfd);
         return -1;
     }
@@ -370,7 +371,7 @@ int ntyco_start(unsigned short port, msg_handler handler) {
     if (nty_coroutine_create(&accept_co,
                              ntyco_accept_routine,
                              (void *)(intptr_t)listen_fd) != 0) {
-        fprintf(stderr, "create accept coroutine failed\n");
+        KVS_LOG_ERROR("ntyco", "create accept coroutine failed");
         nty_close(listen_fd);
         return -1;
     }
@@ -381,6 +382,6 @@ int ntyco_start(unsigned short port, msg_handler handler) {
     // 调度退出之后，关闭 listen_fd
     nty_close(listen_fd);
 
-    printf("NtyCo network exited\n");
+    KVS_LOG_INFO("ntyco", "NtyCo network exited");
     return 0;
 }

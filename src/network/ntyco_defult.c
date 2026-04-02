@@ -10,6 +10,7 @@
 #include <netinet/tcp.h>
 
 #include "kvs_api.h"
+#include "kvs_log.h"
 #include "resp_protocol.h"
 #include "distributed.h"
 #include "net_session.h" // 通用会话层
@@ -86,7 +87,7 @@ static int ntyco_session_handler(resp_parser_t *parser,
             size_t ok_len = strlen(ok_resp);
             if (ok_len > response_buf_cap) ok_len = response_buf_cap;
             memcpy(response_buf, ok_resp, ok_len);
-            printf("REPLSYNC command received, marked connection as replication\n");
+            KVS_LOG_INFO("ntyco", "REPLSYNC command received, marked connection as replication");
             return (int)ok_len;
         } else {
             size_t err_len = strlen(err_resp);
@@ -151,9 +152,7 @@ void server_reader(void *arg) {
         size_t min_space = 4096;
         if (recv_buf->size + min_space > recv_buf->capacity) {
             if (netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0) {
-                fprintf(stderr,
-                        "Failed to reserve space in recv buffer for fd %d\n",
-                        fd);
+                KVS_LOG_ERROR("ntyco", "failed to reserve space in recv buffer for fd %d", fd);
                 goto out;
             }
         }
@@ -174,7 +173,7 @@ void server_reader(void *arg) {
             if (errno == EINTR) {
                 continue; // 重试
             }
-            perror("recv");
+            KVS_LOG_ERROR_ERRNO("ntyco", "recv failed");
             goto out;
         } else if (n == 0) {
             // 对端关闭
@@ -222,7 +221,7 @@ void server_reader(void *arg) {
                         if (errno == EINTR) {
                             continue;
                         }
-                        perror("ntyco send REPLSYNC");
+                        KVS_LOG_ERROR_ERRNO("ntyco", "ntyco send REPLSYNC failed");
                         goto out;
                     } else if (wn == 0) {
                         goto out; // 对端关闭
@@ -270,7 +269,7 @@ void server_reader(void *arg) {
                         // 本轮重来一次
                         continue;
                     }
-                    perror("ntyco send");
+                    KVS_LOG_ERROR_ERRNO("ntyco", "ntyco send failed");
                     goto out;
                 } else if (wn == 0) {
                     goto out; // 对端关闭
@@ -313,25 +312,25 @@ void server(void *arg) {
     local.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        perror("bind");
+        KVS_LOG_ERROR_ERRNO("ntyco", "bind failed on port %u", port);
         close(fd);
         return;
     }
 
     if (listen(fd, 1024) < 0) {
-        perror("listen");
+        KVS_LOG_ERROR_ERRNO("ntyco", "listen failed on port %u", port);
         close(fd);
         return;
     }
 
-    printf("ntyco listen port : %d\n", port);
+    KVS_LOG_INFO("ntyco", "ntyco listen port : %d", port);
 
     while (!g_shutdown_flag) {
         socklen_t len = sizeof(remote);
         int cli_fd = accept(fd, (struct sockaddr *)&remote, &len);
         if (cli_fd < 0) {
             if (errno == EINTR) continue;
-            perror("accept");
+            KVS_LOG_ERROR_ERRNO("ntyco", "accept failed");
             continue;
         }
 
@@ -354,9 +353,9 @@ int ntyco_start(unsigned short port, msg_handler handler) {
 
     // 调度循环，支持关闭标志
     while (!g_shutdown_flag) {
-        fprintf(stderr, "[ntyco] schedule_run enter, flag=%d\n", g_shutdown_flag);
+        KVS_LOG_DEBUG("ntyco", "schedule_run enter, flag=%d", g_shutdown_flag);
         nty_schedule_run();
-        fprintf(stderr, "[ntyco] schedule_run return, flag=%d\n", g_shutdown_flag);
+        KVS_LOG_DEBUG("ntyco", "schedule_run return, flag=%d", g_shutdown_flag);
         usleep(10000);       // 10ms 休眠，避免空转
     }
 
