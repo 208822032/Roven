@@ -36,19 +36,47 @@ static cli_help_entry_t g_help_table[] = {
     { "SET",      "Set string value",           "SET key value" },
     { "GET",      "Get string value",           "GET key" },
     { "DEL",      "Delete key",                 "DEL key" },
+    { "MOD",      "Modify string value",        "MOD key value" },
+    { "EXIST",    "Check key exists",           "EXIST key" },
+    { "RANGE",    "Range query on array",       "RANGE start_key end_key" },
+    { "SORT",     "Sort array values",          "SORT [high|low] [limit]" },
+
     { "RSET",     "RBTree set",                 "RSET key value" },
     { "RGET",     "RBTree get",                 "RGET key" },
     { "RDEL",     "RBTree delete",              "RDEL key" },
+    { "RMOD",     "RBTree modify value",        "RMOD key value" },
+    { "REXIST",   "RBTree key exists",          "REXIST key" },
+    { "RRANGE",   "RBTree range query",         "RRANGE start_key end_key [LIMIT n]" },
+    { "RSORT",    "RBTree sort",                "RSORT [high|low] [limit]" },
+
     { "HSET",     "Hash set",                   "HSET key value" },
     { "HGET",     "Hash get",                   "HGET key" },
     { "HDEL",     "Hash delete",                "HDEL key" },
+    { "HMOD",     "Hash modify value",          "HMOD key value" },
+    { "HEXIST",   "Hash key exists",            "HEXIST key" },
+    { "HRANGE",   "Hash range query",           "HRANGE start_key end_key" },
+    { "HSORT",    "Hash sort",                  "HSORT [high|low] [limit]" },
+
     { "SSET",     "Skiplist set",               "SSET key value" },
     { "SGET",     "Skiplist get",               "SGET key" },
     { "SDEL",     "Skiplist delete",            "SDEL key" },
-    { "PAPERSET", "Save paper from file",       "PAPERSET key /path/to/paper" },
+    { "SMOD",     "Skiplist modify value",      "SMOD key value" },
+    { "SEXIST",   "Skiplist key exists",        "SEXIST key" },
+    { "SRANGE",   "Skiplist range query",       "SRANGE start_key end_key [LIMIT n]" },
+    { "SSORT",    "Skiplist sort",              "SSORT [high|low] [limit]" },
+
+    { "PAPERSET", "Save paper from file",       "PAPERSET key /path/to/file" },
     { "PAPERGET", "Get paper and save to file", "PAPERGET key /path/to/save" },
     { "PAPERDEL", "Delete paper",                "PAPERDEL key" },
-    { "PAPERMOD", "Modify paper from file",      "PAPERMOD key /path/to/paper" },
+    { "PAPERMOD", "Modify paper from file",      "PAPERMOD key /path/to/file" },
+
+    { "EXPIRE",   "Set key expiration in seconds", "EXPIRE key seconds" },
+    { "TTL",      "Get remaining TTL in seconds",   "TTL key" },
+    { "PERSIST",  "Remove key expiration",          "PERSIST key" },
+    { "PEXPIREAT", "Set absolute expiration in ms", "PEXPIREAT key ms_timestamp" },
+    { "AOFREWRITE", "Rewrite AOF with current state", "AOFREWRITE" },
+    { "FULLDUMP",  "Dump all keys",                 "FULLDUMP" },
+
     // 注意：服务器 QUIT 用 SQUIT 转发，避免与客户端退出冲突
     { "SQUIT",    "Send QUIT to server",        "SQUIT" },
     { "EXIT",     "Exit client",                "EXIT" },
@@ -70,7 +98,8 @@ static void print_usage(const char *prog) {
     "  PAPERSET key /path/to/paper : read paper from local file and store as value\n"
     "  PAPERMOD key /path/to/paper : modify existing paper with content from file\n"
     "  PAPERGET key /path/to/save  : download paper, only print length, body saved to file\n"
-    "  PAPERDEL key                : delete paper\n",
+    "  PAPERDEL key                : delete paper\n"
+    "  Use HELP for the full command list, including TTL/AOFREWRITE/FULLDUMP.\n",
         prog, prog, prog);
 }
 
@@ -704,10 +733,12 @@ int main(int argc, char *argv[]) {
     if (!one_cmd && stdin_is_tty) {
         printf("Connected to kvstore %s:%d\n", ip, port);
         printf("Type commands like: " CLR_BOLD "SET key value" CLR_RESET ", "
-               CLR_BOLD "GET key" CLR_RESET ", ...\n");
+               CLR_BOLD "GET key" CLR_RESET ", "
+               CLR_BOLD "EXPIRE key 60" CLR_RESET ", "
+               CLR_BOLD "TTL key" CLR_RESET ", ...\n");
         printf("Type '" CLR_BOLD "EXIT" CLR_RESET "' to exit client, ");
         printf("'" CLR_BOLD "SQUIT" CLR_RESET "' to send QUIT to server.\n");
-        printf("Type '" CLR_BOLD "HELP" CLR_RESET "' for help.\n");
+        printf("Type '" CLR_BOLD "HELP" CLR_RESET "' for the full command list.\n");
 
         rl_attempted_completion_function = cli_completion;
     }
