@@ -34,6 +34,7 @@ typedef struct _rbtree kvs_rbtree_t;
 
 int kvs_rbtree_create(kvs_rbtree_t *inst);
 void kvs_rbtree_destory(kvs_rbtree_t *inst);
+rbtree_node *kvs_rbtree_lookup_node(kvs_rbtree_t *inst, const char *key, size_t key_len);
 int kvs_rbtree_set(kvs_rbtree_t *inst, char *key, char *value);
 char* kvs_rbtree_get(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_del(kvs_rbtree_t *inst, char *key);

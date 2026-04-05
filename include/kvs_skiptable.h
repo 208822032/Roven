@@ -24,6 +24,7 @@ typedef struct {
 int kvs_skiptable_create(kvs_skiptable_t *table);
 void kvs_skiptable_destroy(kvs_skiptable_t *table);
 int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value);
+Node* kvs_skiptable_lookup_node(kvs_skiptable_t *table, char *key);
 char* kvs_skiptable_get(kvs_skiptable_t *table, char *key);
 int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value);
 int kvs_skiptable_del(kvs_skiptable_t *table, char *key);

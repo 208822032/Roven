@@ -12,6 +12,7 @@
 
 extern aof_state_t aof_state;
 extern distributed_config_t global_dist_config;
+extern rbtree_node *rbtree_search(rbtree *T, KEY_TYPE key);
 
 //四个数据结构
 extern kvs_array_t global_array;
@@ -56,19 +57,15 @@ static int ttl_lookup_array(kvs_array_t *inst, const char *key, ttl_target_ref_t
     return 0;
 }
 
-static int ttl_lookup_rbtree(kvs_rbtree_t *inst, const char *key, ttl_target_ref_t *ref) {
+static int ttl_lookup_rbtree(kvs_rbtree_t *inst, const char *key, size_t key_len, ttl_target_ref_t *ref) {
     if (!inst || !key || !ref || !inst->root || !inst->nil) return 0;
 
-    rbtree_node *node = inst->root;
-    while (node != inst->nil) {
-        int cmp = strcmp(key, (const char *)node->key);
-        if (cmp == 0) {
-            ref->kind = TTL_TARGET_RBTREE;
-            ref->container = inst;
-            ref->entry = node;
-            return 1;
-        }
-        node = (cmp < 0) ? node->left : node->right;
+    rbtree_node *node = kvs_rbtree_lookup_node(inst, key, key_len);
+    if (node && node != inst->nil) {
+        ref->kind = TTL_TARGET_RBTREE;
+        ref->container = inst;
+        ref->entry = node;
+        return 1;
     }
 
     return 0;
@@ -91,16 +88,8 @@ static int ttl_lookup_hash(kvs_hash_t *inst, const char *key, ttl_target_ref_t *
 static int ttl_lookup_skiptable(kvs_skiptable_t *table, const char *key, ttl_target_ref_t *ref) {
     if (!table || !key || !ref || !table->header) return 0;
 
-    size_t key_len = strlen(key);
-    Node *current = table->header;
-    for (int i = table->level; i >= 0; --i) {
-        while (current->forward[i] && strcmp(current->forward[i]->key, key) < 0) {
-            current = current->forward[i];
-        }
-    }
-
-    current = current->forward[0];
-    if (current && strcmp(current->key, key) == 0) {
+    Node *current = kvs_skiptable_lookup_node(table, (char *)key);
+    if (current) {
         ref->kind = TTL_TARGET_SKIPTABLE;
         ref->container = table;
         ref->entry = current;
@@ -110,7 +99,7 @@ static int ttl_lookup_skiptable(kvs_skiptable_t *table, const char *key, ttl_tar
     return 0;
 }
 
-static int ttl_lookup_by_structure(int data_structure, const char *key, ttl_target_ref_t *ref) {
+static int ttl_lookup_by_structure(int data_structure, const char *key, size_t key_len, ttl_target_ref_t *ref) {
     switch (data_structure) {
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
@@ -118,7 +107,7 @@ static int ttl_lookup_by_structure(int data_structure, const char *key, ttl_targ
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            return ttl_lookup_rbtree(kvs_get_global_rbtree(), key, ref);
+            return ttl_lookup_rbtree(kvs_get_global_rbtree(), key, key_len, ref);
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
@@ -133,12 +122,12 @@ static int ttl_lookup_by_structure(int data_structure, const char *key, ttl_targ
     }
 }
 
-static int ttl_lookup_any(const char *key, ttl_target_ref_t *ref) {
+static int ttl_lookup_any(const char *key, size_t key_len, ttl_target_ref_t *ref) {
 #if ENABLE_ARRAY
     if (ttl_lookup_array(kvs_get_global_array(), key, ref)) return 1;
 #endif
 #if ENABLE_RBTREE
-    if (ttl_lookup_rbtree(kvs_get_global_rbtree(), key, ref)) return 1;
+    if (ttl_lookup_rbtree(kvs_get_global_rbtree(), key, key_len, ref)) return 1;
 #endif
 #if ENABLE_HASH
     if (ttl_lookup_hash(kvs_get_global_hash(), key, ref)) return 1;
@@ -165,7 +154,8 @@ int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms) {
     ttl_target_ref_t ref;
     memset(&ref, 0, sizeof(ref));
 
-    if (!ttl_lookup_any(key, &ref)) {
+    size_t key_len = strlen(key);
+    if (!ttl_lookup_any(key, key_len, &ref)) {
         return 0;
     }
 
@@ -181,7 +171,8 @@ int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms) {
     ttl_target_ref_t ref;
     memset(&ref, 0, sizeof(ref));
 
-    if (!ttl_lookup_any(key, &ref)) {
+    size_t key_len = strlen(key);
+    if (!ttl_lookup_any(key, key_len, &ref)) {
         return 0;
     }
 
@@ -202,7 +193,7 @@ int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms) {
 int handle_aofrewrite(command_context_t *ctx, char *response){
     (void)ctx;
     aof_rewrite_background();
-    return resp_generate_simple_string(response, "OK");
+    return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
 }
 
 static int64_t ttl_target_get_expire_at(const ttl_target_ref_t *ref) {
@@ -219,6 +210,23 @@ static int64_t ttl_target_get_expire_at(const ttl_target_ref_t *ref) {
             return ((Node *)ref->entry)->expire_at_ms;
         default:
             return KV_TTL_NO_EXPIRE;
+    }
+}
+
+static void *ttl_target_get_value(const ttl_target_ref_t *ref) {
+    if (!ref) return NULL;
+
+    switch (ref->kind) {
+        case TTL_TARGET_ARRAY:
+            return ((kvs_array_item_t *)ref->entry)->value;
+        case TTL_TARGET_RBTREE:
+            return ((rbtree_node *)ref->entry)->value;
+        case TTL_TARGET_HASH:
+            return ((hashnode_t *)ref->entry)->value;
+        case TTL_TARGET_SKIPTABLE:
+            return ((Node *)ref->entry)->value;
+        default:
+            return NULL;
     }
 }
 
@@ -272,12 +280,19 @@ static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key) {
     }
 }
 
-static int ttl_expire_if_needed_by_structure(int data_structure, const char *key) {
+static int ttl_expire_if_needed_by_structure(int data_structure, const char *key, size_t key_len, ttl_target_ref_t *ref_out) {
     ttl_target_ref_t ref;
     memset(&ref, 0, sizeof(ref));
 
-    if (!ttl_lookup_by_structure(data_structure, key, &ref)) {
+    if (!ttl_lookup_by_structure(data_structure, key, key_len, &ref)) {
+        if (ref_out) {
+            memset(ref_out, 0, sizeof(*ref_out));
+        }
         return 0;
+    }
+
+    if (ref_out) {
+        *ref_out = ref;
     }
 
     int64_t expire_at_ms = ttl_target_get_expire_at(&ref);
@@ -308,7 +323,7 @@ static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
         return -1;
     }
 
-    if (!ttl_lookup_any(ctx->key, &ref)) {
+    if (!ttl_lookup_any(ctx->key, ctx->key_len, &ref)) {
         return (op == KVS_CMD_TTL) ? -2 : 0;
     }
 
@@ -543,7 +558,10 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
     }  
 
     //解析通用参数
-    if (count > 1) ctx->key = tokens[1];
+    if (count > 1) {
+        ctx->key = tokens[1];
+        ctx->key_len = strlen(tokens[1]);
+    }
     if (count > 2) ctx->value = tokens[2];
 
     //解析特定命令的参数
@@ -709,63 +727,46 @@ int handle_set(command_context_t *ctx, char *response){
             break;
 #endif
         default:
-            return resp_generate_error(response, "Data structure not enabled");
+            return resp_generate_simple_string_n(response, '-', "Data structure not enabled", sizeof("Data structure not enabled") - 1);
     }
 
     if (ret < 0) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     } else if (ret == 0) {
-        return resp_generate_simple_string(response, "OK");
+        return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
     } else {
-        return resp_generate_simple_string(response, "EXIST");
+        return resp_generate_simple_string_n(response, '+', "EXIST", sizeof("EXIST") - 1);
     }
     
 }
 
 int handle_get(command_context_t *ctx, char *response){
     char *result = NULL;
+    ttl_target_ref_t ref;
+    memset(&ref, 0, sizeof(ref));
 
-    int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key);
+    int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key, ctx->key_len, &ref);
     if (ttl_ret < 0) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     } else if (ttl_ret > 0) {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 
-    switch (ctx->data_structure) {
-#if ENABLE_ARRAY
-        case DATA_STRUCTURE_ARRAY:
-            result = kvs_array_get(kvs_get_global_array(), ctx->key);
-            break;
-#endif
-#if ENABLE_RBTREE
-        case DATA_STRUCTURE_RBTREE:
-            result = kvs_rbtree_get(kvs_get_global_rbtree(), ctx->key);
-            break;
-#endif
-#if ENABLE_HASH
-        case DATA_STRUCTURE_HASH:
-            result = kvs_hash_get(kvs_get_global_hash(), ctx->key);
-            break;
-#endif
-#if ENABLE_SKIPTABLE
-        case DATA_STRUCTURE_SKIPTABLE:
-            result = kvs_skiptable_get(kvs_get_global_skiptable(), ctx->key);
-            break;
-#endif
-        default:
-            return resp_generate_error(response, "Data structure not enabled");
+    if (ref.kind == TTL_TARGET_NONE) {
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 
+    result = (char *)ttl_target_get_value(&ref);
     if (result == NULL) {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     } else {
 		// 防御性检查：单条 value 的 RESP 编码长度不能超过全局上限
-		size_t est = resp_estimate_bulk_string_len(result);
+        size_t result_len = strlen(result);
+        size_t est = resp_estimate_bulk_string_len_from_size(result_len);
 		if (est > KVS_MAX_RESPONSE_LENGTH) {
-			return resp_generate_error(response, "ERR value too large");
+            return resp_generate_simple_string_n(response, '-', "ERR value too large", sizeof("ERR value too large") - 1);
 		}
-        return resp_generate_bulk_string(response, result);
+        return resp_generate_bulk_string_n(response, result, result_len);
     }
 }
 int handle_del(command_context_t *ctx, char *response){
@@ -793,15 +794,15 @@ int handle_del(command_context_t *ctx, char *response){
             break;
 #endif
         default:
-            return resp_generate_error(response, "Data structure not enabled");
+            return resp_generate_simple_string_n(response, '-', "Data structure not enabled", sizeof("Data structure not enabled") - 1);
     }
 
     if (ret < 0) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     } else if (ret == 0) {
-        return resp_generate_simple_string(response, "OK");
+        return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
     } else {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 }
 int handle_mod(command_context_t *ctx, char *response){
@@ -837,74 +838,56 @@ int handle_mod(command_context_t *ctx, char *response){
             break;
 #endif
         default:
-            return resp_generate_error(response, "Data structure not enabled");
+            return resp_generate_simple_string_n(response, '-', "Data structure not enabled", sizeof("Data structure not enabled") - 1);
     }
 
     if (ret < 0) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     } else if (ret == 0) {
-        return resp_generate_simple_string(response, "OK");
+        return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
     } else {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 }
 int handle_exist(command_context_t *ctx, char *response){
     int ret = -1;
+    ttl_target_ref_t ref;
+    memset(&ref, 0, sizeof(ref));
 
-    int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key);
+    int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key, ctx->key_len, &ref);
     if (ttl_ret < 0) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     } else if (ttl_ret > 0) {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 
-    switch (ctx->data_structure) {
-#if ENABLE_ARRAY
-        case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_exist(kvs_get_global_array(), ctx->key);
-            break;
-#endif
-#if ENABLE_RBTREE
-        case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_exist(kvs_get_global_rbtree(), ctx->key);
-            break;
-#endif
-#if ENABLE_HASH
-        case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_exist(kvs_get_global_hash(), ctx->key);
-            break;
-#endif
-#if ENABLE_SKIPTABLE
-        case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_get(kvs_get_global_skiptable(), ctx->key) ? 0 : 1;
-            break;
-#endif
-        default:
-            return resp_generate_error(response, "Data structure not enabled");
+    if (ref.kind == TTL_TARGET_NONE) {
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 
+    ret = 0;
     if (ret == 0) {
-        return resp_generate_simple_string(response, "EXIST");
+        return resp_generate_simple_string_n(response, '+', "EXIST", sizeof("EXIST") - 1);
     } else {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 }
 
 int handle_expire(command_context_t *ctx, char *response){
     int ret = ttl_apply_any_key_op(ctx, KVS_CMD_EXPIRE);
     if (ret < 0) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     }
     if (ret == 0) {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
-    return resp_generate_simple_string(response, "OK");
+    return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
 }
 
 int handle_ttl(command_context_t *ctx, char *response){
     int ret = ttl_apply_any_key_op(ctx, KVS_CMD_TTL);
     if (ret < -2) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     }
     return resp_generate_integer(response, ret);
 }
@@ -912,23 +895,23 @@ int handle_ttl(command_context_t *ctx, char *response){
 int handle_persist(command_context_t *ctx, char *response){
     int ret = ttl_apply_any_key_op(ctx, KVS_CMD_PERSIST);
     if (ret < 0) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     }
     if (ret == 0) {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
-    return resp_generate_simple_string(response, "OK");
+    return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
 }
 
 int handle_pexpireat(command_context_t *ctx, char *response){
     int ret = ttl_apply_any_key_op(ctx, KVS_CMD_PEXPIREAT);
     if (ret < 0) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     }
     if (ret == 0) {
-        return resp_generate_simple_string(response, "NO EXIST");
+        return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
-    return resp_generate_simple_string(response, "OK");
+    return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
 }
 
 int handle_range(command_context_t *ctx, char *response){
@@ -937,7 +920,7 @@ int handle_range(command_context_t *ctx, char *response){
 
     temp_response = kvs_malloc(KVS_MAX_RESPONSE_LENGTH);
     if (!temp_response) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     }
     temp_response[0] = '\0';
 
@@ -964,7 +947,7 @@ int handle_range(command_context_t *ctx, char *response){
 #endif
         default:
             kvs_free(temp_response);
-            return resp_generate_error(response, "Data structure not enabled");
+            return resp_generate_simple_string_n(response, '-', "Data structure not enabled", sizeof("Data structure not enabled") - 1);
     }
 
     if (ret <= 0) {
@@ -983,7 +966,7 @@ int handle_sort(command_context_t *ctx, char *response){
 
     temp_response = kvs_malloc(KVS_MAX_RESPONSE_LENGTH);
     if (!temp_response) {
-        return resp_generate_error(response, "ERROR");
+        return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     }
 
     temp_response[0] = '\0';
@@ -1012,7 +995,7 @@ int handle_sort(command_context_t *ctx, char *response){
 
         default:
         kvs_free(temp_response);
-        return resp_generate_error(response, "Data structure not enabled");
+        return resp_generate_simple_string_n(response, '-', "Data structure not enabled", sizeof("Data structure not enabled") - 1);
     }
 
         if (ret <= 0) {
@@ -1027,7 +1010,7 @@ int handle_sort(command_context_t *ctx, char *response){
 }
 int handle_quit(command_context_t *ctx, char *response){
     g_shutdown_flag = 1;
-    return resp_generate_simple_string(response, "Server shutting down...");
+    return resp_generate_simple_string_n(response, '+', "Server shutting down...", sizeof("Server shutting down...") - 1);
 }
 
 //安全地往 response[] 末尾追加数据
@@ -1100,7 +1083,7 @@ int handle_fulldump(command_context_t* ctx, char* response){
 
     //只允许在主节点执行
     if(global_dist_config.role != ROLE_MASTER){
-        return resp_generate_error(response, "ERR FULLDUMP allowed only on master node");
+        return resp_generate_simple_string_n(response, '-', "ERR FULLDUMP allowed only on master node", sizeof("ERR FULLDUMP allowed only on master node") - 1);
     }
 
     int off = 0;

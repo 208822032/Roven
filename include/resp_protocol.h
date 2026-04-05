@@ -82,6 +82,8 @@ void resp_parser_reset(resp_parser_t *parser);
 //生成RESP响应
 int resp_generate_simple_string(char *response, const char *str);
 int resp_generate_error(char *response, const char *err);
+int resp_generate_simple_string_n(char *response, char prefix, const char *str, size_t len);
+int resp_generate_bulk_string_n(char *response, const char *str, size_t slen);
 int resp_generate_integer(char *response, int num);
 int resp_generate_bulk_string(char *response, const char *str);
 int resp_generate_array_start(char *response, int count);
@@ -97,5 +99,6 @@ size_t resp_estimate_simple_string_len(const char *str);
 size_t resp_estimate_error_len(const char *err);
 size_t resp_estimate_integer_len(long long num);
 size_t resp_estimate_bulk_string_len(const char *str);
+size_t resp_estimate_bulk_string_len_from_size(size_t slen);
 
 #endif

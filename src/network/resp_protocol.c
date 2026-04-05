@@ -535,30 +535,28 @@ void resp_parser_free(resp_parser_t *parser) {
 }
 
 //生成RESP响应
+int resp_generate_simple_string_n(char *response, char prefix, const char *str, size_t len){
+    size_t total_len = len + 3; // prefix + body + \r\n
+
+    if(!response) return (int)total_len;
+
+    response[0] = prefix;
+    if (len > 0 && str) {
+        memcpy(response + 1, str, len);
+    }
+    memcpy(response + 1 + len, "\r\n", 2);
+    return (int)total_len;
+}
+
 //简单字符串 +<msg>\r\n
 int resp_generate_simple_string(char *response, const char *str){
-    int mlen = (int)strlen(str);
-    int total_len = mlen + 3; // + \r\n
-
-    if(!response) return total_len;
-
-    response[0] = '+';
-    memcpy(response + 1, str, (size_t)mlen);
-    memcpy(response + 1 + mlen, "\r\n", 2);
-    return total_len;
+    if(!str) str = "";
+    return resp_generate_simple_string_n(response, '+', str, strlen(str));
 }
 //错误信息
 int resp_generate_error(char *response, const char *err){
     if(!err) err = "";
-    int mlen = (int)strlen(err);
-    int total = mlen + 3; // - + \r\n
-
-    if(!response) return total;
-
-    response[0] = '-';
-    memcpy(response + 1, err, (size_t)mlen);
-    memcpy(response + 1 + mlen, "\r\n", 2);
-    return total;
+    return resp_generate_simple_string_n(response, '-', err, strlen(err));
 }
 //整数类型
 int resp_generate_integer(char *response, int num){
@@ -587,38 +585,52 @@ size_t resp_estimate_integer_len(long long num) {
     return (n > 0) ? (size_t)n : 0;
 }
 
+size_t resp_estimate_bulk_string_len_from_size(size_t slen) {
+    size_t body_len = slen;
+    size_t digits = 1;
+    while (slen >= 10) {
+        slen /= 10;
+        digits++;
+    }
+    return 1 + digits + 2 + body_len + 2;
+}
+
 size_t resp_estimate_bulk_string_len(const char *str) {
     if (!str) {
         return 5; // "$-1\r\n"
     }
-    size_t slen = strlen(str);
-    char lenbuf[32];
-    int n = snprintf(lenbuf, sizeof(lenbuf), "%zu", slen);
-    if (n <= 0) return 0;
-    return 1 + (size_t)n + 2 + slen + 2; // "$" + len + "\r\n" + body + "\r\n"
+    return resp_estimate_bulk_string_len_from_size(strlen(str));
 }
 
-//批量字符串 $<length>\r\n<string>\r\n
-int resp_generate_bulk_string(char *response, const char *str){
+int resp_generate_bulk_string_n(char *response, const char *str, size_t slen){
     if(!str){
-        //空值
         if(!response) return 5; // "$-1\r\n"
         return sprintf(response, "$-1\r\n");
     }
 
-    int slen = (int)strlen(str);
     char header[64];
-    int hlen = snprintf(header, sizeof(header), "$%d\r\n", slen);
-    int total = hlen + slen + 2; // header + body + \r\n
+    int hlen = snprintf(header, sizeof(header), "$%zu\r\n", slen);
+    if (hlen <= 0) return -1;
 
+    int total = hlen + (int)slen + 2;
     if(!response) return total;
 
     char *p = response;
     memcpy(p, header, (size_t)hlen); p += hlen;
-    memcpy(p, str,   (size_t)slen);  p += slen;
+    if (slen > 0) {
+        memcpy(p, str, slen);
+        p += slen;
+    }
     memcpy(p, "\r\n", 2);
     return total;
+}
 
+//批量字符串 $<length>\r\n<string>\r\n
+int resp_generate_bulk_string(char *response, const char *str){
+    if(!str) {
+        return resp_generate_bulk_string_n(response, NULL, 0);
+    }
+    return resp_generate_bulk_string_n(response, str, strlen(str));
 }
 //空数组开头 *<count>\r\n
 int resp_generate_array_start(char *response, int count){

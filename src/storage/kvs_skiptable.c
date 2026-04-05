@@ -29,6 +29,20 @@ static unsigned int skiptable_key_hash_with_len(const char *key, size_t *key_len
     return hash;
 }
 
+static size_t skiptable_key_len(const char *key) {
+    size_t key_len = 0;
+
+    if (!key) {
+        return 0;
+    }
+
+    while (key[key_len] != '\0') {
+        key_len++;
+    }
+
+    return key_len;
+}
+
 static size_t skiptable_value_len(const char *value) {
     size_t value_len = 0;
 
@@ -123,6 +137,41 @@ static Node *skiptable_find_with_update(kvs_skiptable_t *table,
     }
 
     return current->forward[0];
+}
+
+static Node *skiptable_find_exact(kvs_skiptable_t *table, const char *key, size_t key_len) {
+    if (!table || !table->header || !key) {
+        return NULL;
+    }
+
+    Node *current = table->header;
+    for (int i = table->level; i >= 0; i--) {
+        while (current->forward[i]) {
+            int cmp = skiptable_key_compare(current->forward[i], key, key_len);
+            if (cmp < 0) {
+                current = current->forward[i];
+                continue;
+            }
+
+            if (cmp == 0) {
+                return current->forward[i];
+            }
+
+            break;
+        }
+    }
+
+    return NULL;
+}
+
+Node* kvs_skiptable_lookup_node(kvs_skiptable_t *table, char *key) {
+    if (!table || !table->header || !key) {
+        return NULL;
+    }
+
+    size_t key_len = skiptable_key_len(key);
+    Node *current = skiptable_find_exact(table, key, key_len);
+    return current;
 }
 
 static int skiptable_append_kv_line(char *response, int max_len, int *pos, const Node *node) {
@@ -251,21 +300,18 @@ static void kvs_skiptable_reap_expired(kvs_skiptable_t *table, int64_t now_ms) {
 int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !table->header  || !key || !value) return -1;
     
-    Node* update[MAX_LEVEL + 1];
-    size_t key_len = 0;
-    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
-    
-    // 从最高层开始查找插入位置
-    Node* current = skiptable_find_with_update(table, key, key_len, update);
-    
-    // 如果键已存在，更新值
-    if (current && skiptable_key_equals(current, key, key_len, key_hash)) {
+    size_t key_len = skiptable_key_len(key);
+    Node *current = skiptable_find_exact(table, key, key_len);
+    if (current) {
         if (skiptable_update_value(current, value) != 0) {
             return -1;
         }
         current->expire_at_ms = KV_TTL_NO_EXPIRE;
         return 1;  // 表示更新
     }
+
+    Node* update[MAX_LEVEL + 1];
+    current = skiptable_find_with_update(table, key, key_len, update);
     
     // 创建新节点
     int new_level = random_level();
@@ -292,23 +338,8 @@ int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
 }
 
 char* kvs_skiptable_get(kvs_skiptable_t *table, char *key) {
-    if (!table || !table->header || !key) return NULL;//增加对header检查
-    
-    size_t key_len = 0;
-    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
-    
-    // 从最高层开始搜索
-    Node* current = table->header;
-
-    for (int i = table->level; i >= 0; i--) {
-        while (current->forward[i] && 
-               skiptable_key_compare(current->forward[i], key, key_len) < 0) {
-            current = current->forward[i];
-        }
-    }
-
-    current = current->forward[0];
-    if (current && skiptable_key_equals(current, key, key_len, key_hash)) {
+    Node *current = kvs_skiptable_lookup_node(table, key);
+    if (current) {
         return current->value;
     }
     
@@ -318,20 +349,10 @@ char* kvs_skiptable_get(kvs_skiptable_t *table, char *key) {
 int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !table->header || !key || !value) return -1;  // 添加header检查
 
-    size_t key_len = 0;
-    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
-    Node* node = table->header;
-    
-    // 搜索节点
-    for (int i = table->level; i >= 0; i--) {
-        while (node->forward[i] && 
-               skiptable_key_compare(node->forward[i], key, key_len) < 0) {
-            node = node->forward[i];
-        }
-    }
-    node = node->forward[0];
-    
-    if (node && skiptable_key_equals(node, key, key_len, key_hash)) {
+    size_t key_len = skiptable_key_len(key);
+    Node *node = skiptable_find_exact(table, key, key_len);
+
+    if (node) {
         if (skiptable_update_value(node, value) != 0) {
             return -1;
         }
@@ -377,24 +398,7 @@ int kvs_skiptable_del(kvs_skiptable_t *table, char *key) {
 }
 
 int kvs_skiptable_exist(kvs_skiptable_t *table, char *key) {
-    if (!table || !table->header || !key) {
-        return -1;
-    }
-
-    size_t key_len = 0;
-    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
-    Node *current = table->header;
-
-    for (int i = table->level; i >= 0; i--) {
-        while (current->forward[i] && 
-               skiptable_key_compare(current->forward[i], key, key_len) < 0) {
-            current = current->forward[i];
-        }
-    }
-
-    current = current->forward[0];
-
-    if (!current || !skiptable_key_equals(current, key, key_len, key_hash)) {
+    if (!kvs_skiptable_lookup_node(table, key)) {
         return 1;
     }
 

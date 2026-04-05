@@ -3,6 +3,7 @@
 
 typedef struct {
 	char *key;
+	size_t key_len;
 	char *value;
 	char *start_key;
 	char *end_key;

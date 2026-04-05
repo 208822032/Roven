@@ -2,15 +2,15 @@
 
 | ds | op | kvstore_qps | redis_qps | kvstore_p50(ms) | kvstore_p95(ms) | kvstore_p99(ms) | redis_p50(ms) | redis_p95(ms) | redis_p99(ms) | notes |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| array | set | 139664.800000 | 128369.710000 | 0.207000 | 0.343000 | 0.535000 | 0.199000 | 0.303000 | 0.447000 | set/get aligned; kv/redis qps=1.088 |
-| array | get | 133868.810000 | 123915.740000 | 0.239000 | 0.431000 | 0.711000 | 0.191000 | 0.351000 | 0.567000 | set/get aligned; kv/redis qps=1.080 |
-| hash | set | 138504.160000 | 136239.780000 | 0.191000 | 0.311000 | 0.551000 | 0.183000 | 0.279000 | 0.439000 | set/get aligned; kv/redis qps=1.017 |
-| hash | get | 136612.020000 | 129870.130000 | 0.183000 | 0.311000 | 0.567000 | 0.199000 | 0.295000 | 0.487000 | set/get aligned; kv/redis qps=1.052 |
-| rbtree | set | 111731.840000 | 127877.230000 | 0.375000 | 0.639000 | 0.847000 | 0.191000 | 0.319000 | 0.503000 | set/get aligned; kv/redis qps=0.874 |
-| rbtree | get | 112233.450000 | 126742.720000 | 0.383000 | 0.631000 | 0.815000 | 0.199000 | 0.311000 | 0.463000 | set/get aligned; kv/redis qps=0.886 |
-| skiptable | set | 92081.030000 | 132978.730000 | 0.479000 | 0.767000 | 1.087000 | 0.191000 | 0.263000 | 0.391000 | set/get aligned; kv/redis qps=0.692 |
-| skiptable | get | 95969.280000 | 131752.310000 | 0.455000 | 0.743000 | 0.991000 | 0.183000 | 0.335000 | 0.543000 | set/get aligned; kv/redis qps=0.728 |
+| array | set | 114416.480000 | 96993.210000 | 0.215000 | 0.439000 | 0.703000 | 0.255000 | 0.479000 | 0.735000 | set/get aligned; kv/redis qps=1.180 |
+| array | get | 119904.080000 | 96246.390000 | 0.207000 | 0.367000 | 0.687000 | 0.255000 | 0.495000 | 0.679000 | set/get aligned; kv/redis qps=1.246 |
+| hash | set | 100502.520000 | 92850.510000 | 0.239000 | 0.495000 | 0.767000 | 0.255000 | 0.511000 | 0.719000 | set/get aligned; kv/redis qps=1.082 |
+| hash | get | 99108.030000 | 96246.390000 | 0.247000 | 0.599000 | 0.879000 | 0.255000 | 0.487000 | 0.711000 | set/get aligned; kv/redis qps=1.030 |
+| rbtree | set | 100200.400000 | 94876.660000 | 0.415000 | 0.751000 | 1.007000 | 0.255000 | 0.495000 | 0.727000 | set/get aligned; kv/redis qps=1.056 |
+| rbtree | get | 98328.420000 | 94339.620000 | 0.359000 | 0.743000 | 1.023000 | 0.255000 | 0.503000 | 0.695000 | set/get aligned; kv/redis qps=1.042 |
+| skiptable | set | 72674.410000 | 98039.220000 | 0.543000 | 1.103000 | 2.279000 | 0.247000 | 0.503000 | 0.751000 | set/get aligned; kv/redis qps=0.741 |
+| skiptable | get | 77579.520000 | 97751.710000 | 0.527000 | 0.951000 | 1.239000 | 0.255000 | 0.495000 | 0.687000 | set/get aligned; kv/redis qps=0.794 |
 
 ## Conclusion
-- KVStore lowest observed throughput is ds=skiptable op=set qps=92081.030000, likely first bottleneck candidate.
+- KVStore lowest observed throughput is ds=skiptable op=set qps=72674.410000, likely first bottleneck candidate.
 - SET/GET are directly aligned using redis-benchmark custom commands and same c/n/P/value_size/keyspace.

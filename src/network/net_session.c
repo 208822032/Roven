@@ -154,44 +154,32 @@ int net_session_process_resp(int fd,
             return -1;
         }
 
-        //一条完整命令解析成功 交给上层handler 生成响应
-        char* response_buf = kvs_malloc(KVS_MAX_RESPONSE_LENGTH);
-        if(!response_buf){
-            KVS_LOG_ERROR("net", "fd=%d memory allocation failed for response buffer", fd);
-            session->processing = 0;
-            return -1;
-        }
-
-        int resp_len = handler(
-            parser,
-            response_buf,
-            KVS_MAX_RESPONSE_LENGTH,
-            user_data
-        );
-        if(resp_len <= 0 || resp_len > (int)KVS_MAX_RESPONSE_LENGTH){
-            KVS_LOG_ERROR("net", "fd=%d handler returned invalid response length: %d", fd, resp_len);
-            kvs_free(response_buf);
-            session->processing = 0;
-            return -1;
-        }
-
-        //将响应追加到发送缓冲区
-        if(session->send_buf.size + resp_len > session->send_buf.capacity){
-            size_t needed = session->send_buf.size + resp_len;
-            if(netbuf_reserve(&session->send_buf, needed) < 0){
-                KVS_LOG_ERROR("net", "fd=%d failed to reserve space in send buffer", fd);
-                kvs_free(response_buf);
+        //一条完整命令解析成功 交给上层handler 直接写入 send_buf 尾部
+        const size_t response_cap = KVS_MAX_RESPONSE_LENGTH;
+        if (session->send_buf.capacity - session->send_buf.size < response_cap) {
+            size_t needed = session->send_buf.size + response_cap;
+            if (netbuf_reserve(&session->send_buf, needed) < 0) {
+                KVS_LOG_ERROR("net", "fd=%d failed to reserve send buffer for response", fd);
                 session->processing = 0;
                 return -1;
             }
         }
 
-        memcpy(session->send_buf.data + session->send_buf.size,
-               response_buf,
-               resp_len);
-        session->send_buf.size += resp_len;
+        char *response_buf = session->send_buf.data + session->send_buf.size;
 
-        kvs_free(response_buf);
+        int resp_len = handler(
+            parser,
+            response_buf,
+            response_cap,
+            user_data
+        );
+        if(resp_len <= 0 || resp_len > (int)KVS_MAX_RESPONSE_LENGTH){
+            KVS_LOG_ERROR("net", "fd=%d handler returned invalid response length: %d", fd, resp_len);
+            session->processing = 0;
+            return -1;
+        }
+
+        session->send_buf.size += resp_len;
         commands_count++;
 
         //准备解析下一条命令

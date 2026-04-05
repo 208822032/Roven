@@ -56,7 +56,8 @@ SRCS = $(BASE_SRCS) \
 		$(SRC_DIST)/sync_backend_tcp.c
 
 EXTRA_CFLAGS ?=
-CFLAGS = -I ./NtyCo/core/ -I ./include -I ./src -I $(JEMALLOC_INCLUDE) -DSYNC_MODE=$(SYNC_MODE) -g $(EXTRA_CFLAGS)
+OPT_CFLAGS ?= -O2
+CFLAGS = -I ./NtyCo/core/ -I ./include -I ./src -I $(JEMALLOC_INCLUDE) -DSYNC_MODE=$(SYNC_MODE) -g $(OPT_CFLAGS) $(EXTRA_CFLAGS)
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl $(EXTRA_LIBS)  $(JEMALLOC_LIB)
 
 TARGET = kvstore
@@ -72,6 +73,7 @@ TEST_MEMPOOL := $(TEST_DIR)/mempool_test
 TEST_PAPER := $(TEST_DIR)/test_paper
 TEST_PAPER_SYNC := $(TEST_DIR)/test_paper_sync
 TEST_BIGVALUE := $(TEST_DIR)/test_bigvalue
+TEST_TTL_LOOKUP_SPLIT := $(TEST_DIR)/ttl_lookup_split_bench
 
 TEST_BINARIES = \
 	$(TEST_CASE) \
@@ -141,6 +143,16 @@ $(TEST_KVSTORE_CLIENT): $(TEST_DIR)/kvstore_client.c
 $(TEST_PAPER): $(TEST_DIR)/test_paper.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+TTL_LOOKUP_SPLIT_OBJS := \
+	$(SRC_STORAGE)/kvs_mempool.o \
+	$(SRC_STORAGE)/kvs_rbtree.o \
+	$(SRC_STORAGE)/kvs_skiptable.o \
+	$(SRC_UTILS)/kvs_log.o \
+	$(SRC_UTILS)/kvs_log_writer.o
+
+$(TEST_TTL_LOOKUP_SPLIT): $(TEST_DIR)/ttl_lookup_split_bench.c $(TTL_LOOKUP_SPLIT_OBJS)
+	$(CC) $(CFLAGS) -o $@ $< $(TTL_LOOKUP_SPLIT_OBJS) -lpthread -ldl
+
 MEMPOOL_OBJS := \
 	$(SRC_STORAGE)/kvs_mempool.o \
 	$(SRC_CORE)/kvs_config.o \
@@ -194,6 +206,7 @@ $(EBPF_SYNCD_BIN): \
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
 	rm -f $(TEST_DIR)/write_ttl_qps_test
+	rm -f $(TEST_TTL_LOOKUP_SPLIT)
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H)
 .PHONY: all clean

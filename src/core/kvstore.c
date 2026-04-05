@@ -47,32 +47,32 @@ int get_sync_context() {
 int kvs_filter_protocol(char **tokens, int count, char *response){
 
 	if (tokens[0] == NULL || count == 0) {
-        return resp_generate_error(response, "Invalid command");
+        return resp_generate_simple_string_n(response, '-', "Invalid command", sizeof("Invalid command") - 1);
     }
 
 	//查找命令
 	const command_info *cmd = lookup_command(tokens[0]);
-	if(cmd == NULL) return resp_generate_error(response, "Unknown command");
+	if(cmd == NULL) return resp_generate_simple_string_n(response, '-', "Unknown command", sizeof("Unknown command") - 1);
 
 	int cmd_index = get_command_index(tokens[0]);
-	if(cmd_index == -1) return resp_generate_error(response, "Unknown command");
+	if(cmd_index == -1) return resp_generate_simple_string_n(response, '-', "Unknown command", sizeof("Unknown command") - 1);
 	//检查参数数量
-	if(!check_arity(cmd, count)) return resp_generate_error(response, "Wrong number of arguments");
+	if(!check_arity(cmd, count)) return resp_generate_simple_string_n(response, '-', "Wrong number of arguments", sizeof("Wrong number of arguments") - 1);
 	
 	if (cmd->write_command && global_dist_config.role == ROLE_SLAVE && get_sync_context() == 0){
-		return resp_generate_error(response, "ERROR SLAVE READ ONLY");
+		return resp_generate_simple_string_n(response, '-', "ERROR SLAVE READ ONLY", sizeof("ERROR SLAVE READ ONLY") - 1);
 	}
 	
 	//解析命令参数
 	command_context_t ctx;
 	if(parse_command_argument(cmd_index, tokens, count, &ctx) < 0){
-		return resp_generate_error(response, "Invalid arguments");
+		return resp_generate_simple_string_n(response, '-', "Invalid arguments", sizeof("Invalid arguments") - 1);
 	}
 
 	int need_write_lock = 1;
 	if (need_write_lock) {
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
-			return resp_generate_error(response, "Failed to acquire data lock");
+			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 		}
 	}
 
