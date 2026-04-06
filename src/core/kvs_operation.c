@@ -280,7 +280,33 @@ static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key) {
     }
 }
 
-static int ttl_expire_if_needed_by_structure(int data_structure, const char *key, size_t key_len, ttl_target_ref_t *ref_out) {
+static int ttl_target_is_expired(const ttl_target_ref_t *ref, int64_t now_ms) {
+    if (!ref) return 0;
+
+    int64_t expire_at_ms = ttl_target_get_expire_at(ref);
+    if (expire_at_ms < 0) {
+        return 0;
+    }
+
+    return kv_is_expired(expire_at_ms, now_ms) ? 1 : 0;
+}
+
+static int ttl_target_apply_expired_side_effects(const ttl_target_ref_t *ref, const char *key) {
+    if (!ref || !key) return -1;
+
+    if (global_dist_config.role != ROLE_MASTER) {
+        return 0;
+    }
+
+    if (ttl_target_delete(ref, key) != 0) {
+        return -1;
+    }
+
+    ttl_sync_delete_if_needed(key);
+    return 0;
+}
+
+static int ttl_expire_if_needed_by_structure(int data_structure, const char *key, size_t key_len, ttl_target_ref_t *ref_out, int apply_expired_side_effects) {
     ttl_target_ref_t ref;
     memset(&ref, 0, sizeof(ref));
 
@@ -295,21 +321,17 @@ static int ttl_expire_if_needed_by_structure(int data_structure, const char *key
         *ref_out = ref;
     }
 
-    int64_t expire_at_ms = ttl_target_get_expire_at(&ref);
-    if (expire_at_ms < 0) {
-        return 0;
-    }
-
     int64_t now_ms = kv_now_ms();
-    if (!kv_is_expired(expire_at_ms, now_ms)) {
+    if (!ttl_target_is_expired(&ref, now_ms)) {
         return 0;
     }
 
-    if (global_dist_config.role == ROLE_MASTER) {
-        if (ttl_target_delete(&ref, key) != 0) {
-            return -1;
-        }
-        ttl_sync_delete_if_needed(key);
+    if (!apply_expired_side_effects) {
+        return 1;
+    }
+
+    if (ttl_target_apply_expired_side_effects(&ref, key) != 0) {
+        return -1;
     }
 
     return 1;
@@ -327,17 +349,16 @@ static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
         return (op == KVS_CMD_TTL) ? -2 : 0;
     }
 
-    int64_t expire_at_ms = ttl_target_get_expire_at(&ref);
     int64_t now_ms = kv_now_ms();
 
-    if (kv_is_expired(expire_at_ms, now_ms)) {
-        if (global_dist_config.role == ROLE_MASTER) {
-            if (ttl_target_delete(&ref, ctx->key) == 0) {
-                ttl_sync_delete_if_needed(ctx->key);
-            }
+    if (ttl_target_is_expired(&ref, now_ms)) {
+        if (ttl_target_apply_expired_side_effects(&ref, ctx->key) != 0) {
+            return -1;
         }
         return (op == KVS_CMD_TTL) ? -2 : 0;
     }
+
+    int64_t expire_at_ms = ttl_target_get_expire_at(&ref);
 
     switch (op) {
         case KVS_CMD_EXPIRE:
@@ -533,6 +554,7 @@ int convert_multiline_to_resp_array(char *multiline_response, char *response, in
 int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx){
     memset(ctx, 0, sizeof(command_context_t));
     ctx->limit = -1;
+    ctx->lock_mode = KVS_LOCK_MODE_WRITE;
 
     //设置数据结构类型
     if(cmd >= KVS_CMD_SET && cmd <= KVS_CMD_SORT ){
@@ -745,10 +767,14 @@ int handle_get(command_context_t *ctx, char *response){
     ttl_target_ref_t ref;
     memset(&ref, 0, sizeof(ref));
 
-    int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key, ctx->key_len, &ref);
+    int apply_expired_side_effects = (ctx->lock_mode != KVS_LOCK_MODE_READ);
+    int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key, ctx->key_len, &ref, apply_expired_side_effects);
     if (ttl_ret < 0) {
         return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     } else if (ttl_ret > 0) {
+        if (!apply_expired_side_effects) {
+            return KVS_CMD_RETRY_WITH_WRITE_LOCK;
+        }
         return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 
@@ -854,10 +880,14 @@ int handle_exist(command_context_t *ctx, char *response){
     ttl_target_ref_t ref;
     memset(&ref, 0, sizeof(ref));
 
-    int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key, ctx->key_len, &ref);
+    int apply_expired_side_effects = (ctx->lock_mode != KVS_LOCK_MODE_READ);
+    int ttl_ret = ttl_expire_if_needed_by_structure(ctx->data_structure, ctx->key, ctx->key_len, &ref, apply_expired_side_effects);
     if (ttl_ret < 0) {
         return resp_generate_simple_string_n(response, '-', "ERROR", sizeof("ERROR") - 1);
     } else if (ttl_ret > 0) {
+        if (!apply_expired_side_effects) {
+            return KVS_CMD_RETRY_WITH_WRITE_LOCK;
+        }
         return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     }
 

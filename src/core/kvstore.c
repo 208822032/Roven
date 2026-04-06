@@ -69,14 +69,34 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		return resp_generate_simple_string_n(response, '-', "Invalid arguments", sizeof("Invalid arguments") - 1);
 	}
 
-	int need_write_lock = 1;
-	if (need_write_lock) {
+	int use_read_lock = (cmd->handler == handle_get || cmd->handler == handle_exist);
+	int lock_held = 0;
+
+	if (use_read_lock) {
+		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+		}
+		lock_held = 1;
+		ctx.lock_mode = KVS_LOCK_MODE_READ;
+	} else {
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
 			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 		}
+		lock_held = 1;
+		ctx.lock_mode = KVS_LOCK_MODE_WRITE;
 	}
 
     int ret = cmd->handler(&ctx, response);
+	if (use_read_lock && ret == KVS_CMD_RETRY_WITH_WRITE_LOCK) {
+		pthread_rwlock_unlock(&g_kv_data_rwlock);
+		lock_held = 0;
+		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+		}
+		lock_held = 1;
+		ctx.lock_mode = KVS_LOCK_MODE_WRITE;
+		ret = cmd->handler(&ctx, response);
+	}
 
 	int64_t expire_at_ms = 0;
 	int has_expire_at = 0;
@@ -94,7 +114,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}
 	}
 
-	if (need_write_lock) {
+	if (lock_held) {
 		pthread_rwlock_unlock(&g_kv_data_rwlock);
 	}
 

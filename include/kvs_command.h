@@ -1,6 +1,13 @@
 #pragma once
 #include "kvs_types.h"
 
+enum {
+	KVS_LOCK_MODE_WRITE = 0,
+	KVS_LOCK_MODE_READ = 1,
+};
+
+#define KVS_CMD_RETRY_WITH_WRITE_LOCK (-3)
+
 typedef struct {
 	char *key;
 	size_t key_len;
@@ -10,6 +17,7 @@ typedef struct {
 	int order;
 	int limit;
 	int data_structure;
+	int lock_mode;
 } command_context_t;
 
 typedef int (*command_handler)(command_context_t *ctx, char *response);

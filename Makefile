@@ -68,6 +68,7 @@ TEST_DIR := tests
 TEST_CASE := $(TEST_DIR)/testcase
 TEST_WRITE_QPS := $(TEST_DIR)/write_qps_test
 TEST_TTL_QPS := $(TEST_DIR)/write_ttl_qps
+TEST_TTL_EXPIRED_PATH := $(TEST_DIR)/ttl_expired_path_bench
 TEST_KVSTORE_CLIENT := $(TEST_DIR)/kvstore_client
 TEST_MEMPOOL := $(TEST_DIR)/mempool_test
 TEST_PAPER := $(TEST_DIR)/test_paper
@@ -80,6 +81,7 @@ TEST_BINARIES = \
 	$(TEST_CASE) \
 	$(TEST_WRITE_QPS) \
 	$(TEST_TTL_QPS) \
+	$(TEST_TTL_EXPIRED_PATH) \
 	$(TEST_KVSTORE_CLIENT) \
 	$(TEST_MEMPOOL) \
 	$(TEST_PAPER) \
@@ -134,6 +136,9 @@ $(TEST_WRITE_QPS): $(TEST_DIR)/write_qps_test.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 $(TEST_TTL_QPS): $(TEST_DIR)/write_ttl_qps_test.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+$(TEST_TTL_EXPIRED_PATH): $(TEST_DIR)/ttl_expired_path_bench.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 write_ttl_qps: $(TEST_TTL_QPS)
@@ -210,6 +215,7 @@ $(EBPF_SYNCD_BIN): \
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
 	rm -f $(TEST_DIR)/write_ttl_qps_test
+	rm -f $(TEST_TTL_EXPIRED_PATH)
 	rm -f $(TEST_TTL_LOOKUP_SPLIT)
 	rm -f $(TEST_SKIPTABLE_TARGETED)
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
