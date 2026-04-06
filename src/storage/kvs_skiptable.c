@@ -301,17 +301,15 @@ int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !table->header  || !key || !value) return -1;
     
     size_t key_len = skiptable_key_len(key);
-    Node *current = skiptable_find_exact(table, key, key_len);
-    if (current) {
+    Node* update[MAX_LEVEL + 1];
+    Node *current = skiptable_find_with_update(table, key, key_len, update);
+    if (current && skiptable_key_compare(current, key, key_len) == 0) {
         if (skiptable_update_value(current, value) != 0) {
             return -1;
         }
         current->expire_at_ms = KV_TTL_NO_EXPIRE;
         return 1;  // 表示更新
     }
-
-    Node* update[MAX_LEVEL + 1];
-    current = skiptable_find_with_update(table, key, key_len, update);
     
     // 创建新节点
     int new_level = random_level();

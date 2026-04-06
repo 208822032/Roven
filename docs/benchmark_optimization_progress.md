@@ -2,181 +2,117 @@
 
 ## Scope
 
-This note now tracks three steps in order:
+This note now tracks the skiptable-only optimization pass.
 
-1. The earlier lock sweep that showed shared serialization is still the first bottleneck.
-2. The response-path optimization pass that removed the per-request temporary response buffer and extra copy.
-3. The current TTL-aware read split experiment, which isolates pure lookup from lazy-expire/delete/sync behavior.
+The current work is intentionally narrow:
 
-Profile setup for the earlier perf runs:
+1. Keep the scope on skiptable compare/search only.
+2. Do not change TTL semantics, lock semantics, protocol behavior, or rbtree.
+3. Validate skiptable behavior first, then measure with targeted microbench, end-to-end benchmark, and perf.
 
-- Server process: existing `./kvstore --config config/master.conf` instance
+Benchmark settings used for the clean validation runs:
+
+- Clean master: temporary instance on port `19331`
 - Benchmark shape: `c=50`, `P=1`, `value_size=32`, `keyspace=100000`
-- Profile run size: `n=500000` for each set/get case, with a populate warmup of `100000`
-- Tooling: [`scripts/profile_benchmark_perf.sh`](../scripts/profile_benchmark_perf.sh)
+- End-to-end benchmark: `n=100000`
+- Perf run: `n=500000`, `PERF_TIMEOUT_SEC=5`
 
 ## Current Conclusion
 
-The bottleneck split is now clearer:
+The skiptable hot path has improved in the exact place we targeted:
 
-- Response copy/allocation was a real cost, but it is no longer the dominant one after the send-buffer reuse pass.
-- The rbtree exact-search hot path is now centered on `rbtree_search_with_len`; the TTL wrapper path no longer shows up as a top perf symbol after the length-aware lookup split.
-- The remaining skiptable hot symbols have narrowed to the exact-match search loop and compare path: `skiptable_find_exact`, `skiptable_find_with_update`, and `skiptable_key_compare`.
-- TTL-aware reads are still non-trivial, but GET/EXIST now reuse the located entry after the TTL check instead of repeating a second backend lookup.
+- `kvs_skiptable_set()` no longer does a separate exact lookup plus update-path traversal for a missing key.
+- Existing-key updates still reuse the same update traversal.
+- The new targeted microbench shows the legacy insert path at `359.97 ns/op` and the current path at `220.43 ns/op`, a `38.77%` reduction.
+- End-to-end set/get is higher than the baseline summary on a clean master.
+- Perf is now dominated by lock / kernel overhead in the sampled window; `skiptable_key_compare` is still visible, but `skiptable_find_exact` and `skiptable_find_with_update` do not surface as top symbols in the clean run.
 
-## GET / EXIST / TTL Call Chain
+## What Changed
 
-### Pure lookup layer
+### Code path
 
-These functions only perform structure lookup and return the in-memory value pointer or presence result:
+[`src/storage/kvs_skiptable.c`](../src/storage/kvs_skiptable.c)
 
-- [`kvs_rbtree_get`](../src/storage/kvs_rbtree.c#L632)
-- [`kvs_skiptable_get`](../src/storage/kvs_skiptable.c#L294)
-- [`kvs_hash_get`](../src/storage/kvs_hash.c#L403)
-- [`kvs_array_get`](../src/storage/kvs_array.c#L545)
-- [`kvs_rbtree_exist`](../src/storage/kvs_rbtree.c#L677)
-- [`kvs_skiptable_exist`](../src/storage/kvs_skiptable.c#L379)
-- [`kvs_hash_exist`](../src/storage/kvs_hash.c#L455)
-- [`kvs_array_exist`](../src/storage/kvs_array.c#L645)
+- `kvs_skiptable_set()` now uses `skiptable_find_with_update()` once and checks whether the returned node is an exact match before deciding whether to update or insert.
+- The previous two-step path, where `kvs_skiptable_set()` first did `skiptable_find_exact()` and then did `skiptable_find_with_update()`, is removed.
 
-### TTL-aware wrapper layer
+### Benchmarking
 
-These functions do a lookup first and then inspect expiry metadata:
+[`tests/skiptable_targeted_bench.c`](../tests/skiptable_targeted_bench.c)
 
-- [`ttl_expire_if_needed_by_structure`](../src/core/kvs_operation.c#L275)
-- [`ttl_apply_any_key_op`](../src/core/kvs_operation.c#L303)
-- [`ttl_get_any_key_expire_at_ms`](../src/core/kvs_operation.c#L160)
-- [`ttl_set_any_key_expire_at_ms`](../src/core/kvs_operation.c#L176)
+- Added a skiptable-only microbench that separates existing-key lookup, missing-key lookup, and insert-heavy behavior.
+- The benchmark also keeps a legacy insert implementation in-process so the before/after insert cost can be compared directly.
 
-### Mutation / side-effect layer
+### Build wiring
 
-These code paths can delete keys or propagate TTL changes:
+[`Makefile`](../Makefile)
 
-- [`ttl_target_delete`](../src/core/kvs_operation.c#L246)
-- [`ttl_sync_delete_if_needed`](../src/core/kvs_operation.c#L152)
-- [`ttl_scan_flush_expired`](../src/core/kvs_ttl_background.c#L90)
-- [`ttl_scan_array`](../src/core/kvs_ttl_background.c#L103)
-- [`ttl_scan_hash`](../src/core/kvs_ttl_background.c#L134)
-- [`ttl_scan_rbtree`](../src/core/kvs_ttl_background.c#L166)
-- [`ttl_scan_skiptable`](../src/core/kvs_ttl_background.c#L174)
-- [`ttl_scan_once`](../src/core/kvs_ttl_background.c#L191)
+- Added the `tests/skiptable_targeted_bench` build target.
 
-### Command entry points
+## Functional Validation
 
-These commands call the TTL wrapper before the storage lookup:
+The following regression suites were run and passed:
 
-- [`handle_get`](../src/core/kvs_operation.c#L725)
-- [`handle_exist`](../src/core/kvs_operation.c#L852)
-- [`handle_ttl`](../src/core/kvs_operation.c#L905)
-- [`handle_expire`](../src/core/kvs_operation.c#L894)
-- [`handle_persist`](../src/core/kvs_operation.c#L913)
-- [`handle_pexpireat`](../src/core/kvs_operation.c#L924)
+- [`tests/testcase`](../tests/testcase.c) mode `4` for skiptable RESP behavior, including `SORT` and `RANGE`.
+- [`tests/test_ttl_all_backends.sh`](../tests/test_ttl_all_backends.sh)
+- [`tests/test_ttl_rdb.sh`](../tests/test_ttl_rdb.sh)
+- [`tests/test_ttl_aof.sh`](../tests/test_ttl_aof.sh)
+- [`tests/test_ttl_tcp_replication.sh`](../tests/test_ttl_tcp_replication.sh)
+- [`tests/test_ttl_ebpf_replication.sh`](../tests/test_ttl_ebpf_replication.sh)
 
-At the top level, [`kvs_filter_protocol`](../src/core/kvstore.c#L47) adds lock and replication bookkeeping around those handlers.
+This covers skiptable GET/EXIST, TTL, SORT/RANGE, RDB/AOF, TCP replication, and eBPF replication.
 
-## Boundary Definition
+## Targeted Microbench
 
-The minimal split is:
+`tests/skiptable_targeted_bench.c` on the clean master produced:
 
-- Pure lookup path: structure lookup only, no delete, no sync, no expiry enforcement.
-- TTL-aware path: current behavior, including lazy-expire checks and delete/sync side effects when a key is expired.
+| variant | ns/op | qps |
+|---|---:|---:|
+| existing_lookup | 746.70 | 1339222.44 |
+| missing_lookup | 101.22 | 9879117.47 |
+| insert_heavy_legacy | 359.97 | 2777971.70 |
+| insert_heavy_current | 220.43 | 4536622.98 |
 
-For GET/EXIST, the current implementation is not pure lookup because `ttl_expire_if_needed_by_structure()` can remove expired keys on master and call `ttl_sync_delete_if_needed()`.
+Key delta:
 
-## Minimal Experiment
+- Insert-heavy path improved by `139.55 ns/op`, or `38.77%`.
+- Missing-key lookup stays cheap because the traversal is now paid once in the insert/update path.
 
-To avoid changing external semantics, I added an isolated microbench instead of wiring a new public command path.
+## End-To-End Benchmark
 
-New file:
+Baseline from [`results/summary.md`](../results/summary.md) versus the clean master on port `19331`:
 
-- [`tests/ttl_lookup_split_bench.c`](../tests/ttl_lookup_split_bench.c)
+| op | baseline qps | current qps |
+|---|---:|---:|
+| set | 72674.41 | 92506.94 |
+| get | 77579.52 | 103950.10 |
 
-New test target:
+Latency also improved on the clean run:
 
-- [`tests/ttl_lookup_split_bench`](../Makefile)
+- set p50/p95/p99 moved from `0.543 / 1.103 / 2.279 ms` to `0.439 / 0.863 / 1.303 ms`.
+- get p50/p95/p99 moved from `0.527 / 0.951 / 1.239 ms` to `0.367 / 0.743 / 1.007 ms`.
 
-The benchmark is offline and does not use network, RESP, or any delete/sync path. It measures:
+## Perf
 
-- `pure_get`: direct `kvs_rbtree_get` / `kvs_skiptable_get`
-- `ttl_probe`: lookup plus `kv_now_ms()` and expiry check only
-- `current_get_core`: current GET-style core path approximation, meaning TTL probe first and then value access from the already found entry
+Clean-master perf reports on the 500k runs show the search symbols are no longer the dominant cost:
 
-## Microbench Results
-
-Run parameters:
-
-- `keyspace=100000`
-- `requests=500000`
-- `warmup=10000`
-- `value_size=32`
-
-Results:
-
-| ds | variant | ns/op | qps |
-|---|---|---:|---:|
-| rbtree | pure_get | 649.89 | 1538719.95 |
-| rbtree | ttl_probe | 609.86 | 1639709.19 |
-| rbtree | current_get_core | 606.30 | 1649345.78 |
-| skiptable | pure_get | 662.38 | 1509708.70 |
-| skiptable | ttl_probe | 825.45 | 1211457.12 |
-| skiptable | current_get_core | 824.51 | 1212840.03 |
-
-Interpretation:
-
-- The microbench now exercises the length-aware rbtree lookup helper, so `current_get_core` is the more relevant number for this pass.
-- The rbtree GET core is now materially lower than the public-API `pure_get` path, which still pays the outer `strlen` + wrapper cost.
-- For skiptable, the exact-match fast path still keeps the cost concentrated in ordered compare/search rather than wrapper duplication.
-
-## Current Perf Evidence
-
-Fresh `cycles:u` samples from the lookup-optimization pass show the repeated lookup cost has been reduced, but compare-heavy ordered search is still visible:
-
-| case | top hotspot | share |
+| case | top visible skiptable symbol | share |
 |---|---|---:|
-| rbtree set | `rbtree_search_with_len` | 9.59% |
-| rbtree get | `rbtree_search_with_len` | 4.76% |
-| rbtree get | `__memcmp_avx2_movbe` | 1.59% |
-| skiptable set | `skiptable_find_exact` | 1.59% |
-| skiptable set | `skiptable_find_with_update` | 1.59% |
-| skiptable set | `__memcmp_avx2_movbe` | 1.59% |
-| skiptable get | `skiptable_key_compare` | 1.59% |
+| set | `skiptable_key_compare` | 2.19% |
+| get | `skiptable_key_compare` | 0.98% |
 
-For rbtree, `ttl_lookup_rbtree` no longer appears in the top 1% perf report, which is consistent with the wrapper-side length propagation. The remaining visible work is the tree walk and compare itself.
+The clean set report is still dominated by lock and scheduler overhead, with `__lock_text_start` at `93.92%`. The clean get report is likewise lock-heavy, with `__lock_text_start` at `88.73%`.
 
-## Answer To The Split Question
+## Final Answer
 
-TTL-aware reads are still paying some cost, but the biggest avoidable waste was the repeated lookup, not the TTL probe itself.
+Skiptable has entered the diminishing-returns zone.
 
-- rbtree: the one-lookup GET core path is down to 606.30 ns/op in the updated microbench, and the TTL wrapper symbol is no longer a visible top hotspot.
-- skiptable: the one-lookup GET core path is down to 824.51 ns/op in the updated microbench.
-
-So the ordering is:
-
-1. For rbtree, the exact-search path is still worth another targeted pass if there is a concrete compare-shortcut idea.
-2. The next structural step should be a cleaner TTL-aware read split so read-only and mutation-capable paths are separated before any lock redesign.
-
-## Next Best Priority
-
-The next most valuable optimization is now a cleaner TTL-aware read split around rbtree, not another skiptable compare tweak.
-
-- For skiptable, the remaining gains look incremental; only continue if a new targeted microbench shows a clear win.
-- For rbtree, the next target is still lowering the compare cost inside `rbtree_search_with_len`.
-- A read-lock split is worth preparing once the TTL-aware read path is cleanly separated from lazy-expire mutation and replication side effects.
-
-## Validation Status
-
-- Functional regression is now green on a clean temporary server: `tests/testcase` modes 1-4 pass after aligning the legacy sort cases to the current `low 10` syntax.
-- The TTL regression suites still pass end to end, including TCP replication and the sudo-backed eBPF replication path.
-- The latest three `ttl_lookup_split_bench` runs stayed in the same band: rbtree `current_get_core` ranged from 599.84 ns/op to 632.52 ns/op, and skiptable `current_get_core` ranged from 769.46 ns/op to 812.34 ns/op.
+The missing-key duplicate traversal was worth fixing and did move both the targeted microbench and the end-to-end benchmark, but the current perf window is now dominated by lock / kernel overhead rather than skiptable search. That means a further compare/search pass is unlikely to pay back as much as this one.
 
 ## Evidence Artifacts
 
-- [`results/raw.csv`](../results/raw.csv)
+- [`src/storage/kvs_skiptable.c`](../src/storage/kvs_skiptable.c)
+- [`tests/skiptable_targeted_bench.c`](../tests/skiptable_targeted_bench.c)
 - [`results/summary.md`](../results/summary.md)
-- [`results/profile/20260405_033810_rbtree_set_rbtree_set.perf.report.txt`](../results/profile/20260405_033810_rbtree_set_rbtree_set.perf.report.txt)
-- [`results/profile/20260405_033822_rbtree_get_rbtree_get.perf.report.txt`](../results/profile/20260405_033822_rbtree_get_rbtree_get.perf.report.txt)
-- [`results/profile/20260405_033833_skiptable_set_skiptable_set.perf.report.txt`](../results/profile/20260405_033833_skiptable_set_skiptable_set.perf.report.txt)
-- [`results/profile/20260405_033845_skiptable_get_skiptable_get.perf.report.txt`](../results/profile/20260405_033845_skiptable_get_skiptable_get.perf.report.txt)
-- [`results/profile/20260405_085558_rbtree_set.perf.report.txt`](../results/profile/20260405_085558_rbtree_set.perf.report.txt)
-- [`results/profile/20260405_085611_rbtree_get.perf.report.txt`](../results/profile/20260405_085611_rbtree_get.perf.report.txt)
-- [`tests/ttl_lookup_split_bench.c`](../tests/ttl_lookup_split_bench.c)
+- [`results/profile/20260406_clean_skiptable_set_skiptable_set.perf.report.txt`](../results/profile/20260406_clean_skiptable_set_skiptable_set.perf.report.txt)
+- [`results/profile/20260406_clean_skiptable_get_skiptable_get.perf.report.txt`](../results/profile/20260406_clean_skiptable_get_skiptable_get.perf.report.txt)

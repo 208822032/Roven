@@ -74,6 +74,7 @@ TEST_PAPER := $(TEST_DIR)/test_paper
 TEST_PAPER_SYNC := $(TEST_DIR)/test_paper_sync
 TEST_BIGVALUE := $(TEST_DIR)/test_bigvalue
 TEST_TTL_LOOKUP_SPLIT := $(TEST_DIR)/ttl_lookup_split_bench
+TEST_SKIPTABLE_TARGETED := $(TEST_DIR)/skiptable_targeted_bench
 
 TEST_BINARIES = \
 	$(TEST_CASE) \
@@ -153,6 +154,9 @@ TTL_LOOKUP_SPLIT_OBJS := \
 $(TEST_TTL_LOOKUP_SPLIT): $(TEST_DIR)/ttl_lookup_split_bench.c $(TTL_LOOKUP_SPLIT_OBJS)
 	$(CC) $(CFLAGS) -o $@ $< $(TTL_LOOKUP_SPLIT_OBJS) -lpthread -ldl
 
+$(TEST_SKIPTABLE_TARGETED): $(TEST_DIR)/skiptable_targeted_bench.c $(SRC_STORAGE)/kvs_skiptable.o $(SRC_STORAGE)/kvs_mempool.o $(SRC_UTILS)/kvs_log.o $(SRC_UTILS)/kvs_log_writer.o
+	$(CC) $(CFLAGS) -o $@ $< $(SRC_STORAGE)/kvs_skiptable.o $(SRC_STORAGE)/kvs_mempool.o $(SRC_UTILS)/kvs_log.o $(SRC_UTILS)/kvs_log_writer.o -lpthread -ldl
+
 MEMPOOL_OBJS := \
 	$(SRC_STORAGE)/kvs_mempool.o \
 	$(SRC_CORE)/kvs_config.o \
@@ -207,6 +211,7 @@ clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
 	rm -f $(TEST_DIR)/write_ttl_qps_test
 	rm -f $(TEST_TTL_LOOKUP_SPLIT)
+	rm -f $(TEST_SKIPTABLE_TARGETED)
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H)
 .PHONY: all clean
