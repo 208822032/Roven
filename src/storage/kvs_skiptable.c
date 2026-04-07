@@ -89,12 +89,20 @@ static int skiptable_key_equals(const Node *node, const char *key, size_t key_le
     return skiptable_key_compare(node, key, key_len) == 0;
 }
 
+static int skiptable_update_value_with_len(Node *node, const char *value, size_t value_len);
+
 static int skiptable_update_value(Node *node, const char *value) {
     if (!node || !value) {
         return -1;
     }
 
-    size_t value_len = skiptable_value_len(value);
+    return skiptable_update_value_with_len(node, value, skiptable_value_len(value));
+}
+
+static int skiptable_update_value_with_len(Node *node, const char *value, size_t value_len) {
+    if (!node || !value) {
+        return -1;
+    }
 
     if (node->value && node->value_len >= value_len) {
         memcpy(node->value, value, value_len + 1);
@@ -131,6 +139,41 @@ static Node *skiptable_find_with_update(kvs_skiptable_t *table,
         while (current->forward[i] && skiptable_key_compare(current->forward[i], key, key_len) < 0) {
             current = current->forward[i];
         }
+        if (update) {
+            update[i] = current;
+        }
+    }
+
+    return current->forward[0];
+}
+
+static Node *skiptable_find_with_update_or_exact(kvs_skiptable_t *table,
+                                                 const char *key,
+                                                 size_t key_len,
+                                                 Node **update) {
+    if (!table || !table->header || !key) {
+        return NULL;
+    }
+
+    Node *current = table->header;
+    for (int i = table->level; i >= 0; i--) {
+        while (current->forward[i]) {
+            int cmp = skiptable_key_compare(current->forward[i], key, key_len);
+            if (cmp < 0) {
+                current = current->forward[i];
+                continue;
+            }
+
+            if (cmp == 0) {
+                if (update) {
+                    update[i] = current;
+                }
+                return current->forward[i];
+            }
+
+            break;
+        }
+
         if (update) {
             update[i] = current;
         }
@@ -300,11 +343,13 @@ static void kvs_skiptable_reap_expired(kvs_skiptable_t *table, int64_t now_ms) {
 int kvs_skiptable_set(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !table->header  || !key || !value) return -1;
     
-    size_t key_len = skiptable_key_len(key);
+    size_t key_len = 0;
+    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
     Node* update[MAX_LEVEL + 1];
-    Node *current = skiptable_find_with_update(table, key, key_len, update);
-    if (current && skiptable_key_compare(current, key, key_len) == 0) {
-        if (skiptable_update_value(current, value) != 0) {
+    Node *current = skiptable_find_with_update_or_exact(table, key, key_len, update);
+    if (current && skiptable_key_equals(current, key, key_len, key_hash)) {
+        size_t value_len = skiptable_value_len(value);
+        if (skiptable_update_value_with_len(current, value, value_len) != 0) {
             return -1;
         }
         current->expire_at_ms = KV_TTL_NO_EXPIRE;
@@ -347,11 +392,13 @@ char* kvs_skiptable_get(kvs_skiptable_t *table, char *key) {
 int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value) {
     if (!table || !table->header || !key || !value) return -1;  // 添加header检查
 
-    size_t key_len = skiptable_key_len(key);
-    Node *node = skiptable_find_exact(table, key, key_len);
+    size_t key_len = 0;
+    unsigned int key_hash = skiptable_key_hash_with_len(key, &key_len);
+    Node *node = skiptable_find_with_update_or_exact(table, key, key_len, NULL);
 
-    if (node) {
-        if (skiptable_update_value(node, value) != 0) {
+    if (node && skiptable_key_equals(node, key, key_len, key_hash)) {
+        size_t value_len = skiptable_value_len(value);
+        if (skiptable_update_value_with_len(node, value, value_len) != 0) {
             return -1;
         }
         node->expire_at_ms = KV_TTL_NO_EXPIRE;

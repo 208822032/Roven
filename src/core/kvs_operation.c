@@ -13,6 +13,7 @@
 extern aof_state_t aof_state;
 extern distributed_config_t global_dist_config;
 extern rbtree_node *rbtree_search(rbtree *T, KEY_TYPE key);
+extern rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z);
 
 //四个数据结构
 extern kvs_array_t global_array;
@@ -37,11 +38,31 @@ typedef struct {
     ttl_target_kind_t kind;
     void *container;
     void *entry;
+    Node *skiptable_update[MAX_LEVEL + 1];
 } ttl_target_ref_t;
 
 static int64_t ttl_target_get_expire_at(const ttl_target_ref_t *ref);
 static void ttl_target_set_expire_at(const ttl_target_ref_t *ref, int64_t expire_at_ms);
-static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key);
+static int ttl_target_delete(const ttl_target_ref_t *ref);
+
+static int ttl_skiptable_key_compare(const Node *node, const char *key, size_t key_len) {
+    if (!node || !node->key || !key) {
+        return -1;
+    }
+
+    size_t node_key_len = node->key_len;
+    size_t min_len = node_key_len < key_len ? node_key_len : key_len;
+    if (min_len > 0) {
+        int cmp = memcmp(node->key, key, min_len);
+        if (cmp != 0) {
+            return cmp;
+        }
+    }
+
+    if (node_key_len < key_len) return -1;
+    if (node_key_len > key_len) return 1;
+    return 0;
+}
 
 static int ttl_lookup_array(kvs_array_t *inst, const char *key, ttl_target_ref_t *ref) {
     if (!inst || !key || !ref || !inst->table) return 0;
@@ -85,11 +106,27 @@ static int ttl_lookup_hash(kvs_hash_t *inst, const char *key, ttl_target_ref_t *
     return 0;
 }
 
-static int ttl_lookup_skiptable(kvs_skiptable_t *table, const char *key, ttl_target_ref_t *ref) {
+static int ttl_lookup_skiptable(kvs_skiptable_t *table, const char *key, size_t key_len, ttl_target_ref_t *ref) {
     if (!table || !key || !ref || !table->header) return 0;
 
-    Node *current = kvs_skiptable_lookup_node(table, (char *)key);
+    Node *current = table->header;
+    for (int level = table->level; level >= 0; --level) {
+        while (current->forward[level]) {
+            int cmp = ttl_skiptable_key_compare(current->forward[level], key, key_len);
+            if (cmp < 0) {
+                current = current->forward[level];
+                continue;
+            }
+            break;
+        }
+        ref->skiptable_update[level] = current;
+    }
+
+    current = current->forward[0];
     if (current) {
+        if (ttl_skiptable_key_compare(current, key, key_len) != 0) {
+            return 0;
+        }
         ref->kind = TTL_TARGET_SKIPTABLE;
         ref->container = table;
         ref->entry = current;
@@ -115,7 +152,7 @@ static int ttl_lookup_by_structure(int data_structure, const char *key, size_t k
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            return ttl_lookup_skiptable(kvs_get_global_skiptable(), key, ref);
+            return ttl_lookup_skiptable(kvs_get_global_skiptable(), key, key_len, ref);
 #endif
         default:
             return 0;
@@ -133,7 +170,7 @@ static int ttl_lookup_any(const char *key, size_t key_len, ttl_target_ref_t *ref
     if (ttl_lookup_hash(kvs_get_global_hash(), key, ref)) return 1;
 #endif
 #if ENABLE_SKIPTABLE
-    if (ttl_lookup_skiptable(kvs_get_global_skiptable(), key, ref)) return 1;
+    if (ttl_lookup_skiptable(kvs_get_global_skiptable(), key, key_len, ref)) return 1;
 #endif
     return 0;
 }
@@ -183,7 +220,7 @@ int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms) {
 
     int64_t now_ms = kv_now_ms();
     if (kv_is_expired(expire_at_ms, now_ms)) {
-        return ttl_target_delete(&ref, key) == 0 ? 1 : 0;
+        return ttl_target_delete(&ref) == 0 ? 1 : 0;
     }
 
     ttl_target_set_expire_at(&ref, expire_at_ms);
@@ -251,8 +288,8 @@ static void ttl_target_set_expire_at(const ttl_target_ref_t *ref, int64_t expire
     }
 }
 
-static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key) {
-    if (!ref || !key) return -1;
+static int ttl_target_delete(const ttl_target_ref_t *ref) {
+    if (!ref) return -1;
 
     switch (ref->kind) {
         case TTL_TARGET_ARRAY:
@@ -264,7 +301,13 @@ static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key) {
             return kvs_array_del_at(inst, idx);
         }
         case TTL_TARGET_RBTREE:
-            return kvs_rbtree_del((kvs_rbtree_t *)ref->container, (char *)key);
+        {
+            kvs_rbtree_t *inst = (kvs_rbtree_t *)ref->container;
+            rbtree_node *node = (rbtree_node *)ref->entry;
+            if (!inst || !node || node == inst->nil) return -1;
+            (void)rbtree_delete(inst, node);
+            return 0;
+        }
         case TTL_TARGET_HASH:
         {
             kvs_hash_t *hash = (kvs_hash_t *)ref->container;
@@ -274,7 +317,30 @@ static int ttl_target_delete(const ttl_target_ref_t *ref, const char *key) {
             return kvs_hash_del_at(hash, idx);
         }
         case TTL_TARGET_SKIPTABLE:
-            return kvs_skiptable_del((kvs_skiptable_t *)ref->container, (char *)key);
+        {
+            kvs_skiptable_t *table = (kvs_skiptable_t *)ref->container;
+            Node *current = (Node *)ref->entry;
+            if (!table || !table->header || !current) return -1;
+
+            for (int i = 0; i <= table->level; ++i) {
+                Node *prev = ref->skiptable_update[i];
+                if (!prev || prev->forward[i] != current) {
+                    break;
+                }
+                prev->forward[i] = current->forward[i];
+            }
+
+            table->count--;
+
+            if (current->key) kvs_free(current->key);
+            if (current->value) kvs_free(current->value);
+            kvs_free(current);
+
+            while (table->level > 0 && table->header->forward[table->level] == NULL) {
+                table->level--;
+            }
+            return 0;
+        }
         default:
             return -1;
     }
@@ -298,7 +364,7 @@ static int ttl_target_apply_expired_side_effects(const ttl_target_ref_t *ref, co
         return 0;
     }
 
-    if (ttl_target_delete(ref, key) != 0) {
+    if (ttl_target_delete(ref) != 0) {
         return -1;
     }
 
@@ -373,7 +439,7 @@ static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
             }
 
             if (seconds <= 0) {
-                return ttl_target_delete(&ref, ctx->key) == 0 ? 1 : 0;
+                return ttl_target_delete(&ref) == 0 ? 1 : 0;
             }
 
             int64_t delta_ms = (int64_t)seconds * 1000;
@@ -397,7 +463,7 @@ static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
 
             int64_t expire_at_input_ms = (int64_t)expire_at_input;
             if (expire_at_input_ms <= now_ms) {
-                return ttl_target_delete(&ref, ctx->key) == 0 ? 1 : 0;
+                return ttl_target_delete(&ref) == 0 ? 1 : 0;
             }
 
             ttl_target_set_expire_at(&ref, expire_at_input_ms);

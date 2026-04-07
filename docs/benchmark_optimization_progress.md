@@ -184,6 +184,61 @@ The current split is sufficient to continue the read-lock plan, but it is not en
 
 The next best step is to profile expired-key delete and TCP sync side effects directly, because that is where the remaining write-path cost is concentrated and where a later read-lock rollout would need a precise budget.
 
+## Skiptable SET Fast Path
+
+The focus later shifted to the skiptable write path, specifically SET / overwrite behavior.
+
+### Code Change
+
+[`src/storage/kvs_skiptable.c`](../src/storage/kvs_skiptable.c)
+
+- `kvs_skiptable_set()` and `kvs_skiptable_mod()` now use a single traversal helper, `skiptable_find_with_update_or_exact()`.
+- Overwrite hits update in place on the first pass instead of forcing a second lookup.
+- Insert still preserves the predecessor path so the first overwrite optimization does not regress the insert path again.
+
+### Functional Validation
+
+The following regression suites passed after the change:
+
+- [`tests/test_ttl_rdb.sh`](../tests/test_ttl_rdb.sh)
+- [`tests/test_ttl_aof.sh`](../tests/test_ttl_aof.sh)
+- [`tests/test_ttl_tcp_replication.sh`](../tests/test_ttl_tcp_replication.sh)
+- [`tests/test_ttl_ebpf_replication.sh`](../tests/test_ttl_ebpf_replication.sh)
+- [`tests/test_ttl_qps.sh`](../tests/test_ttl_qps.sh)
+- [`tests/testcase.c`](../tests/testcase.c) mode 4 on a clean temporary server
+
+### Targeted Bench
+
+`tests/skiptable_targeted_bench` on the current build produced:
+
+| case | ns/op | qps |
+|---|---:|---:|
+| existing_lookup | 720.91 | 1387128.25 |
+| missing_lookup | 90.84 | 11008539.25 |
+| insert_heavy legacy | 357.66 | 2795942.32 |
+| insert_heavy current | 227.67 | 4392302.16 |
+| overwrite_heavy legacy | 1060.90 | 942591.49 |
+| overwrite_heavy current | 801.74 | 1247289.97 |
+
+The important part is that overwrite-heavy is now faster than the old path, while insert-heavy no longer regressed.
+
+### End-To-End Benchmark
+
+The aligned `redis-benchmark` run against the updated skiptable path produced:
+
+- `skiptable set`: `91659.03 qps` vs Redis `110375.27 qps` -> `0.830x`
+- `skiptable get`: `99304.87 qps` vs Redis `121359.23 qps` -> `0.818x`
+
+This means the microbench improvement is real, but the full benchmark still leaves skiptable below Redis.
+
+### Perf
+
+`sudo perf stat` was attempted on this host, but the environment still reports the requested hardware counters as `<not supported>`. The benchmark itself completed, so the remaining evidence here is the timing result plus the benchmark deltas above, not counter-level attribution.
+
+### Conclusion
+
+The overwrite fast path is worth keeping, but it is not sufficient by itself to close the skiptable gap. The remaining work is broader SET / traversal / cache-path reduction, not just the overwrite branch.
+
 ## Expired-Path Profiling
 
 To answer that attribution question, I added a focused expired-path harness:
@@ -210,28 +265,59 @@ These TTL / replication suites were rerun first and passed before profiling:
 - [`tests/test_ttl_ebpf_replication.sh`](../tests/test_ttl_ebpf_replication.sh)
 - [`tests/test_ttl_qps.sh`](../tests/test_ttl_qps.sh)
 
+### Latest Validation
+
+Before and after the TCP sync change, the following suites passed:
+
+- `tests/test_ttl_all_backends.sh`
+- `tests/test_ttl_rdb.sh`
+- `tests/test_ttl_aof.sh`
+- `tests/test_ttl_tcp_replication.sh`
+- `tests/test_ttl_ebpf_replication.sh`
+- `tests/test_ttl_qps.sh`
+
+### TCP Sync Optimization
+
+The TCP replication path was trimmed at the message allocation boundary:
+
+- `master_sync_command()` now encodes directly into the final queued `sync_msg_t` instead of encoding into a temporary buffer and copying again.
+- `sync_backend_broadcast_owned()` was added so the TCP queue can take ownership of an already allocated message.
+- The change stays inside the existing TCP sync semantics; it does not change replication protocol meaning, lock scope, or the eBPF path.
+
 ### Profiling Result
 
-The final retained perf run on skiptable produced:
+The latest retained expired-path profiling run on skiptable produced:
 
 | case | qps |
 |---|---:|
-| non-expired read | 15412.62 |
-| expired delete only | 14713.01 |
-| expired delete + TCP sync | 14034.57 |
+| non-expired read | 16471.03 |
+| expired delete only | 16363.54 |
+| expired delete + TCP sync | 15620.43 |
 
-The relative drops are small but consistent:
+Compared with the earlier retained run, the gap between delete-only and delete+TCP-sync shrank materially. The earlier numbers were:
 
-- delete only is about 4.5% slower than non-expired read
-- TCP sync adds another roughly 4.6% slowdown on top of delete only
-- total expired-side-effect cost is about 9% versus the non-expired baseline
+| case | qps |
+|---|---:|
+| non-expired read | 13677.56 |
+| expired delete only | 18274.15 |
+| expired delete + TCP sync | 14260.65 |
 
-The visible perf hotspots were mostly in the networking path rather than in the storage lookup itself:
+The current picture is now:
 
-- non-expired read: `sock_def_readable`, `__wake_up_sync_key`, `__wake_up_common_lock`, `skiptable_find_exact`, `skiptable_key_compare`, `ttl_scan_once`
-- expired delete only: `schedule_hrtimeout_range_clock`, `sock_recvmsg`, `security_socket_recvmsg`, `apparmor_socket_recvmsg`, `epoll_wait`, `__memcmp_avx2_movbe`
-- expired delete + TCP sync: `hrtimer_start_range_ns`, `__kmalloc_node_track_caller`, `sk_stream_alloc_skb`, `__alloc_skb`, `kmalloc_reserve`, `ttl_scan_once`
+- delete-only and non-expired read are very close on this host
+- TCP sync is still slower than delete-only, but the delta is much smaller than before
+- the remaining work is still on the replication side, not on read-lock expansion
+
+### Perf
+
+The retained `perf record` data from the latest run still shows the expected shape:
+
+- non-expired read: `schedule_hrtimeout_range_clock`, `schedule`, `ep_poll`, `ttl_skiptable_key_compare`
+- expired delete only: `__ip_local_out`, `nf_hook_slow`, `skb_page_frag_refill`, `release_sock`, `__alloc_skb`, `tcp_send_mss`, `futex_wake`, `wake_up_q`, `try_to_wake_up`
+- expired delete + TCP sync: `wake_up_q`, `try_to_wake_up`, `tcp_backend_worker`, `mem_alloc`, `ttl_scan_once`, `epoll_ctl`, `__pthread_mutex_unlock`, `release_sock`, `__wake_up`, `iptable_filter_hook`
+
+`perf stat` was less reliable on this host for the full scripted harness, so the symbol-level attribution above is the dependable evidence here.
 
 ### Conclusion
 
-The new evidence does not justify widening the read lock first. The non-expired path is already split cleanly, and the remaining cost is concentrated in expired-side effects and replication work. The better next optimization target is the expired path itself, starting with delete overhead and then TCP sync overhead, before revisiting any further lock-scope changes.
+The new evidence still supports focusing on TCP sync first. The delete-only path is no longer the obvious bottleneck, the TCP sync path is cheaper after the owned-message change, and the remaining cost is still replication-side. It is not a good time to re-expand the read lock; the higher-value next step is still to continue trimming TCP sync.

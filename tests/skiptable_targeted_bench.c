@@ -24,6 +24,7 @@ typedef struct {
     char **existing_keys;
     char **missing_keys;
     char **insert_keys;
+    char *overwrite_value;
     size_t keyspace;
     size_t lookup_requests;
     size_t insert_requests;
@@ -55,6 +56,18 @@ static void make_value(char *buffer, size_t size) {
     buffer[size - 1] = '\0';
 }
 
+static void make_overwrite_value(char *buffer, size_t size) {
+    if (!buffer || size == 0) {
+        return;
+    }
+    if (size == 1) {
+        buffer[0] = '\0';
+        return;
+    }
+    memset(buffer, 'o', size - 1);
+    buffer[size - 1] = '\0';
+}
+
 static int prepare_bench_data(bench_data_t *data,
                               size_t keyspace,
                               size_t lookup_requests,
@@ -70,7 +83,8 @@ static int prepare_bench_data(bench_data_t *data,
     data->insert_keys = calloc(insert_requests, sizeof(char *));
     data->lookup_indices = calloc(lookup_requests, sizeof(size_t));
     data->value = calloc(value_size + 1, sizeof(char));
-    if (!data->existing_keys || !data->missing_keys || !data->insert_keys || !data->lookup_indices || !data->value) {
+    data->overwrite_value = calloc(value_size + 1, sizeof(char));
+    if (!data->existing_keys || !data->missing_keys || !data->insert_keys || !data->lookup_indices || !data->value || !data->overwrite_value) {
         return -1;
     }
 
@@ -80,6 +94,7 @@ static int prepare_bench_data(bench_data_t *data,
     data->value_size = value_size;
 
     make_value(data->value, value_size + 1);
+    make_overwrite_value(data->overwrite_value, value_size + 1);
 
     for (size_t i = 0; i < keyspace; ++i) {
         data->existing_keys[i] = calloc(KEY_BUFFER_SIZE, sizeof(char));
@@ -137,6 +152,7 @@ static void destroy_bench_data(bench_data_t *data) {
     }
     free(data->lookup_indices);
     free(data->value);
+    free(data->overwrite_value);
     memset(data, 0, sizeof(*data));
 }
 
@@ -385,6 +401,56 @@ static double benchmark_insert_current(const bench_data_t *data) {
     return elapsed_seconds(&begin, &end);
 }
 
+static double benchmark_overwrite_legacy(const bench_data_t *data) {
+    kvs_skiptable_t table;
+    struct timespec begin;
+    struct timespec end;
+    volatile unsigned long checksum = 0;
+
+    if (kvs_skiptable_create(&table) != 0) {
+        return -1.0;
+    }
+
+    populate_table(&table, data);
+
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    for (size_t i = 0; i < data->lookup_requests; ++i) {
+        checksum += (unsigned long)legacy_insert_like_previous_code(&table,
+                                                                    data->existing_keys[data->lookup_indices[i]],
+                                                                    data->overwrite_value);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    g_checksum += checksum;
+    kvs_skiptable_destroy(&table);
+    return elapsed_seconds(&begin, &end);
+}
+
+static double benchmark_overwrite_current(const bench_data_t *data) {
+    kvs_skiptable_t table;
+    struct timespec begin;
+    struct timespec end;
+    volatile unsigned long checksum = 0;
+
+    if (kvs_skiptable_create(&table) != 0) {
+        return -1.0;
+    }
+
+    populate_table(&table, data);
+
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+    for (size_t i = 0; i < data->lookup_requests; ++i) {
+        checksum += (unsigned long)kvs_skiptable_set(&table,
+                                                     data->existing_keys[data->lookup_indices[i]],
+                                                     data->overwrite_value);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    g_checksum += checksum;
+    kvs_skiptable_destroy(&table);
+    return elapsed_seconds(&begin, &end);
+}
+
 static void report_case(const char *variant, size_t requests, double seconds) {
     double qps = (double)requests / seconds;
     double ns_per_op = (seconds * 1000000000.0) / (double)requests;
@@ -422,8 +488,11 @@ int main(void) {
     double missing_sec = benchmark_missing_lookup(&data);
     double insert_legacy_sec = benchmark_insert_legacy(&data);
     double insert_current_sec = benchmark_insert_current(&data);
+    double overwrite_legacy_sec = benchmark_overwrite_legacy(&data);
+    double overwrite_current_sec = benchmark_overwrite_current(&data);
 
-    if (existing_sec < 0.0 || missing_sec < 0.0 || insert_legacy_sec < 0.0 || insert_current_sec < 0.0) {
+    if (existing_sec < 0.0 || missing_sec < 0.0 || insert_legacy_sec < 0.0 || insert_current_sec < 0.0 ||
+        overwrite_legacy_sec < 0.0 || overwrite_current_sec < 0.0) {
         fprintf(stderr, "benchmark failed\n");
         destroy_bench_data(&data);
         return 1;
@@ -438,6 +507,10 @@ int main(void) {
     report_case("insert_heavy_current", insert_requests, insert_current_sec);
     report_delta("insert_heavy", (insert_legacy_sec * 1000000000.0) / (double)insert_requests,
                  (insert_current_sec * 1000000000.0) / (double)insert_requests);
+    report_case("overwrite_heavy_legacy", lookup_requests, overwrite_legacy_sec);
+    report_case("overwrite_heavy_current", lookup_requests, overwrite_current_sec);
+    report_delta("overwrite_heavy", (overwrite_legacy_sec * 1000000000.0) / (double)lookup_requests,
+                 (overwrite_current_sec * 1000000000.0) / (double)lookup_requests);
 
     printf("[CHECKSUM] %lu\n", g_checksum);
 

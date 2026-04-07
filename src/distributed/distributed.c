@@ -657,14 +657,14 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     size_t val_len = value ? strlen(value) : 0;
 
     size_t needed = (size_t)MS_HEADER_LEN + key_len + val_len;
-    uint8_t *buffer = (uint8_t *)kvs_malloc(needed);
-    if (!buffer) {
+    sync_msg_t *msg = (sync_msg_t *)kvs_malloc(sizeof(sync_msg_t) + needed);
+    if (!msg) {
         KVS_LOG_ERROR("dist", "master_sync_command malloc failed, cmd=%s key=%s", cmd, key);
         return;
     }
 
     int len = ms_encode_message(
-        buffer,
+        msg->payload,
         needed,
         op,
         key, key_len,
@@ -672,19 +672,20 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
     );
     if (len <= 0) {
         KVS_LOG_ERROR("dist", "master_sync_command encode error, cmd=%s key=%s", cmd, key);
-        kvs_free(buffer);
+        kvs_free(msg);
         return;
     }
+
+    msg->len = (size_t)len;
 
     //  fprintf(stderr, "[DIST] master_sync_command: op=%d cmd=%s key=%s\n",
     //         op, cmd, key);
 
-    if (sync_backend_broadcast(buffer, (size_t)len) != 0) {
+    if (sync_backend_broadcast_owned(msg) != 0) {
         KVS_LOG_ERROR("dist", "sync_backend_broadcast failed, cmd=%s key=%s", cmd, key);
-    }else {
+        kvs_free(msg);
+    } else {
         // fprintf(stderr, "[DIST] sync_backend_broadcast ok, len=%d\n", len);
     }
-
-    kvs_free(buffer);
 
 }

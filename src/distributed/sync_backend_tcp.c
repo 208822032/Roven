@@ -232,6 +232,23 @@ int sync_backend_broadcast(const void *data, size_t len){
     return 0;
 }
 
+int sync_backend_broadcast_owned(void *msg_ptr){
+    if (!msg_ptr) return -1;
+    if (!g_tcp_running) return -1;
+
+    sync_msg_t *msg = (sync_msg_t *)msg_ptr;
+    if (msg->len == 0 || msg->len > KVS_MAX_RESPONSE_SIZE) {
+        return -1;
+    }
+
+    if (msg_queue_push(&g_tcp_queue, msg) != 0) {
+        KVS_LOG_ERROR("dist", "msg_queue_push failed");
+        return -1;
+    }
+
+    return 0;
+}
+
 // 关闭 / 清理
 void sync_backend_shutdown(void){
     g_tcp_running = 0;
