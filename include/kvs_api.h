@@ -22,6 +22,7 @@
 
 #include "kvs_operations.h"
 #include "kvs_command.h"
+#include "kvs_ai_chat_schema.h"
 #include "kvs_resp.h"
 
 #if ENABLE_RDB
