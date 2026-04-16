@@ -365,22 +365,37 @@ if(g_cfg.mem_backend == KVS_MEM_BACKEND_JEMALLOC){
 
 | ds | op | kvstore_qps | redis_qps | kvstore_p50(ms) | kvstore_p95(ms) | kvstore_p99(ms) | redis_p50(ms) | redis_p95(ms) | redis_p99(ms) | notes |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| array | set | 139664.800000 | 128369.710000 | 0.207000 | 0.343000 | 0.535000 | 0.199000 | 0.303000 | 0.447000 | set/get aligned; kv/redis qps=1.088 |
-| array | get | 133868.810000 | 123915.740000 | 0.239000 | 0.431000 | 0.711000 | 0.191000 | 0.351000 | 0.567000 | set/get aligned; kv/redis qps=1.080 |
+| array | set | 115340.260000 | 105708.250000 | 0.215000 | 0.447000 | 0.775000 | 0.223000 | 0.455000 | 0.615000 | set/get aligned; kv/redis qps=1.091 |
+| array | get | 108695.650000 | 94876.660000 | 0.223000 | 0.559000 | 0.807000 | 0.239000 | 0.527000 | 0.855000 | set/get aligned; kv/redis qps=1.146 |
 | hash | set | 138504.160000 | 136239.780000 | 0.191000 | 0.311000 | 0.551000 | 0.183000 | 0.279000 | 0.439000 | set/get aligned; kv/redis qps=1.017 |
 | hash | get | 136612.020000 | 129870.130000 | 0.183000 | 0.311000 | 0.567000 | 0.199000 | 0.295000 | 0.487000 | set/get aligned; kv/redis qps=1.052 |
-| rbtree | set | 111731.840000 | 127877.230000 | 0.375000 | 0.639000 | 0.847000 | 0.191000 | 0.319000 | 0.503000 | set/get aligned; kv/redis qps=0.874 |
-| rbtree | get | 112233.450000 | 126742.720000 | 0.383000 | 0.631000 | 0.815000 | 0.199000 | 0.311000 | 0.463000 | set/get aligned; kv/redis qps=0.886 |
-| skiptable | set | 92081.030000 | 132978.730000 | 0.479000 | 0.767000 | 1.087000 | 0.191000 | 0.263000 | 0.391000 | set/get aligned; kv/redis qps=0.692 |
-| skiptable | get | 95969.280000 | 131752.310000 | 0.455000 | 0.743000 | 0.991000 | 0.183000 | 0.335000 | 0.543000 | set/get aligned; kv/redis qps=0.728 |
+| rbtree | set | 114547.530000 | 108225.100000 | 0.343000 | 0.583000 | 0.807000 | 0.223000 | 0.447000 | 0.679000 | set/get aligned; kv/redis qps=1.058 |
+| rbtree | get | 115473.450000 | 114025.090000 | 0.327000 | 0.567000 | 0.767000 | 0.215000 | 0.407000 | 0.567000 | set/get aligned; kv/redis qps=1.013 |
+| skiptable | set | 102774.920000 | 123001.230000 | 0.407000 | 0.711000 | 1.103000 | 0.207000 | 0.271000 | 0.511000 | set/get aligned; kv/redis qps=0.836 |
+| skiptable | get | 105820.110000 | 117370.890000 | 0.407000 | 0.671000 | 0.983000 | 0.215000 | 0.303000 | 0.591000 | set/get aligned; kv/redis qps=0.902 |
 
-- `array/hash` 在本轮压测中保持在 `13w+ qps` 区间，`rbtree` 在 `11w+ qps` 区间
-- `skiptable` 的写读路径开销更高
+- 四种结构都在 `10w+ qps` 区间，其中 `skiptable` 仍是写路径里最弱的一组
+- `SET/GET` are directly aligned using redis-benchmark custom commands and same c/n/P/value_size/keyspace.
 
 > 原始数据：`results/raw.csv`  
 > 汇总报告：`results/summary.md`
 
-### 6.2 自定义压测数据：单机 vs 主从同步（TCP）
+### 6.2 三网络框架读写对比
+
+- 以下数据来自 `tests/write_qps_test` 的写路径压测，`count=100000`，目标地址 `192.168.36.141:9300`。
+- 三次结果分别对应 `reactor`、`io_uring`、`协程` 三种网络框架。
+- 这里比较的是网络层对端到端写吞吐的影响，存储引擎和命令负载保持一致（mode=5）。
+
+| Structure | reactor qps | io_uring qps | 协程 qps |
+| --- | ---: | ---: | ---: |
+| array | 13685.51 | 13721.19 | 10215.55 |
+| rbtree | 13892.75 | 14718.87 | 11075.42 |
+| hash | 14632.72 | 15777.85 | 11709.60 |
+| skiptable | 14042.97 | 15281.17 | 11956.00 |
+
+- 本次样本中 `io_uring` 整体最高，`协程` 最低，`reactor` 居中。
+
+### 6.3 自定义压测数据：单机 vs 主从同步（TCP）
 
 注：该组数据均为 `100000` 次写入，且测试时关闭 AOF。
 
@@ -395,7 +410,7 @@ if(g_cfg.mem_backend == KVS_MEM_BACKEND_JEMALLOC){
 | Master-Slave | hash      | 100000 | 16452.01 |
 | Master-Slave | skiptable | 100000 | 16559.29 |
 
-### 6.3 自定义压测数据：单机 vs 主从同步（eBPF）
+### 6.4 自定义压测数据：单机 vs 主从同步（eBPF）
 
 | Mode         | Structure | count  | QPS |
 | ------------ | --------- | ------ | --- |
@@ -412,7 +427,7 @@ if(g_cfg.mem_backend == KVS_MEM_BACKEND_JEMALLOC){
 | Master-Slave | hash      | 100000 | 15231.43（批处理） |
 | Master-Slave | skiptable | 100000 | 15179.61（批处理） |
 
-### 6.4 eBPF 批处理佐证（send_all 统计）
+### 6.5 eBPF 批处理佐证（send_all 统计）
 
 - 无批处理：每次发送通常对应一条小同步指令，`avg` 约 30B，系统调用频繁。
 - 批处理：多条同步指令聚合后再发，`avg` 提升到 128KB（`131072`），系统调用次数显著下降。
@@ -422,7 +437,7 @@ if(g_cfg.mem_backend == KVS_MEM_BACKEND_JEMALLOC){
 | 无批处理 | 8281 ~ 13553 | 256711 ~ 420143 | 31.0 ~ 31.8 |
 | 批处理 | 3 ~ 5 | 393216 ~ 655360 | 131072.0 |
 
-### 6.5 自定义压测数据：不同内存后端对比
+### 6.6 自定义压测数据：不同内存后端对比
 
 **基础功能（pool / system / jemalloc）**
 
@@ -525,7 +540,7 @@ scripts/bench_all.sh
 ./tests/testcase 127.0.0.1 9300 9 127.0.0.1 9301
 ```
 
-3) **自定义混合写删负载（对应 6.5 第二张表）**
+3) **自定义混合写删负载（对应 6.6 第二张表）**
 
 ```bash
 # mode=7: 2次写入 -> 1次删除 -> 间隔后再写入1次 -> 最后删除2次
