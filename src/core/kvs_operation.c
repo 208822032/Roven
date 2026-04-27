@@ -779,19 +779,35 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             float parsed_threshold = 0.0f;
 
             /*
-            * VSEARCH query [scope] [topk] [threshold]
+            * VSEARCH query
+            * VSEARCH query topk
+            * VSEARCH query scope
+            * VSEARCH query scope topk
+            * VSEARCH query scope topk threshold
+            *
+            * 解析规则：
             *
             * count == 2:
-            *   query
+            *   tokens[1] = query
             *
             * count == 3:
-            *   query scope
+            *   如果 tokens[2] 是正整数，则认为是 topk
+            *   否则认为是 scope
             *
             * count == 4:
-            *   query scope topk
+            *   tokens[2] = scope
+            *   tokens[3] = topk
             *
             * count == 5:
-            *   query scope topk threshold
+            *   tokens[2] = scope
+            *   tokens[3] = topk
+            *   tokens[4] = threshold
+            *
+            * 如果想指定空 scope 并传 topk，可以用：
+            *   VSEARCH query "" topk
+            *
+            * RESP 里空 scope 对应：
+            *   $0\r\n\r\n
             */
             if (count < 2 || count > 5) {
                 return -1;
@@ -803,15 +819,25 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             ctx->query_text = tokens[1];
             ctx->query_text_len = ctx->key_len;
 
-            if (count >= 3) {
-                ctx->scope = tokens[2];
-                ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+            if (count == 3) {
+                if (kvs_vcmd_parse_positive_int(tokens[2], &parsed_topk) == 0) {
+                    ctx->topk = parsed_topk;
+                } else {
+                    ctx->scope = tokens[2];
+                    ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+                }
+
+                return 0;
             }
 
             if (count >= 4) {
+                ctx->scope = tokens[2];
+                ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+
                 if (kvs_vcmd_parse_positive_int(tokens[3], &parsed_topk) != 0) {
                     return -1;
                 }
+
                 ctx->topk = parsed_topk;
             }
 
@@ -819,6 +845,7 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
                 if (kvs_vcmd_parse_float_arg(tokens[4], &parsed_threshold) != 0) {
                     return -1;
                 }
+
                 ctx->threshold = parsed_threshold;
             }
 

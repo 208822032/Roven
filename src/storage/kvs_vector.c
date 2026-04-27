@@ -677,6 +677,205 @@ static int kvs_vector_record_mark_deleted(kvs_vector_record_t *record) {
 }
 
 /*
+ * 判断 record 是否属于指定 scope。
+ *
+ * VSEARCH 如果传入 scope，只搜索该 scope 下的记录；
+ * 如果 scope 为空，只搜索空 scope 记录。
+ */
+static int kvs_vector_record_scope_match(
+	const kvs_vector_record_t *record,
+	const char *scope,
+	size_t scope_len
+) {
+	if (!record) {
+		return 0;
+	}
+
+	if (record->state != KVS_VECTOR_RECORD_ACTIVE || record->deleted) {
+		return 0;
+	}
+
+	return kvs_vector_scope_equal(record->scope, record->scope_len, scope, scope_len);
+}
+
+/*
+ * 简单字符重叠计数。
+ *
+ * 这是 VSEARCH MVP 的字符级相似度基础，不是最终 embedding 检索。
+ */
+static size_t kvs_vector_char_overlap_count(
+	const char *lhs,
+	size_t lhs_len,
+	const char *rhs,
+	size_t rhs_len
+) {
+	size_t i;
+	size_t j;
+	size_t count = 0;
+
+	if (!lhs || !rhs || lhs_len == 0 || rhs_len == 0) {
+		return 0;
+	}
+
+	for (i = 0; i < lhs_len; ++i) {
+		for (j = 0; j < rhs_len; ++j) {
+			if (lhs[i] == rhs[j]) {
+				count++;
+				break;
+			}
+		}
+	}
+
+	return count;
+}
+
+/*
+ * 字符级相似度打分。
+ *
+ * MVP 规则：
+ * 1. exact match：1.0
+ * 2. query 被 question 包含，或 question 被 query 包含：0.85
+ * 3. 字符重叠：0.1 ~ 0.8
+ *
+ * 后续接 embedding 后，可以替换这里为 dot product / cosine / L2。
+ */
+static float kvs_vector_text_score(
+	const char *query,
+	size_t query_len,
+	const char *question,
+	size_t question_len
+) {
+	size_t overlap;
+	size_t base_len;
+	float score;
+
+	if (!query || !question || query_len == 0 || question_len == 0) {
+		return 0.0f;
+	}
+
+	if (kvs_vector_text_equal(query, query_len, question, question_len)) {
+		return 1.0f;
+	}
+
+	if (query_len <= question_len && strstr(question, query) != NULL) {
+		return 0.85f;
+	}
+
+	if (question_len <= query_len && strstr(query, question) != NULL) {
+		return 0.85f;
+	}
+
+	overlap = kvs_vector_char_overlap_count(query, query_len, question, question_len);
+	base_len = query_len > question_len ? query_len : question_len;
+
+	if (base_len == 0 || overlap == 0) {
+		return 0.0f;
+	}
+
+	score = (float)overlap / (float)base_len;
+
+	/*
+	 * 字符重叠分不要超过包含匹配分。
+	 */
+	if (score > 0.8f) {
+		score = 0.8f;
+	}
+
+	return score;
+}
+
+/*
+ * 计算一条 record 对 query 的搜索分数。
+ *
+ * 第 7 步优先使用 question 和 normalized_question。
+ * answer 暂不参与打分，避免答案文本过长导致误召回。
+ */
+static float kvs_vector_record_score(
+	const kvs_vector_record_t *record,
+	const char *query,
+	size_t query_len
+) {
+	float score_question;
+	float score_normalized;
+
+	if (!record || record->state != KVS_VECTOR_RECORD_ACTIVE || record->deleted) {
+		return 0.0f;
+	}
+
+	score_question = kvs_vector_text_score(
+		query,
+		query_len,
+		record->question,
+		record->question_len
+	);
+
+	score_normalized = kvs_vector_text_score(
+		query,
+		query_len,
+		record->normalized_question,
+		record->normalized_question_len
+	);
+
+	return score_question > score_normalized ? score_question : score_normalized;
+}
+
+/*
+ * 把候选插入 topK 结果数组。
+ *
+ * 当前 results 数组始终保持按 score 降序排列。
+ * capacity 通常等于 topk。
+ */
+static void kvs_vector_topk_insert(
+	kvs_vector_search_result_t *results,
+	size_t *results_count,
+	size_t results_capacity,
+	const kvs_vector_record_t *record,
+	float score
+) {
+	size_t count;
+	size_t pos;
+	size_t i;
+
+	if (!results || !results_count || !record || results_capacity == 0) {
+		return;
+	}
+
+	count = *results_count;
+
+	/*
+	 * 如果结果数组已满，并且新分数不超过最后一名，直接丢弃。
+	 */
+	if (count >= results_capacity && score <= results[count - 1].score) {
+		return;
+	}
+
+	if (count < results_capacity) {
+		count++;
+	}
+
+	pos = count - 1;
+	while (pos > 0 && results[pos - 1].score < score) {
+		if (pos < results_capacity) {
+			results[pos] = results[pos - 1];
+		}
+		pos--;
+	}
+
+	kvs_vector_search_result_from_record(&results[pos], record);
+	results[pos].score = score;
+
+	/*
+	 * 如果中间移动留下了尾部旧数据，确保 count 之后不暴露。
+	 */
+	for (i = count; i < results_capacity; ++i) {
+		kvs_vector_search_result_reset(&results[i]);
+	}
+
+	*results_count = count;
+}
+
+
+/*
  * 初始化 store。
  */
 static int kvs_vector_store_init(kvs_vector_store_t *store) {
@@ -1364,6 +1563,7 @@ int kvs_vector_get(
 }
 
 //检索接口
+//检索接口
 int kvs_vector_search(
 	const char *query,
 	size_t query_len,
@@ -1375,14 +1575,11 @@ int kvs_vector_search(
 	size_t results_capacity,
 	size_t *results_count
 ) {
+	kvs_vector_store_t *store;
+	size_t i;
+	size_t limit;
 	int ret;
-
-	(void)query;
-	(void)query_len;
-	(void)scope;
-	(void)scope_len;
-	(void)topk;
-	(void)threshold;
+	float effective_threshold;
 
 	if (results && results_capacity > 0) {
 		kvs_vector_search_results_reset(results, results_capacity);
@@ -1397,10 +1594,74 @@ int kvs_vector_search(
 		return ret;
 	}
 
-	return KVS_VECTOR_ERR_NOT_IMPLEMENTED;
+	if (!query || query_len == 0 || !results || results_capacity == 0 || !results_count) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	if (!scope) {
+		scope_len = 0;
+	}
+
+	if (topk <= 0) {
+		topk = 1;
+	}
+
+	limit = (size_t)topk;
+	if (limit > results_capacity) {
+		limit = results_capacity;
+	}
+
+	/*
+	 * 默认阈值。
+	 *
+	 * 如果调用方没有显式传 threshold，命令层会传 0.0。
+	 * 直接使用 0 会导致任意字符重叠都被召回，例如：
+	 * not_existing_query 也可能命中 search_key。
+	 *
+	 * MVP 阶段先使用 0.5 作为默认召回门槛：
+	 * 1. exact match = 1.0，可以返回；
+	 * 2. substring match = 0.85，可以返回；
+	 * 3. 弱字符重叠通常低于 0.5，会被过滤。
+	 */
+	effective_threshold = threshold;
+	if (effective_threshold <= 0.0f) {
+		effective_threshold = 0.5f;
+	}
+
+	store = &g_vector_state.store;
+	if (!store->records || store->capacity == 0 || store->active_records == 0) {
+		return KVS_VECTOR_OK;
+	}
+
+	for (i = 0; i < store->capacity; ++i) {
+		kvs_vector_record_t *record = &store->records[i];
+		float score;
+
+		if (!kvs_vector_record_scope_match(record, scope, scope_len)) {
+			continue;
+		}
+
+		score = kvs_vector_record_score(record, query, query_len);
+		if (score <= 0.0f) {
+			continue;
+		}
+
+		if (score < effective_threshold) {
+			continue;
+		}
+
+		kvs_vector_topk_insert(
+			results,
+			results_count,
+			limit,
+			record,
+			score
+		);
+	}
+
+	return KVS_VECTOR_OK;
 }
 
-//删除接口
 //删除接口
 int kvs_vector_del(
 	const char *question,
@@ -1457,15 +1718,6 @@ int kvs_vector_index_rebuild(void) {
 		return ret;
 	}
 
-	/*
-	 * 第 6 步的 VINDEX REBUILD：
-	 * 1. 清理 deleted record；
-	 * 2. 压缩 records；
-	 * 3. 重置 flat index 占位状态；
-	 * 4. 清除 needs_rebuild。
-	 *
-	 * 当前还没有真正的 embedding / flat vector，所以不构建向量索引。
-	 */
 	ret = kvs_vector_store_compact(&g_vector_state.store);
 	if (ret != KVS_VECTOR_OK) {
 		return ret;

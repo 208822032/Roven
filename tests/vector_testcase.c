@@ -305,6 +305,32 @@ static void testcase_contains(int fd, const char *msg, const char *needle, const
     exit(1);
 }
 
+static void testcase_not_contains(int fd, const char *msg, const char *needle, const char *name) {
+    char resp[MAX_RESP_LEN];
+
+    memset(resp, 0, sizeof(resp));
+
+    if (send_all(fd, msg, (int)strlen(msg)) < 0) {
+        fprintf(stderr, "==> FAILED -> %s, send failed\n", name);
+        exit(1);
+    }
+
+    if (recv_full_resp(fd, resp, sizeof(resp)) < 0) {
+        fprintf(stderr, "==> FAILED -> %s, recv failed\n", name);
+        exit(1);
+    }
+
+    if (strstr(resp, needle) == NULL) {
+        printf("==> PASS -> %s\n", name);
+        return;
+    }
+
+    printf("==> FAILED -> %s\n", name);
+    printf("Expected response NOT to contain:\n%s\n", needle);
+    printf("Received:\n%s\n", resp);
+    exit(1);
+}
+
 static void testcase_ignore_response(int fd, const char *msg, const char *name) {
     char resp[MAX_RESP_LEN];
 
@@ -508,13 +534,168 @@ static void vector_resp_testcase(int fd) {
     );
 
     /*
-     * 当前阶段 VSEARCH 还没有实现。
-     */
+    * VSEARCH MVP：字符级检索。
+    */
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$10\r\nsearch_key\r\n",
+        "VDEL-clean-search-key-ignore-result"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$11\r\nsearch_key2\r\n",
+        "VDEL-clean-search-key2-ignore-result"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*3\r\n$4\r\nVDEL\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n",
+        "VDEL-clean-scoped-query-vscope1-ignore-result"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*3\r\n$4\r\nVDEL\r\n$12\r\nscoped_query\r\n$7\r\nvscope2\r\n",
+        "VDEL-clean-scoped-query-vscope2-ignore-result"
+    );
+
     testcase_raw(
         fd,
-        "*2\r\n$7\r\nVSEARCH\r\n$7\r\nvec_key\r\n",
-        "-NOT IMPLEMENTED\r\n",
-        "VSEARCH-not-implemented"
+        "*3\r\n$4\r\nVSET\r\n$10\r\nsearch_key\r\n$13\r\nsearch_answer\r\n",
+        "+OK\r\n",
+        "VSET-search-key"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVSET\r\n$11\r\nsearch_key2\r\n$14\r\nsearch_answer2\r\n",
+        "+OK\r\n",
+        "VSET-search-key2"
+    );
+
+    testcase_contains(
+        fd,
+        "*2\r\n$7\r\nVSEARCH\r\n$10\r\nsearch_key\r\n",
+        "question:search_key",
+        "VSEARCH-basic-contains-question"
+    );
+
+    testcase_contains(
+        fd,
+        "*2\r\n$7\r\nVSEARCH\r\n$10\r\nsearch_key\r\n",
+        "answer:search_answer",
+        "VSEARCH-basic-contains-answer"
+    );
+
+    /*
+    * 新协议增强：
+    * VSEARCH query topk
+    *
+    * 这里第三个参数 1 应该被解析成 topk，而不是 scope。
+    * 返回数组头应该是 *1。
+    */
+    testcase_contains(
+        fd,
+        "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
+        "*1\r\n",
+        "VSEARCH-query-topk-array-size"
+    );
+
+    testcase_contains(
+        fd,
+        "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
+        "score:",
+        "VSEARCH-query-topk-score"
+    );
+
+    /*
+    * scope 检索：
+    * 同一个 query，不同 scope 应该只返回对应 scope 的记录。
+    */
+    testcase_raw(
+        fd,
+        "*4\r\n$4\r\nVSET\r\n$12\r\nscoped_query\r\n$14\r\nscoped_answer1\r\n$7\r\nvscope1\r\n",
+        "+OK\r\n",
+        "VSET-scoped-query-vscope1"
+    );
+
+    testcase_raw(
+        fd,
+        "*4\r\n$4\r\nVSET\r\n$12\r\nscoped_query\r\n$14\r\nscoped_answer2\r\n$7\r\nvscope2\r\n",
+        "+OK\r\n",
+        "VSET-scoped-query-vscope2"
+    );
+
+    testcase_contains(
+        fd,
+        "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
+        "answer:scoped_answer1",
+        "VSEARCH-scope-vscope1-contains-answer1"
+    );
+
+    testcase_not_contains(
+        fd,
+        "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
+        "answer:scoped_answer2",
+        "VSEARCH-scope-vscope1-not-answer2"
+    );
+
+    testcase_contains(
+        fd,
+        "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope2\r\n$1\r\n1\r\n",
+        "answer:scoped_answer2",
+        "VSEARCH-scope-vscope2-contains-answer2"
+    );
+
+    /*
+    * threshold 过滤：
+    * exact match 分数是 1.0，所以 threshold=0.9 应该保留。
+    */
+    testcase_contains(
+        fd,
+        "*5\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n$3\r\n0.9\r\n",
+        "answer:scoped_answer1",
+        "VSEARCH-threshold-keep-exact"
+    );
+
+    /*
+    * threshold 过高：
+    * 当前最高分是 1.0，threshold=1.1 应该返回空数组。
+    */
+    testcase_raw(
+        fd,
+        "*5\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n$3\r\n1.1\r\n",
+        "*0\r\n",
+        "VSEARCH-threshold-filter-all"
+    );
+
+    /*
+    * 删除后，VSEARCH 不应该再返回 deleted record。
+    */
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVDEL\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n",
+        "+OK\r\n",
+        "VDEL-scoped-query-vscope1"
+    );
+
+    testcase_raw(
+        fd,
+        "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
+        "*0\r\n",
+        "VSEARCH-after-delete-empty"
+    );
+
+    /*
+    * 空结果：
+    * 完全不存在的 query 应该返回空数组。
+    */
+    testcase_raw(
+        fd,
+        "*2\r\n$7\r\nVSEARCH\r\n$18\r\nnot_existing_query\r\n",
+        "*0\r\n",
+        "VSEARCH-not-existing-empty"
     );
 
     printf("========== vector testcase pass ==========\n");
