@@ -21,11 +21,6 @@ extern kvs_rbtree_t global_rbtree;
 extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
 
-//rbtree回调遍历函数
-void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node,
-                                    void (*callback)(rbtree_node *, void *),
-                                    void *userdata);
-
 typedef enum {
     TTL_TARGET_NONE = 0,
     TTL_TARGET_ARRAY,
@@ -44,6 +39,18 @@ typedef struct {
 static int64_t ttl_target_get_expire_at(const ttl_target_ref_t *ref);
 static void ttl_target_set_expire_at(const ttl_target_ref_t *ref, int64_t expire_at_ms);
 static int ttl_target_delete(const ttl_target_ref_t *ref);
+
+#if ENABLE_RBTREE
+typedef struct {
+    char *resp;
+    int max_len;
+    int *off;
+    int overflow;
+    int64_t now_ms;
+} rbtree_dump_ctx_t;
+
+static void rbtree_dump_cb(rbtree_node *node, void *ud);
+#endif
 
 static int ttl_skiptable_key_compare(const Node *node, const char *key, size_t key_len) {
     if (!node || !node->key || !key) {
@@ -495,63 +502,72 @@ const char *command[] = {
     "AOFREWRITE",
     "QUIT",
     "FULLDUMP",
+    "VSET", "VGET", "VSEARCH", "VDEL", "VINDEX", "VINFO",
 };
 
 const command_info command_table[] = {
     //数组
-    {"SET", handle_set,  3, 1, DATA_STRUCTURE_ARRAY},
-    {"GET", handle_get,  2, 0, DATA_STRUCTURE_ARRAY},
-    {"DEL", handle_del,  2, 1, DATA_STRUCTURE_ARRAY},
-    {"MOD", handle_mod,  3, 1, DATA_STRUCTURE_ARRAY},
-    {"EXIST",  handle_exist,  2, 0, DATA_STRUCTURE_ARRAY},
-    {"RANGE",  handle_range,  3, 0, DATA_STRUCTURE_ARRAY},
-    {"SORT",   handle_sort,  -1, 0, DATA_STRUCTURE_ARRAY}, // 至少需要2个参数
+    {"SET", handle_set,  3, 1, DATA_STRUCTURE_ARRAY, KVS_CMD_LOCK_WRITE},
+    {"GET", handle_get,  2, 0, DATA_STRUCTURE_ARRAY, KVS_CMD_LOCK_READ},
+    {"DEL", handle_del,  2, 1, DATA_STRUCTURE_ARRAY, KVS_CMD_LOCK_WRITE},
+    {"MOD", handle_mod,  3, 1, DATA_STRUCTURE_ARRAY, KVS_CMD_LOCK_WRITE},
+    {"EXIST",  handle_exist,  2, 0, DATA_STRUCTURE_ARRAY, KVS_CMD_LOCK_READ},
+    {"RANGE",  handle_range,  3, 0, DATA_STRUCTURE_ARRAY, KVS_CMD_LOCK_WRITE},
+    {"SORT",   handle_sort,  -1, 0, DATA_STRUCTURE_ARRAY, KVS_CMD_LOCK_WRITE}, // 至少需要2个参数
 
     // RBTree commands
-    {"RSET",   handle_set,    3, 1, DATA_STRUCTURE_RBTREE},
-    {"RGET",   handle_get,    2, 0, DATA_STRUCTURE_RBTREE},
-    {"RDEL",   handle_del,    2, 1, DATA_STRUCTURE_RBTREE},
-    {"RMOD",   handle_mod,    3, 1, DATA_STRUCTURE_RBTREE},
-    {"REXIST", handle_exist,  2, 0, DATA_STRUCTURE_RBTREE},
-    {"RRANGE", handle_range, -1, 0, DATA_STRUCTURE_RBTREE},
-    {"RSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_RBTREE},
+    {"RSET",   handle_set,    3, 1, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_WRITE},
+    {"RGET",   handle_get,    2, 0, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_READ},
+    {"RDEL",   handle_del,    2, 1, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_WRITE},
+    {"RMOD",   handle_mod,    3, 1, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_WRITE},
+    {"REXIST", handle_exist,  2, 0, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_READ},
+    {"RRANGE", handle_range, -1, 0, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_WRITE},
+    {"RSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_WRITE},
 
     // Hash commands）
-    {"HSET",   handle_set,    3, 1, DATA_STRUCTURE_HASH},
-    {"HGET",   handle_get,    2, 0, DATA_STRUCTURE_HASH},
-    {"HDEL",   handle_del,    2, 1, DATA_STRUCTURE_HASH},
-    {"HMOD",   handle_mod,    3, 1, DATA_STRUCTURE_HASH},
-    {"HEXIST", handle_exist,  2, 0, DATA_STRUCTURE_HASH},
-    {"HRANGE", handle_range,  3, 0, DATA_STRUCTURE_HASH},
-    {"HSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_HASH},
+    {"HSET",   handle_set,    3, 1, DATA_STRUCTURE_HASH, KVS_CMD_LOCK_WRITE},
+    {"HGET",   handle_get,    2, 0, DATA_STRUCTURE_HASH, KVS_CMD_LOCK_READ},
+    {"HDEL",   handle_del,    2, 1, DATA_STRUCTURE_HASH, KVS_CMD_LOCK_WRITE},
+    {"HMOD",   handle_mod,    3, 1, DATA_STRUCTURE_HASH, KVS_CMD_LOCK_WRITE},
+    {"HEXIST", handle_exist,  2, 0, DATA_STRUCTURE_HASH, KVS_CMD_LOCK_READ},
+    {"HRANGE", handle_range,  3, 0, DATA_STRUCTURE_HASH, KVS_CMD_LOCK_WRITE},
+    {"HSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_HASH, KVS_CMD_LOCK_WRITE},
 
     // SkipTable commands
-    {"SSET",   handle_set,    3, 1, DATA_STRUCTURE_SKIPTABLE},
-    {"SGET",   handle_get,    2, 0, DATA_STRUCTURE_SKIPTABLE},
-    {"SDEL",   handle_del,    2, 1, DATA_STRUCTURE_SKIPTABLE},
-    {"SMOD",   handle_mod,    3, 1, DATA_STRUCTURE_SKIPTABLE},
-    {"SEXIST", handle_exist,  2, 0, DATA_STRUCTURE_SKIPTABLE},
-    {"SRANGE", handle_range, -1, 0, DATA_STRUCTURE_SKIPTABLE},
-    {"SSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_SKIPTABLE},
+    {"SSET",   handle_set,    3, 1, DATA_STRUCTURE_SKIPTABLE, KVS_CMD_LOCK_WRITE},
+    {"SGET",   handle_get,    2, 0, DATA_STRUCTURE_SKIPTABLE, KVS_CMD_LOCK_READ},
+    {"SDEL",   handle_del,    2, 1, DATA_STRUCTURE_SKIPTABLE, KVS_CMD_LOCK_WRITE},
+    {"SMOD",   handle_mod,    3, 1, DATA_STRUCTURE_SKIPTABLE, KVS_CMD_LOCK_WRITE},
+    {"SEXIST", handle_exist,  2, 0, DATA_STRUCTURE_SKIPTABLE, KVS_CMD_LOCK_READ},
+    {"SRANGE", handle_range, -1, 0, DATA_STRUCTURE_SKIPTABLE, KVS_CMD_LOCK_WRITE},
+    {"SSORT",  handle_sort,  -1, 0, DATA_STRUCTURE_SKIPTABLE, KVS_CMD_LOCK_WRITE},
 
     // Paper commands (use RBTree for large values)
-    {"PAPERSET", handle_set,  3, 1, DATA_STRUCTURE_RBTREE},
-    {"PAPERGET", handle_get,  2, 0, DATA_STRUCTURE_RBTREE},
-    {"PAPERDEL", handle_del,  2, 1, DATA_STRUCTURE_RBTREE},
-    {"PAPERMOD", handle_mod,  3, 1, DATA_STRUCTURE_RBTREE},
+    {"PAPERSET", handle_set,  3, 1, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_WRITE},
+    {"PAPERGET", handle_get,  2, 0, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_READ},
+    {"PAPERDEL", handle_del,  2, 1, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_WRITE},
+    {"PAPERMOD", handle_mod,  3, 1, DATA_STRUCTURE_RBTREE, KVS_CMD_LOCK_WRITE},
 
-    // TTL commands
-    {"EXPIRE", handle_expire,  3, 1, -1},
-    {"TTL",    handle_ttl,     2, 0, -1},
-    {"PERSIST", handle_persist, 2, 1, -1},
-    {"PEXPIREAT", handle_pexpireat, 3, 1, -1},
-    {"AOFREWRITE", handle_aofrewrite, 1, 0, -1},
+    // TTL command
+    {"EXPIRE", handle_expire,  3, 1, -1, KVS_CMD_LOCK_WRITE},
+    {"TTL",    handle_ttl,     2, 0, -1, KVS_CMD_LOCK_WRITE},
+    {"PERSIST", handle_persist, 2, 1, -1, KVS_CMD_LOCK_WRITE},
+    {"PEXPIREAT", handle_pexpireat, 3, 1, -1, KVS_CMD_LOCK_WRITE},
+    {"AOFREWRITE", handle_aofrewrite, 1, 0, -1, KVS_CMD_LOCK_NONE},
 
     // Special commands
-    {"QUIT",   handle_quit,   1, 0, -1},
-    {"FULLDUMP", handle_fulldump, 1, 0, -1},
+    {"QUIT",   handle_quit,   1, 0, -1, KVS_CMD_LOCK_NONE},
+    {"FULLDUMP", handle_fulldump, 1, 0, -1, KVS_CMD_LOCK_WRITE},
 
-    {NULL, NULL, 0, 0, -1} // 结束标记
+    //V族命令
+    {"VSET",    handle_vset_command,    -1, 1, -1, KVS_CMD_LOCK_WRITE},
+    {"VGET",    handle_vget_command,    -1, 0, -1, KVS_CMD_LOCK_READ},
+    {"VSEARCH", handle_vsearch_command, -1, 0, -1, KVS_CMD_LOCK_READ},
+    {"VDEL",    handle_vdel_command,    -1, 1, -1, KVS_CMD_LOCK_WRITE},
+    {"VINDEX",  handle_vindex_command,  -1, 1, -1, KVS_CMD_LOCK_WRITE},
+    {"VINFO",   handle_vinfo_command,   -1, 0, -1, KVS_CMD_LOCK_READ},
+
+    {NULL, NULL, 0, 0, -1, KVS_CMD_LOCK_NONE} // 结束标记
 };
 
 
@@ -616,11 +632,75 @@ int convert_multiline_to_resp_array(char *multiline_response, char *response, in
 
 }
 
+/**
+ * V族命令 解析辅助函数
+ */
+static size_t kvs_vcmd_token_len(const char *s){
+    if(!s) return 0;
+    return strlen(s);
+}
+
+static int kvs_vcmd_parse_positive_int(const char *s, int *out){
+    char *endptr = NULL;
+    long value;
+
+    if (!s || !*s || !out) {
+        return -1;
+    }
+
+    errno = 0;
+    value = strtol(s, &endptr, 10);
+    if (endptr == s || *endptr != '\0' || errno == ERANGE) {
+        return -1;
+    }
+
+    if (value <= 0 || value > 1024) {
+        return -1;
+    }
+
+    *out = (int)value;
+    return 0;
+}
+
+static int kvs_vcmd_parse_float_arg(const char *s, float *out) {
+    char *endptr = NULL;
+    float value;
+
+    if (!s || !*s || !out) {
+        return -1;
+    }
+
+    errno = 0;
+    value = strtof(s, &endptr);
+    if (endptr == s || *endptr != '\0' || errno == ERANGE) {
+        return -1;
+    }
+
+    *out = value;
+    return 0;
+}
+
+static int kvs_vcmd_is_rebuild(const char *s) {
+    if (!s) {
+        return 0;
+    }
+
+    return strcasecmp(s, "REBUILD") == 0;
+}
+
 //解析命令参数到上下文
 int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx){
     memset(ctx, 0, sizeof(command_context_t));
     ctx->limit = -1;
     ctx->lock_mode = KVS_LOCK_MODE_WRITE;
+    ctx->scope = NULL;
+    ctx->scope_len = 0;
+    ctx->subcommand = NULL;
+    ctx->subcommand_len = 0;
+    ctx->topk = 1;
+    ctx->threshold = 0.0f;
+    ctx->query_text = NULL;
+    ctx->query_text_len = 0;
 
     //设置数据结构类型
     if(cmd >= KVS_CMD_SET && cmd <= KVS_CMD_SORT ){
@@ -641,6 +721,152 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
     }else if(cmd == KVS_CMD_FULLDUMP){
         //FULLDUMP命令不需要额外参数
         return 0;
+    }else if(cmd >= KVS_CMD_VSET && cmd <= KVS_CMD_VINFO){
+        /**
+         * V族命令 使用自己的数据结构
+         * 
+         * 最小协议：
+        * VSET question answer [scope]
+        * VGET question [scope]
+        * VSEARCH query [scope] [topk] [threshold]
+        * VDEL question [scope]
+        * VINDEX REBUILD
+        * VINFO
+        */
+
+        ctx->data_structure = -1; // V族命令使用特殊处理
+
+        if(cmd == KVS_CMD_VSET){
+            if(count != 3 && count != 4) return -1;
+
+            ctx->key = tokens[1];
+            ctx->key_len = kvs_vcmd_token_len(tokens[1]);
+
+            ctx->query_text = tokens[1];
+            ctx->query_text_len = ctx->key_len;
+
+            ctx->value = tokens[2];
+
+            if(count == 4){
+                ctx->scope = tokens[3];
+                ctx->scope_len = kvs_vcmd_token_len(tokens[3]);
+            }
+
+            return 0;
+        }
+
+        if(cmd == KVS_CMD_VGET){
+            if (count != 2 && count != 3) {
+                return -1;
+            }
+
+            ctx->key = tokens[1];
+            ctx->key_len = kvs_vcmd_token_len(tokens[1]);
+
+            ctx->query_text = tokens[1];
+            ctx->query_text_len = ctx->key_len;
+
+            if (count == 3) {
+                ctx->scope = tokens[2];
+                ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+            }
+
+            return 0;
+        }
+
+        if (cmd == KVS_CMD_VSEARCH) {
+            int parsed_topk = 0;
+            float parsed_threshold = 0.0f;
+
+            /*
+            * VSEARCH query [scope] [topk] [threshold]
+            *
+            * count == 2:
+            *   query
+            *
+            * count == 3:
+            *   query scope
+            *
+            * count == 4:
+            *   query scope topk
+            *
+            * count == 5:
+            *   query scope topk threshold
+            */
+            if (count < 2 || count > 5) {
+                return -1;
+            }
+
+            ctx->key = tokens[1];
+            ctx->key_len = kvs_vcmd_token_len(tokens[1]);
+
+            ctx->query_text = tokens[1];
+            ctx->query_text_len = ctx->key_len;
+
+            if (count >= 3) {
+                ctx->scope = tokens[2];
+                ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+            }
+
+            if (count >= 4) {
+                if (kvs_vcmd_parse_positive_int(tokens[3], &parsed_topk) != 0) {
+                    return -1;
+                }
+                ctx->topk = parsed_topk;
+            }
+
+            if (count >= 5) {
+                if (kvs_vcmd_parse_float_arg(tokens[4], &parsed_threshold) != 0) {
+                    return -1;
+                }
+                ctx->threshold = parsed_threshold;
+            }
+
+            return 0;
+        }
+
+        if (cmd == KVS_CMD_VDEL) {
+            if (count != 2 && count != 3) {
+                return -1;
+            }
+
+            ctx->key = tokens[1];
+            ctx->key_len = kvs_vcmd_token_len(tokens[1]);
+
+            ctx->query_text = tokens[1];
+            ctx->query_text_len = ctx->key_len;
+
+            if (count == 3) {
+                ctx->scope = tokens[2];
+                ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+            }
+            return 0;
+        }
+
+        if (cmd == KVS_CMD_VINDEX) {
+            if (count != 2) {
+                return -1;
+            }
+
+            if (!kvs_vcmd_is_rebuild(tokens[1])) {
+                return -1;
+            }
+
+            ctx->subcommand = tokens[1];
+            ctx->subcommand_len = kvs_vcmd_token_len(tokens[1]);
+
+            return 0;
+        }
+
+        if (cmd == KVS_CMD_VINFO) {
+            if (count != 1) {
+                return -1;
+            }
+
+            return 0;
+        }
+
+        return -1;
     }else{
         return -1; //未知命令 
     }  
@@ -748,6 +974,43 @@ const command_info *lookup_command(const char *name){
 
 //检查参数
 int check_arity(const command_info *cmd, int argc){
+    /*
+     * V 族命令参数数量校验。
+     *
+     * 注意：
+     * argc 包含命令名本身。
+     *
+     * VSET question answer [scope]                 => 3 或 4
+     * VGET question [scope]                        => 2 或 3
+     * VSEARCH query [scope] [topk] [threshold]     => 2 到 5
+     * VDEL question [scope]                        => 2 或 3
+     * VINDEX REBUILD                               => 2
+     * VINFO                                        => 1
+     */
+    if (strcmp(cmd->name, "VSET") == 0) {
+        return argc == 3 || argc == 4;
+    }
+
+    if (strcmp(cmd->name, "VGET") == 0) {
+        return argc == 2 || argc == 3;
+    }
+
+    if (strcmp(cmd->name, "VSEARCH") == 0) {
+        return argc >= 2 && argc <= 5;
+    }
+
+    if (strcmp(cmd->name, "VDEL") == 0) {
+        return argc == 2 || argc == 3;
+    }
+
+    if (strcmp(cmd->name, "VINDEX") == 0) {
+        return argc == 2;
+    }
+
+    if (strcmp(cmd->name, "VINFO") == 0) {
+        return argc == 1;
+    }
+
     if(strcmp(cmd->name, "RRANGE") == 0 || strcmp(cmd->name, "SRANGE") == 0){
         return argc == 3 || argc == 5;
     }
@@ -1249,41 +1512,7 @@ int handle_fulldump(command_context_t* ctx, char* response){
     }
 #endif
 #if ENABLE_RBTREE
-    struct rbtree_dump_ctx {
-        char *resp;
-        int   max_len;
-        int  *off;
-        int   overflow;
-        int64_t now_ms;
-    } rbt_ctx = { response, max_len, &off, 0 };
-
-    void rbtree_dump_cb(rbtree_node *node, void *ud) {
-        struct rbtree_dump_ctx *c = (struct rbtree_dump_ctx *)ud;
-        if (c->overflow) return;
-        if (!node->key || !node->value) return;
-        if (kv_is_expired(node->expire_at_ms, c->now_ms)) return;
-
-        if (fulldump_append_cmd3_len(c->resp, c->max_len, c->off,
-                                     "RSET", 4,
-                                     (const char *)node->key, (int)node->key_len,
-                                     (const char *)node->value, (int)node->value_len) < 0) {
-            c->overflow = 1;
-            return;
-        }
-
-        if (node->expire_at_ms >= 0) {
-            char expire_buf[32];
-            snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)node->expire_at_ms);
-            if (fulldump_append_cmd3_len(c->resp, c->max_len, c->off,
-                                         "PEXPIREAT", 9,
-                                         (const char *)node->key, (int)node->key_len,
-                                         expire_buf, (int)strlen(expire_buf)) < 0) {
-                c->overflow = 1;
-            }
-        }
-    }
-
-    rbt_ctx.now_ms = now_ms;
+    rbtree_dump_ctx_t rbt_ctx = { response, max_len, &off, 0, now_ms };
 
     rbtree_traversal_with_callback((rbtree *)&global_rbtree,
                                    global_rbtree.root,
@@ -1323,3 +1552,391 @@ int handle_fulldump(command_context_t* ctx, char* response){
 
     return off;
 }
+
+static int handle_v_not_implemented(command_context_t *ctx, char *response) {
+    (void)ctx;
+    return resp_generate_simple_string_n(response, '-', "NOT IMPLEMENTED", sizeof("NOT IMPLEMENTED") - 1);
+}
+
+/*
+ * 将 vector 模块内部状态码转换为 RESP 响应。
+ *
+ * 注意：
+ * handler 的返回值是 RESP 写入长度，不是业务状态码。
+ */
+static int handle_vector_status_response(int status, char *response) {
+    switch (status) {
+        case KVS_VECTOR_OK:
+            return resp_generate_simple_string_n(
+                response,
+                '+',
+                "OK",
+                sizeof("OK") - 1
+            );
+
+        case KVS_VECTOR_ERR_INVALID_ARG:
+            return resp_generate_simple_string_n(
+                response,
+                '-',
+                "ERR invalid vector argument",
+                sizeof("ERR invalid vector argument") - 1
+            );
+
+        case KVS_VECTOR_ERR_NOT_FOUND:
+            return resp_generate_simple_string_n(
+                response,
+                '+',
+                "NO EXIST",
+                sizeof("NO EXIST") - 1
+            );
+
+        case KVS_VECTOR_ERR_NOT_IMPLEMENTED:
+            return resp_generate_simple_string_n(
+                response,
+                '-',
+                "NOT IMPLEMENTED",
+                sizeof("NOT IMPLEMENTED") - 1
+            );
+
+        case KVS_VECTOR_ERR_NOT_INITIALIZED:
+            return resp_generate_simple_string_n(
+                response,
+                '-',
+                "ERR vector not initialized",
+                sizeof("ERR vector not initialized") - 1
+            );
+
+        case KVS_VECTOR_ERR:
+        default:
+            return resp_generate_simple_string_n(
+                response,
+                '-',
+                "ERR vector internal error",
+                sizeof("ERR vector internal error") - 1
+            );
+    }
+}
+
+/*
+ * 生成 VINFO 的 RESP 数组。
+ *
+ * 返回格式：
+ * [
+ *   "total_records:<n>",
+ *   "active_records:<n>",
+ *   "deleted_records:<n>",
+ *   "capacity:<n>",
+ *   "index_size:<n>",
+ *   "dimension:<n>",
+ *   "index_ready:<n>",
+ *   "needs_rebuild:<n>"
+ * ]
+ */
+static int handle_vector_info_response(const kvs_vector_info_t *info, char *response) {
+    char item[128];
+    int off = 0;
+    int n;
+
+    if (!info || !response) {
+        return resp_generate_simple_string_n(
+            response,
+            '-',
+            "ERR invalid vector info",
+            sizeof("ERR invalid vector info") - 1
+        );
+    }
+
+    off += resp_generate_array_start(response + off, 8);
+
+    n = snprintf(item, sizeof(item), "total_records:%zu", info->total_records);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "active_records:%zu", info->active_records);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "deleted_records:%zu", info->deleted_records);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "capacity:%zu", info->capacity);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "index_size:%zu", info->index_size);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "dimension:%zu", info->dimension);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "index_ready:%d", info->index_ready);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "needs_rebuild:%d", info->needs_rebuild);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    return off;
+}
+
+
+int handle_vset_command(command_context_t *ctx, char *response) {
+    int status;
+
+    if (!ctx || !ctx->query_text || !ctx->value) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+    }
+
+    status = kvs_vector_set(
+        ctx->query_text,
+        ctx->query_text_len,
+        ctx->value,
+        strlen(ctx->value),
+        ctx->scope,
+        ctx->scope_len
+    );
+
+    return handle_vector_status_response(status, response);
+}
+
+int handle_vget_command(command_context_t *ctx, char *response) {
+    int status;
+    kvs_vector_search_result_t result;
+
+    if (!ctx || !ctx->query_text) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+    }
+
+    kvs_vector_search_result_reset(&result);
+
+    status = kvs_vector_get(
+        ctx->query_text,
+        ctx->query_text_len,
+        ctx->scope,
+        ctx->scope_len,
+        &result
+    );
+
+    if (status == KVS_VECTOR_OK) {
+        if (!result.answer) {
+            return handle_vector_status_response(KVS_VECTOR_ERR_NOT_FOUND, response);
+        }
+
+        return resp_generate_bulk_string_n(
+            response,
+            result.answer,
+            result.answer_len
+        );
+    }
+
+    return handle_vector_status_response(status, response);
+}
+
+int handle_vsearch_command(command_context_t *ctx, char *response) {
+    int status;
+    int topk;
+    size_t results_count = 0;
+    size_t results_capacity;
+    size_t i;
+    int off = 0;
+    int n;
+    kvs_vector_search_result_t *results = NULL;
+
+    if (!ctx || !ctx->query_text) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+    }
+
+    topk = ctx->topk;
+    if (topk <= 0) {
+        topk = 1;
+    }
+
+    if (topk > 1024) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+    }
+
+    results_capacity = (size_t)topk;
+
+    results = (kvs_vector_search_result_t *)kvs_malloc(
+        results_capacity * sizeof(kvs_vector_search_result_t)
+    );
+    if (!results) {
+        return handle_vector_status_response(KVS_VECTOR_ERR, response);
+    }
+
+    kvs_vector_search_results_reset(results, results_capacity);
+
+    status = kvs_vector_search(
+        ctx->query_text,
+        ctx->query_text_len,
+        ctx->scope,
+        ctx->scope_len,
+        topk,
+        ctx->threshold,
+        results,
+        results_capacity,
+        &results_count
+    );
+
+    if (status != KVS_VECTOR_OK) {
+        kvs_free(results);
+        return handle_vector_status_response(status, response);
+    }
+
+    /*
+     * 当前 vector search 还没有真正实现。
+     * 后续实现后，这里返回 RESP 数组。
+     *
+     * MVP 格式：
+     * [
+     *   "score:<score>|scope:<scope>|question:<question>|answer:<answer>",
+     *   ...
+     * ]
+     */
+    off += resp_generate_array_start(response + off, (int)results_count);
+
+    for (i = 0; i < results_count; ++i) {
+        char item[1024];
+
+        n = snprintf(
+            item,
+            sizeof(item),
+            "score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+            results[i].score,
+            (int)results[i].scope_len,
+            results[i].scope ? results[i].scope : "",
+            (int)results[i].question_len,
+            results[i].question ? results[i].question : "",
+            (int)results[i].answer_len,
+            results[i].answer ? results[i].answer : ""
+        );
+
+        if (n < 0 || n >= (int)sizeof(item)) {
+            kvs_free(results);
+            return resp_generate_simple_string_n(
+                response,
+                '-',
+                "ERR response too large",
+                sizeof("ERR response too large") - 1
+            );
+        }
+
+        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+    }
+
+    kvs_free(results);
+    return off;
+}
+
+int handle_vdel_command(command_context_t *ctx, char *response) {
+    int status;
+
+    if (!ctx || !ctx->query_text) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+    }
+
+    status = kvs_vector_del(
+        ctx->query_text,
+        ctx->query_text_len,
+        ctx->scope,
+        ctx->scope_len
+    );
+
+    return handle_vector_status_response(status, response);
+}
+
+int handle_vindex_command(command_context_t *ctx, char *response) {
+    int status;
+
+    if (!ctx || !ctx->subcommand) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+    }
+
+    if (!kvs_vcmd_is_rebuild(ctx->subcommand)) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+    }
+
+    status = kvs_vector_index_rebuild();
+
+    return handle_vector_status_response(status, response);
+}
+
+int handle_vinfo_command(command_context_t *ctx, char *response) {
+    int status;
+    kvs_vector_info_t info;
+
+    (void)ctx;
+
+    memset(&info, 0, sizeof(info));
+
+    status = kvs_vector_info(&info);
+    if (status != KVS_VECTOR_OK) {
+        return handle_vector_status_response(status, response);
+    }
+
+    return handle_vector_info_response(&info, response);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#if ENABLE_RBTREE
+static void rbtree_dump_cb(rbtree_node *node, void *ud) {
+    rbtree_dump_ctx_t *c = (rbtree_dump_ctx_t *)ud;
+    if (!c || c->overflow) return;
+    if (!node->key || !node->value) return;
+    if (kv_is_expired(node->expire_at_ms, c->now_ms)) return;
+
+    if (fulldump_append_cmd3_len(c->resp, c->max_len, c->off,
+                                 "RSET", 4,
+                                 (const char *)node->key, (int)node->key_len,
+                                 (const char *)node->value, (int)node->value_len) < 0) {
+        c->overflow = 1;
+        return;
+    }
+
+    if (node->expire_at_ms >= 0) {
+        char expire_buf[32];
+        snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)node->expire_at_ms);
+        if (fulldump_append_cmd3_len(c->resp, c->max_len, c->off,
+                                     "PEXPIREAT", 9,
+                                     (const char *)node->key, (int)node->key_len,
+                                     expire_buf, (int)strlen(expire_buf)) < 0) {
+            c->overflow = 1;
+        }
+    }
+}
+#endif

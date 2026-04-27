@@ -53,6 +53,13 @@ enum {
 	// quit
 	KVS_CMD_QUIT,
 	KVS_CMD_FULLDUMP,
+	//vector
+	KVS_CMD_VSET,
+	KVS_CMD_VGET,
+	KVS_CMD_VSEARCH,
+	KVS_CMD_VDEL,
+	KVS_CMD_VINDEX,
+	KVS_CMD_VINFO,
 };
 
 // 数据结构类型

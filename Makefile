@@ -33,6 +33,7 @@ BASE_SRCS = \
 	$(SRC_STORAGE)/kvs_rbtree.c \
 	$(SRC_STORAGE)/kvs_hash.c \
 	$(SRC_STORAGE)/kvs_skiptable.c \
+	$(SRC_STORAGE)/kvs_vector.c \
 	$(SRC_STORAGE)/kvs_mempool.c \
 	$(SRC_STORAGE)/jemalloc_wrapper.c \
 	$(SRC_DIST)/distributed.c \
@@ -75,6 +76,7 @@ TEST_PAPER := $(TEST_DIR)/test_paper
 TEST_PAPER_SYNC := $(TEST_DIR)/test_paper_sync
 TEST_BIGVALUE := $(TEST_DIR)/test_bigvalue
 TEST_AI_CHAT_SCHEMA := $(TEST_DIR)/ai_chat_schema_test
+TEST_VECTOR := $(TEST_DIR)/vector_testcase
 TEST_TTL_LOOKUP_SPLIT := $(TEST_DIR)/ttl_lookup_split_bench
 TEST_SKIPTABLE_TARGETED := $(TEST_DIR)/skiptable_targeted_bench
 
@@ -88,7 +90,8 @@ TEST_BINARIES = \
 	$(TEST_PAPER) \
 	$(TEST_PAPER_SYNC) \
 	$(TEST_BIGVALUE) \
-	$(TEST_AI_CHAT_SCHEMA)
+	$(TEST_AI_CHAT_SCHEMA) \
+	$(TEST_VECTOR)
 
 CLANG ?= clang
 # 尝试查找 bpftool，如果找不到则默认为 bpftool
@@ -181,6 +184,9 @@ $(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(MEMPOOL_OBJS)
 
 $(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c $(SRC_STORAGE)/kvs_mempool.o $(SRC_STORAGE)/kvs_array.o $(SRC_STORAGE)/kvs_rbtree.o $(SRC_STORAGE)/kvs_hash.o $(SRC_STORAGE)/kvs_skiptable.o $(SRC_CORE)/kvs_globals.o $(SRC_UTILS)/kvs_log.o $(SRC_UTILS)/kvs_log_writer.o
 	$(CC) $(CFLAGS) -o $@ $< $(SRC_STORAGE)/kvs_mempool.o $(SRC_STORAGE)/kvs_array.o $(SRC_STORAGE)/kvs_rbtree.o $(SRC_STORAGE)/kvs_hash.o $(SRC_STORAGE)/kvs_skiptable.o $(SRC_CORE)/kvs_globals.o $(SRC_UTILS)/kvs_log.o $(SRC_UTILS)/kvs_log_writer.o -lpthread -ldl
+
+$(TEST_VECTOR): $(TEST_DIR)/vector_testcase.c
+	$(CC) $(CFLAGS) -o $@ $<
 
 # 生成 vmlinux.h
 $(VMLINUX_H):

@@ -8,6 +8,7 @@
 #include "jemalloc_wrapper.h"
 #include "kvs_memory_internal.h"
 #include "kvs_log.h"
+#include "kvs_vector.h"
 
 #include <strings.h>
 
@@ -69,8 +70,24 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		return resp_generate_simple_string_n(response, '-', "Invalid arguments", sizeof("Invalid arguments") - 1);
 	}
 
-	int use_read_lock = (cmd->handler == handle_get || cmd->handler == handle_exist);
+	// int use_read_lock = (cmd->handler == handle_get || cmd->handler == handle_exist);
+	// int lock_held = 0;
+	int use_read_lock = 0;
+	int use_write_lock = 0;
 	int lock_held = 0;
+
+	switch (cmd->lock_mode)
+	{
+		case KVS_CMD_LOCK_READ:
+			use_read_lock = 1;
+			break;
+		case KVS_CMD_LOCK_WRITE:
+		default:
+			use_write_lock = 1;
+			break;
+		case KVS_CMD_LOCK_NONE:
+			break;
+	}
 
 	if (use_read_lock) {
 		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
@@ -78,7 +95,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 		}
 		lock_held = 1;
 		ctx.lock_mode = KVS_LOCK_MODE_READ;
-	} else {
+	}else if(use_write_lock){
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
 			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 		}
@@ -192,6 +209,8 @@ int init_kvengine(void) {
 	kvs_skiptable_create(&global_skiptable);
 #endif
 
+	if(kvs_vector_init() != KVS_VECTOR_OK) return -1;
+
 	return 0;
 }
 
@@ -210,6 +229,8 @@ void dest_kvengine(void) {
 #if ENABLE_SKIPTABLE
 	kvs_skiptable_destroy(&global_skiptable);
 #endif
+
+	kvs_vector_destroy();
 
 	mem_destroy();  // 清理内存管理组件
 	
@@ -316,7 +337,13 @@ int main(int argc, char *argv[]) {
 
 	pthread_rwlock_init(&g_kv_data_rwlock, NULL);
 
-	init_kvengine();
+	if (init_kvengine() != 0) {
+		KVS_LOG_ERROR("core", "failed to initialize kv engine");
+		pthread_rwlock_destroy(&g_kv_data_rwlock);
+		mem_destroy();
+		kvs_log_shutdown();
+		return 1;
+	}
 
 	//先加载RDB文件
 	#if ENABLE_RDB

@@ -1,6 +1,7 @@
 
 
 #include "kvs_api.h"
+#include <bits/stdint-uintn.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

@@ -20,6 +20,8 @@
 #include "kvs_skiptable.h"
 #endif
 
+#include "kvs_vector.h"
+
 #include "kvs_operations.h"
 #include "kvs_command.h"
 #include "kvs_ai_chat_schema.h"
