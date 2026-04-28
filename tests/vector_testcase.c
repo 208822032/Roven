@@ -375,6 +375,20 @@ static void vector_resp_testcase(int fd) {
         "VINFO-basic"
     );
 
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "dimension:64",
+        "VINFO-vector-dimension-64"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "index_ready:1",
+        "VINFO-index-ready"
+    );
+
     /*
      * 清理可能残留的测试 key。
      * 如果不存在，当前实现会返回 NO EXIST。
@@ -509,6 +523,34 @@ static void vector_resp_testcase(int fd) {
         "VINFO-needs-rebuild-after-vdel"
     );
 
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "active_records:0",
+        "VINFO-active-records-zero-after-vdel"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "deleted_records:2",
+        "VINFO-deleted-records-two-after-vdel"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "total_records:2",
+        "VINFO-total-records-two-before-rebuild"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "index_size:0",
+        "VINFO-logical-index-size-zero-after-vdel"
+    );
+
     /*
      * VINDEX REBUILD 清理 tombstone。
      */
@@ -531,6 +573,27 @@ static void vector_resp_testcase(int fd) {
         "*1\r\n$5\r\nVINFO\r\n",
         "deleted_records:0",
         "VINFO-deleted-records-cleared"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "active_records:0",
+        "VINFO-active-records-zero-after-rebuild"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "total_records:0",
+        "VINFO-total-records-zero-after-rebuild"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "index_size:0",
+        "VINFO-index-size-zero-after-rebuild"
     );
 
     /*
@@ -560,6 +623,16 @@ static void vector_resp_testcase(int fd) {
         "VDEL-clean-scoped-query-vscope2-ignore-result"
     );
 
+    /*
+    * 清理 search 相关 tombstone，保证后续 index_size 断言稳定。
+    */
+    testcase_raw(
+        fd,
+        "*2\r\n$6\r\nVINDEX\r\n$7\r\nREBUILD\r\n",
+        "+OK\r\n",
+        "VINDEX-REBUILD-before-search-index-tests"
+    );
+
     testcase_raw(
         fd,
         "*3\r\n$4\r\nVSET\r\n$10\r\nsearch_key\r\n$13\r\nsearch_answer\r\n",
@@ -572,6 +645,48 @@ static void vector_resp_testcase(int fd) {
         "*3\r\n$4\r\nVSET\r\n$11\r\nsearch_key2\r\n$14\r\nsearch_answer2\r\n",
         "+OK\r\n",
         "VSET-search-key2"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "dimension:64",
+        "VINFO-after-vset-dimension-64"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "index_ready:1",
+        "VINFO-after-vset-index-ready"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "index_size:2",
+        "VINFO-after-vset-index-size-2"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "active_records:2",
+        "VINFO-after-vset-active-records-2"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "deleted_records:0",
+        "VINFO-after-vset-deleted-records-0"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "total_records:2",
+        "VINFO-after-vset-total-records-2"
     );
 
     testcase_contains(
@@ -678,6 +793,41 @@ static void vector_resp_testcase(int fd) {
         "*3\r\n$4\r\nVDEL\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n",
         "+OK\r\n",
         "VDEL-scoped-query-vscope1"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "needs_rebuild:1",
+        "VINFO-after-scoped-delete-needs-rebuild"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "deleted_records:1",
+        "VINFO-after-scoped-delete-deleted-records-1"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "active_records:3",
+        "VINFO-after-scoped-delete-active-records-3"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "total_records:4",
+        "VINFO-after-scoped-delete-total-records-4"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "index_size:3",
+        "VINFO-after-scoped-delete-logical-index-size-3"
     );
 
     testcase_raw(

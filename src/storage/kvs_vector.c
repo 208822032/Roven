@@ -34,7 +34,13 @@ static int g_vector_initialized = 0;
 #define KVS_VECTOR_INITIAL_RECORD_CAPACITY 16
 //初始id map容量
 #define KVS_VECTOR_INITIAL_ID_MAP_CAPACITY 32
-#define KVS_VECTOR_DEFAULT_DIMENSION 0
+/*
+ * Flat 向量索引 MVP 维度。
+ *
+ * 当前不接外部 embedding 模型，先用本地确定性 hash embedding。
+ * 后续接真实 embedding 时，只需要替换 kvs_vector_build_embedding()。
+ */
+#define KVS_VECTOR_DEFAULT_DIMENSION 64
 
 /*
  * record 状态。
@@ -278,6 +284,133 @@ static uint32_t kvs_vector_hash_key(const char *data, size_t len) {
 }
 
 /*
+ * 带 seed 的字节 hash。
+ *
+ * 用于把文本字节稳定映射到 embedding bucket。
+ * 这里不追求密码学安全，只要求确定性和分布相对均匀。
+ */
+static uint32_t kvs_vector_hash_bytes_seeded(
+	const char *data,
+	size_t len,
+	uint32_t seed
+) {
+	uint32_t hash = 2166136261u ^ seed;
+	size_t i;
+
+	if (!data || len == 0) {
+		return hash;
+	}
+
+	for (i = 0; i < len; ++i) {
+		hash ^= (unsigned char)data[i];
+		hash *= 16777619u;
+		hash ^= (uint32_t)i + (seed << 1);
+	}
+
+	return hash;
+}
+
+/*
+ * 构建本地确定性 embedding。
+ *
+ * MVP 策略：
+ * 1. 固定 64 维；
+ * 2. 按字符/字节 hash 分桶；
+ * 3. 使用 L1 归一化，避免引入 sqrtf 和 -lm；
+ * 4. 后续接真实 embedding 时，只替换这个函数即可。
+ */
+static int kvs_vector_build_embedding(
+	const char *text,
+	size_t text_len,
+	float **out_embedding,
+	int *out_dim
+) {
+	float *embedding;
+	size_t i;
+	float norm = 0.0f;
+	size_t dim = KVS_VECTOR_DEFAULT_DIMENSION;
+
+	if (!out_embedding || !out_dim) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	*out_embedding = NULL;
+	*out_dim = 0;
+
+	if (!text || text_len == 0 || dim == 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	embedding = (float *)kvs_malloc(dim * sizeof(float));
+	if (!embedding) {
+		return KVS_VECTOR_ERR;
+	}
+
+	memset(embedding, 0, dim * sizeof(float));
+
+	for (i = 0; i < text_len; ++i) {
+		unsigned char ch = (unsigned char)text[i];
+		uint32_t h1 = kvs_vector_hash_bytes_seeded((const char *)&text[i], 1, (uint32_t)i + 1);
+		uint32_t h2 = kvs_vector_hash_bytes_seeded(text, text_len, (uint32_t)ch + 131u);
+		size_t bucket1 = (size_t)(h1 % dim);
+		size_t bucket2 = (size_t)(h2 % dim);
+
+		/*
+		 * 字符自身桶 + 上下文桶。
+		 * 这样 exact / 相似文本会有更多重叠，但仍保持确定性。
+		 */
+		embedding[bucket1] += 1.0f;
+		embedding[bucket2] += 0.5f;
+	}
+
+	for (i = 0; i < dim; ++i) {
+		if (embedding[i] < 0.0f) {
+			norm -= embedding[i];
+		} else {
+			norm += embedding[i];
+		}
+	}
+
+	if (norm <= 0.0f) {
+		kvs_free(embedding);
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	for (i = 0; i < dim; ++i) {
+		embedding[i] = embedding[i] / norm;
+	}
+
+	*out_embedding = embedding;
+	*out_dim = (int)dim;
+
+	return KVS_VECTOR_OK;
+}
+
+/*
+ * dot product。
+ *
+ * 当前 embedding 已做 L1 归一化，所以 dot product 可以作为稳定的相似度分量。
+ */
+static float kvs_vector_dot_product(
+	const float *lhs,
+	const float *rhs,
+	size_t dim
+) {
+	size_t i;
+	float score = 0.0f;
+
+	if (!lhs || !rhs || dim == 0) {
+		return 0.0f;
+	}
+
+	for (i = 0; i < dim; ++i) {
+		score += lhs[i] * rhs[i];
+	}
+
+	return score;
+}
+
+/*
  * 复制一段字符串，并额外补 '\0'。
  *
  * 用途：
@@ -502,6 +635,11 @@ static void kvs_vector_record_destroy(kvs_vector_record_t *record) {
  *
  * 出错时会释放已经分配的中间内存，不留下半成品。
  */
+/*
+ * 初始化一条新 record 的字段。
+ *
+ * 出错时会释放已经分配的中间内存，不留下半成品。
+ */
 static int kvs_vector_record_set_fields(
 	kvs_vector_record_t *record,
 	const char *question,
@@ -515,8 +653,11 @@ static int kvs_vector_record_set_fields(
 	char *answer_copy = NULL;
 	char *normalized_copy = NULL;
 	char *scope_copy = NULL;
+	float *embedding = NULL;
 	size_t copied_len = 0;
+	int embedding_dim = 0;
 	int64_t now_ms;
+	int ret;
 
 	if (!record || !question || question_len == 0 || !answer) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
@@ -536,7 +677,8 @@ static int kvs_vector_record_set_fields(
 	}
 
 	/*
-	 * 第 5 步 normalized_question 暂时直接复制 question。
+	 * 当前 normalized_question 暂时直接复制 question。
+	 * 后续可以在这里接入 trim/lower/tokenize。
 	 */
 	normalized_copy = kvs_vector_dup_string(question, question_len, &copied_len);
 	if (!normalized_copy) {
@@ -553,6 +695,25 @@ static int kvs_vector_record_set_fields(
 			kvs_free(normalized_copy);
 			return KVS_VECTOR_ERR;
 		}
+	}
+
+	/*
+	 * 第 9 步：VSET 时生成本地 deterministic embedding。
+	 */
+	ret = kvs_vector_build_embedding(
+		normalized_copy,
+		question_len,
+		&embedding,
+		&embedding_dim
+	);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_free(question_copy);
+		kvs_free(answer_copy);
+		kvs_free(normalized_copy);
+		if (scope_copy) {
+			kvs_free(scope_copy);
+		}
+		return ret;
 	}
 
 	now_ms = kv_now_ms();
@@ -572,8 +733,8 @@ static int kvs_vector_record_set_fields(
 	record->scope = scope_copy;
 	record->scope_len = (scope && scope_len > 0) ? scope_len : 0;
 
-	record->embedding = NULL;
-	record->embedding_dim = 0;
+	record->embedding = embedding;
+	record->embedding_dim = embedding_dim;
 
 	record->state = KVS_VECTOR_RECORD_ACTIVE;
 	record->deleted = 0;
@@ -986,14 +1147,14 @@ static int kvs_vector_store_ensure_capacity(kvs_vector_store_t *store, size_t mi
 /*
  * 压缩 store，清理 DELETED record。
  *
- * 语义：
+ * 稳定语义：
  * 1. ACTIVE record 会被移动到新数组前部；
- * 2. DELETED record 会释放内部字符串和 embedding；
+ * 2. DELETED record 会释放内部资源；
  * 3. EMPTY record 直接丢弃；
  * 4. capacity 保持不变，避免频繁缩容扩容；
  * 5. active_records 重新计算；
  * 6. deleted_records 清零；
- * 7. total_records 保持历史创建数量，不在 rebuild 时回退。
+ * 7. total_records 重置为 active_records。
  *
  * 注意：
  * ACTIVE record 采用浅拷贝移动。
@@ -1012,6 +1173,9 @@ static int kvs_vector_store_compact(kvs_vector_store_t *store) {
 	}
 
 	if (!store->records || store->capacity == 0) {
+		store->total_records = 0;
+		store->active_records = 0;
+		store->deleted_records = 0;
 		return KVS_VECTOR_OK;
 	}
 
@@ -1038,7 +1202,7 @@ static int kvs_vector_store_compact(kvs_vector_store_t *store) {
 		if (record->state == KVS_VECTOR_RECORD_ACTIVE && !record->deleted) {
 			/*
 			 * 浅拷贝移动 ACTIVE record。
-			 * 字符串指针所有权转移到 new_records。
+			 * 字符串和 embedding 指针所有权转移到 new_records。
 			 */
 			new_records[write_index] = *record;
 			write_index++;
@@ -1057,12 +1221,17 @@ static int kvs_vector_store_compact(kvs_vector_store_t *store) {
 	store->capacity = old_capacity;
 	store->active_records = write_index;
 	store->deleted_records = 0;
-	store->next_id = next_id;
 
 	/*
-	 * total_records 当前语义保持为“历史创建过的记录数”。
-	 * 因此 rebuild 不回退 total_records。
+	 * total_records 采用当前逻辑记录数语义。
+	 * compact 后只剩 active record。
 	 */
+	store->total_records = write_index;
+
+	/*
+	 * next_id 不回退，避免后续新记录 id 与历史记录重复。
+	 */
+	store->next_id = next_id;
 
 	return KVS_VECTOR_OK;
 }
@@ -1223,7 +1392,7 @@ static int kvs_vector_flat_index_init(kvs_vector_flat_index_t *index, size_t dim
 	index->size = 0;
 	index->capacity = 0;
 	index->dimension = dimension;
-	index->ready = 0;
+	index->ready = (dimension > 0) ? 1 : 0;
 	index->needs_rebuild = 0;
 
 	return KVS_VECTOR_OK;
@@ -1289,12 +1458,170 @@ static void kvs_vector_flat_index_mark_stale(kvs_vector_flat_index_t *index) {
  * 3. index_ready 保持 0；
  * 4. needs_rebuild 清零。
  */
-static int kvs_vector_rebuild_flat_index_placeholder(void) {
-	kvs_vector_flat_index_reset(&g_vector_state.flat_index);
-	g_vector_state.flat_index.ready = 0;
-	g_vector_state.flat_index.needs_rebuild = 0;
-	g_vector_state.flat_index.size = 0;
-	g_vector_state.flat_index.dimension = KVS_VECTOR_DEFAULT_DIMENSION;
+// static int kvs_vector_rebuild_flat_index_placeholder(void) {
+// 	kvs_vector_flat_index_reset(&g_vector_state.flat_index);
+// 	g_vector_state.flat_index.ready = 0;
+// 	g_vector_state.flat_index.needs_rebuild = 0;
+// 	g_vector_state.flat_index.size = 0;
+// 	g_vector_state.flat_index.dimension = KVS_VECTOR_DEFAULT_DIMENSION;
+
+// 	return KVS_VECTOR_OK;
+// }
+/*
+ * 确保 flat index 至少能容纳 new_capacity 个向量。
+ */
+static int kvs_vector_flat_index_reserve(
+	kvs_vector_flat_index_t *index,
+	size_t new_capacity
+) {
+	float *new_vectors;
+	size_t *new_record_indices;
+	size_t old_vector_count;
+	size_t new_vector_count;
+	size_t new_real_capacity;
+
+	if (!index || index->dimension == 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	if (new_capacity <= index->capacity) {
+		return KVS_VECTOR_OK;
+	}
+
+	new_real_capacity = index->capacity ? index->capacity : KVS_VECTOR_INITIAL_RECORD_CAPACITY;
+	while (new_real_capacity < new_capacity) {
+		new_real_capacity *= 2;
+	}
+
+	old_vector_count = index->capacity * index->dimension;
+	new_vector_count = new_real_capacity * index->dimension;
+
+	new_vectors = (float *)kvs_malloc(new_vector_count * sizeof(float));
+	if (!new_vectors) {
+		return KVS_VECTOR_ERR;
+	}
+
+	new_record_indices = (size_t *)kvs_malloc(new_real_capacity * sizeof(size_t));
+	if (!new_record_indices) {
+		kvs_free(new_vectors);
+		return KVS_VECTOR_ERR;
+	}
+
+	memset(new_vectors, 0, new_vector_count * sizeof(float));
+	memset(new_record_indices, 0, new_real_capacity * sizeof(size_t));
+
+	if (index->vectors && old_vector_count > 0) {
+		memcpy(new_vectors, index->vectors, old_vector_count * sizeof(float));
+	}
+
+	if (index->record_indices && index->capacity > 0) {
+		memcpy(new_record_indices, index->record_indices, index->capacity * sizeof(size_t));
+	}
+
+	if (index->vectors) {
+		kvs_free(index->vectors);
+	}
+
+	if (index->record_indices) {
+		kvs_free(index->record_indices);
+	}
+
+	index->vectors = new_vectors;
+	index->record_indices = new_record_indices;
+	index->capacity = new_real_capacity;
+
+	return KVS_VECTOR_OK;
+}
+
+/*
+ * 向 flat index 追加一个 record 的 embedding。
+ */
+static int kvs_vector_flat_index_add(
+	kvs_vector_flat_index_t *index,
+	size_t record_index,
+	const float *embedding,
+	int embedding_dim
+) {
+	int ret;
+	float *dst;
+
+	if (!index || !embedding || embedding_dim <= 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	if (index->dimension == 0) {
+		index->dimension = (size_t)embedding_dim;
+	}
+
+	if ((size_t)embedding_dim != index->dimension) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	ret = kvs_vector_flat_index_reserve(index, index->size + 1);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	dst = index->vectors + (index->size * index->dimension);
+	memcpy(dst, embedding, index->dimension * sizeof(float));
+
+	index->record_indices[index->size] = record_index;
+	index->size++;
+	index->ready = 1;
+
+	return KVS_VECTOR_OK;
+}
+
+/*
+ * 重建 flat index。
+ *
+ * 会扫描当前 store 中所有 ACTIVE record，把它们的 embedding 重新写入连续数组。
+ */
+static int kvs_vector_rebuild_flat_index_from_store(void) {
+	kvs_vector_flat_index_t *index = &g_vector_state.flat_index;
+	kvs_vector_store_t *store = &g_vector_state.store;
+	size_t i;
+	int ret;
+
+	kvs_vector_flat_index_reset(index);
+	index->dimension = KVS_VECTOR_DEFAULT_DIMENSION;
+
+	if (!store->records || store->capacity == 0 || store->active_records == 0) {
+		index->ready = 1;
+		index->needs_rebuild = 0;
+		index->size = 0;
+		return KVS_VECTOR_OK;
+	}
+
+	ret = kvs_vector_flat_index_reserve(index, store->active_records);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	for (i = 0; i < store->capacity; ++i) {
+		kvs_vector_record_t *record = &store->records[i];
+
+		if (record->state != KVS_VECTOR_RECORD_ACTIVE || record->deleted) {
+			continue;
+		}
+
+		if (!record->embedding || record->embedding_dim <= 0) {
+			continue;
+		}
+
+		ret = kvs_vector_flat_index_add(
+			index,
+			i,
+			record->embedding,
+			record->embedding_dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
+	}
+
+	index->ready = 1;
+	index->needs_rebuild = 0;
 
 	return KVS_VECTOR_OK;
 }
@@ -1302,24 +1629,34 @@ static int kvs_vector_rebuild_flat_index_placeholder(void) {
 /*
  * 从内部状态生成 VINFO。
  *
- * 注意：
- * 这里完全匹配你当前头文件中的 kvs_vector_info_t：
+ * 稳定语义：
  *
- * typedef struct kvs_vector_info_s {
- *     size_t total_records;
- *     size_t active_records;
- *     size_t deleted_records;
- *     size_t capacity;
- *     size_t index_size;
- *     size_t dimension;
- *     int index_ready;
- *     int needs_rebuild;
- * } kvs_vector_info_t;
+ * total_records:
+ *   当前 vector store 中的逻辑记录数。
+ *   等于 active_records + deleted_records。
+ *   它不是历史累计写入数。
+ *
+ * active_records:
+ *   当前可被 VGET / VSEARCH 命中的记录数。
+ *
+ * deleted_records:
+ *   当前 tombstone 记录数。
+ *
+ * index_size:
+ *   当前逻辑可检索向量数量。
+ *   等于 active_records。
+ *
+ * 注意：
+ * flat_index.size 是索引物理条目数，VDEL 后可能包含 stale entry。
+ * 对外 VINFO 不暴露这个物理值，避免用户看到 index_size 和 active_records 不一致。
  */
 static void kvs_vector_info_from_state(
 	kvs_vector_info_t *info,
 	const kvs_vector_state_t *state
 ) {
+	size_t active_records;
+	size_t deleted_records;
+
 	if (!info) {
 		return;
 	}
@@ -1338,12 +1675,22 @@ static void kvs_vector_info_from_state(
 		return;
 	}
 
-	info->total_records = state->store.total_records;
-	info->active_records = state->store.active_records;
-	info->deleted_records = state->store.deleted_records;
+	active_records = state->store.active_records;
+	deleted_records = state->store.deleted_records;
+
+	info->active_records = active_records;
+	info->deleted_records = deleted_records;
+	info->total_records = active_records + deleted_records;
 	info->capacity = state->store.capacity;
 
-	info->index_size = state->flat_index.size;
+	/*
+	 * 对外 index_size 采用逻辑语义：
+	 * 当前可检索向量数量 = active_records。
+	 *
+	 * 这样 VDEL 后即使 flat_index 内部还有 stale entry，
+	 * VINFO 也不会暴露容易误解的物理数量。
+	 */
+	info->index_size = active_records;
 	info->dimension = state->flat_index.dimension;
 	info->index_ready = state->flat_index.ready;
 	info->needs_rebuild = state->flat_index.needs_rebuild;
@@ -1453,13 +1800,14 @@ void kvs_vector_destroy(void) {
 }
 
 //写入接口
-//写入接口
 int kvs_vector_set(const char* question, size_t question_len,
                     const char* answer, size_t answer_len,
                     const char* scope, size_t scope_len) {
 	kvs_vector_record_t *record;
 	kvs_vector_record_t *free_slot;
 	kvs_vector_store_t *store;
+	size_t record_index;
+	int was_deleted = 0;
 	int ret;
 
 	ret = kvs_vector_validate_initialized();
@@ -1476,7 +1824,8 @@ int kvs_vector_set(const char* question, size_t question_len,
 	}
 
 	/*
-	 * 如果同 question + scope 已存在，则覆盖 answer。
+	 * 如果同 question + scope 已存在，只覆盖 answer。
+	 * question 没变，所以 embedding / flat index 不需要更新。
 	 */
 	record = kvs_vector_find_record(question, question_len, scope, scope_len);
 	if (record) {
@@ -1498,9 +1847,8 @@ int kvs_vector_set(const char* question, size_t question_len,
 		}
 	}
 
-	if (free_slot->state == KVS_VECTOR_RECORD_DELETED && store->deleted_records > 0) {
-		store->deleted_records--;
-	}
+	was_deleted = (free_slot->state == KVS_VECTOR_RECORD_DELETED) ? 1 : 0;
+	record_index = (size_t)(free_slot - store->records);
 
 	ret = kvs_vector_record_set_fields(
 		free_slot,
@@ -1512,7 +1860,28 @@ int kvs_vector_set(const char* question, size_t question_len,
 		scope_len
 	);
 	if (ret != KVS_VECTOR_OK) {
+		if (was_deleted && store->deleted_records > 0) {
+			store->deleted_records--;
+		}
 		return ret;
+	}
+
+	/*
+	 * 第 9 步：VSET 成功后同步写入 flat index。
+	 */
+	ret = kvs_vector_flat_index_add(
+		&g_vector_state.flat_index,
+		record_index,
+		free_slot->embedding,
+		free_slot->embedding_dim
+	);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_vector_record_destroy(free_slot);
+		return ret;
+	}
+
+	if (was_deleted && store->deleted_records > 0) {
+		store->deleted_records--;
 	}
 
 	store->total_records++;
@@ -1563,7 +1932,6 @@ int kvs_vector_get(
 }
 
 //检索接口
-//检索接口
 int kvs_vector_search(
 	const char *query,
 	size_t query_len,
@@ -1575,7 +1943,9 @@ int kvs_vector_search(
 	size_t results_capacity,
 	size_t *results_count
 ) {
-	kvs_vector_store_t *store;
+	kvs_vector_flat_index_t *index;
+	float *query_embedding = NULL;
+	int query_dim = 0;
 	size_t i;
 	size_t limit;
 	int ret;
@@ -1611,37 +1981,62 @@ int kvs_vector_search(
 		limit = results_capacity;
 	}
 
-	/*
-	 * 默认阈值。
-	 *
-	 * 如果调用方没有显式传 threshold，命令层会传 0.0。
-	 * 直接使用 0 会导致任意字符重叠都被召回，例如：
-	 * not_existing_query 也可能命中 search_key。
-	 *
-	 * MVP 阶段先使用 0.5 作为默认召回门槛：
-	 * 1. exact match = 1.0，可以返回；
-	 * 2. substring match = 0.85，可以返回；
-	 * 3. 弱字符重叠通常低于 0.5，会被过滤。
-	 */
 	effective_threshold = threshold;
 	if (effective_threshold <= 0.0f) {
 		effective_threshold = 0.5f;
 	}
 
-	store = &g_vector_state.store;
-	if (!store->records || store->capacity == 0 || store->active_records == 0) {
+	ret = kvs_vector_build_embedding(query, query_len, &query_embedding, &query_dim);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	index = &g_vector_state.flat_index;
+
+	if (!index->vectors || !index->record_indices || index->size == 0 || index->dimension == 0) {
+		kvs_free(query_embedding);
 		return KVS_VECTOR_OK;
 	}
 
-	for (i = 0; i < store->capacity; ++i) {
-		kvs_vector_record_t *record = &store->records[i];
+	for (i = 0; i < index->size; ++i) {
+		size_t record_index = index->record_indices[i];
+		float *indexed_vector;
+		kvs_vector_record_t *record;
+		float vector_score;
+		float text_score;
 		float score;
+
+		if (record_index >= g_vector_state.store.capacity) {
+			continue;
+		}
+
+		record = &g_vector_state.store.records[record_index];
 
 		if (!kvs_vector_record_scope_match(record, scope, scope_len)) {
 			continue;
 		}
 
-		score = kvs_vector_record_score(record, query, query_len);
+		if ((size_t)query_dim != index->dimension) {
+			continue;
+		}
+
+		indexed_vector = index->vectors + (i * index->dimension);
+
+		vector_score = kvs_vector_dot_product(
+			query_embedding,
+			indexed_vector,
+			index->dimension
+		);
+
+		/*
+		 * 保留字符匹配作为 MVP 兼容增强：
+		 * 1. exact match 仍然是 1.0；
+		 * 2. substring 仍然是 0.85；
+		 * 3. vector_score 负责更接近向量形态的召回。
+		 */
+		text_score = kvs_vector_record_score(record, query, query_len);
+		score = vector_score > text_score ? vector_score : text_score;
+
 		if (score <= 0.0f) {
 			continue;
 		}
@@ -1658,6 +2053,8 @@ int kvs_vector_search(
 			score
 		);
 	}
+
+	kvs_free(query_embedding);
 
 	return KVS_VECTOR_OK;
 }
@@ -1718,12 +2115,17 @@ int kvs_vector_index_rebuild(void) {
 		return ret;
 	}
 
+	/*
+	 * 第 9 步：
+	 * 1. 先清理 deleted record；
+	 * 2. 再基于 active record 重新构建 flat index。
+	 */
 	ret = kvs_vector_store_compact(&g_vector_state.store);
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
 
-	ret = kvs_vector_rebuild_flat_index_placeholder();
+	ret = kvs_vector_rebuild_flat_index_from_store();
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
