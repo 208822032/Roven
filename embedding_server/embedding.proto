@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package kvlite.embedding;
+
+/*
+ * KVLite 嵌入向量服务。
+ *
+ * Embed:
+ *   批量把文本转换成 float 向量。
+ *
+ * Health:
+ *   返回服务健康状态、模型名、向量维度、provider 信息。
+ */
+service EmbeddingService {
+    rpc Embed(EmbedRequest) returns (EmbedResponse);
+    rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+/*
+ * 批量 embedding 请求。
+ *
+ * texts:
+ *   待向量化的文本列表。
+ *
+ * model:
+ *   客户端期望使用的模型名。
+ *   当前服务端可以忽略它，直接使用启动时加载的模型。
+ *
+ * normalize:
+ *   是否要求返回归一化后的向量。
+ */
+message EmbedRequest {
+    repeated string texts = 1;
+    string model = 2;
+    bool normalize = 3;
+}
+
+/*
+ * 单条 embedding 结果。
+ *
+ * values:
+ *   float 向量内容。
+ *
+ * dimension:
+ *   当前向量维度。
+ */
+message Embedding {
+    repeated float values = 1;
+    int32 dimension = 2;
+}
+
+/*
+ * 批量 embedding 响应。
+ *
+ * embeddings:
+ *   与请求 texts 一一对应。
+ *
+ * model:
+ *   服务端实际使用的模型名。
+ *
+ * dimension:
+ *   本次返回的向量维度。
+ */
+message EmbedResponse {
+    repeated Embedding embeddings = 1;
+    string model = 2;
+    int32 dimension = 3;
+}
+
+/*
+ * 健康检查请求。
+ */
+message HealthRequest {}
+
+/*
+ * 健康检查响应。
+ *
+ * ok:
+ *   服务是否可用。
+ *
+ * model:
+ *   当前加载的模型。
+ *
+ * dimension:
+ *   当前 embedding 维度。
+ *
+ * provider:
+ *   当前 provider 类型，例如 sentence-transformers。
+ */
+message HealthResponse {
+  bool ok = 1;
+  string model = 2;
+  int32 dimension = 3;
+  string provider = 4;
+}

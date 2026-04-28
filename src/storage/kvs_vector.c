@@ -43,6 +43,34 @@ static int g_vector_initialized = 0;
 #define KVS_VECTOR_DEFAULT_DIMENSION 64
 
 /*
+ * embedding provider 类型。
+ *
+ * 当前第 10 步只真正实现 HASH provider。
+ * GRPC provider 先预留枚举，后续接独立 embedding 服务时再实现。
+ */
+typedef enum kvs_vector_embedding_provider_type_e {
+	KVS_VECTOR_EMBEDDING_PROVIDER_HASH = 0,
+	KVS_VECTOR_EMBEDDING_PROVIDER_GRPC = 1,
+} kvs_vector_embedding_provider_type_t;
+
+/*
+ * embedding provider 运行时状态。
+ *
+ * 当前只保存 provider 类型和名称。
+ * 后续接 gRPC 时可以继续扩展：
+ * 1. endpoint；
+ * 2. timeout_ms；
+ * 3. model；
+ * 4. fallback 策略；
+ * 5. gRPC channel / client stub。
+ */
+typedef struct kvs_vector_embedding_provider_s {
+	kvs_vector_embedding_provider_type_t type;
+	const char *name;
+	int initialized;
+} kvs_vector_embedding_provider_t;
+
+/*
  * record 状态。
  *
  * EMPTY:
@@ -234,6 +262,7 @@ typedef struct kvs_vector_state_s {
 	kvs_vector_store_t store;
 	kvs_vector_id_map_t id_map;
 	kvs_vector_flat_index_t flat_index;
+	kvs_vector_embedding_provider_t embedding_provider;
 } kvs_vector_state_t;
 
 static kvs_vector_state_t g_vector_state;
@@ -311,15 +340,68 @@ static uint32_t kvs_vector_hash_bytes_seeded(
 }
 
 /*
- * 构建本地确定性 embedding。
+ * 初始化 embedding provider。
+ *
+ * 当前默认使用本地 HASH provider。
+ * 后续接 gRPC 时，可以在这里根据配置选择 provider 类型。
+ */
+static int kvs_vector_embedding_provider_init(
+	kvs_vector_embedding_provider_t *provider
+) {
+	if (!provider) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	memset(provider, 0, sizeof(*provider));
+
+	provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_HASH;
+	provider->name = "hash";
+	provider->initialized = 1;
+
+	return KVS_VECTOR_OK;
+}
+
+/*
+ * 销毁 embedding provider。
+ *
+ * 当前 HASH provider 没有外部资源。
+ * 后续 GRPC provider 可以在这里关闭 channel / client。
+ */
+static void kvs_vector_embedding_provider_destroy(
+	kvs_vector_embedding_provider_t *provider
+) {
+	if (!provider) {
+		return;
+	}
+
+	memset(provider, 0, sizeof(*provider));
+}
+
+/*
+ * 返回当前 embedding provider 名称。
+ *
+ * 当前没有暴露到 VINFO，因为 kvs_vector_info_t 还没有 provider 字段。
+ * 后续如果要扩展 VINFO，可以复用这个 helper。
+ */
+static const char *kvs_vector_embedding_provider_name(void) {
+	if (!g_vector_state.embedding_provider.initialized ||
+		!g_vector_state.embedding_provider.name) {
+		return "unknown";
+	}
+
+	return g_vector_state.embedding_provider.name;
+}
+
+/*
+ * 本地 HASH embedding provider。
  *
  * MVP 策略：
  * 1. 固定 64 维；
  * 2. 按字符/字节 hash 分桶；
  * 3. 使用 L1 归一化，避免引入 sqrtf 和 -lm；
- * 4. 后续接真实 embedding 时，只替换这个函数即可。
+ * 4. 后续接真实 embedding 时，不再改 VSET/VSEARCH 主流程，只替换 provider。
  */
-static int kvs_vector_build_embedding(
+static int kvs_vector_hash_embedding_generate(
 	const char *text,
 	size_t text_len,
 	float **out_embedding,
@@ -384,6 +466,51 @@ static int kvs_vector_build_embedding(
 	*out_dim = (int)dim;
 
 	return KVS_VECTOR_OK;
+}
+
+/*
+ * embedding 统一入口。
+ *
+ * VSET / VSEARCH / VINDEX 后续只调用这个函数，不直接关心具体 provider。
+ *
+ * 当前：
+ * 1. HASH provider 可用；
+ * 2. GRPC provider 预留，但尚未实现；
+ * 3. 如果 provider 未初始化，返回 NOT_INITIALIZED；
+ * 4. 如果 provider 类型未知，返回内部错误。
+ */
+static int kvs_vector_embedding_generate(
+	const char *text,
+	size_t text_len,
+	float **out_embedding,
+	int *out_dim
+) {
+	kvs_vector_embedding_provider_t *provider = &g_vector_state.embedding_provider;
+
+	if (!provider->initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	switch (provider->type) {
+		case KVS_VECTOR_EMBEDDING_PROVIDER_HASH:
+			return kvs_vector_hash_embedding_generate(
+				text,
+				text_len,
+				out_embedding,
+				out_dim
+			);
+
+		case KVS_VECTOR_EMBEDDING_PROVIDER_GRPC:
+			/*
+			 * 第 11 步再实现：
+			 * 1. 通过 gRPC 调用外部 embedding server；
+			 * 2. 失败时根据配置决定是否 fallback 到 HASH provider。
+			 */
+			return KVS_VECTOR_ERR_NOT_IMPLEMENTED;
+
+		default:
+			return KVS_VECTOR_ERR;
+	}
 }
 
 /*
@@ -700,7 +827,7 @@ static int kvs_vector_record_set_fields(
 	/*
 	 * 第 9 步：VSET 时生成本地 deterministic embedding。
 	 */
-	ret = kvs_vector_build_embedding(
+	ret = kvs_vector_embedding_generate(
 		normalized_copy,
 		question_len,
 		&embedding,
@@ -1773,11 +1900,17 @@ int kvs_vector_init(void) {
 		goto fail;
 	}
 
+	ret = kvs_vector_embedding_provider_init(&g_vector_state.embedding_provider);
+	if (ret != KVS_VECTOR_OK) {
+		goto fail;
+	}
+
 	g_vector_state.initialized = 1;
 
 	return KVS_VECTOR_OK;
 
 fail:
+	kvs_vector_embedding_provider_destroy(&g_vector_state.embedding_provider);
 	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
 	kvs_vector_store_destroy(&g_vector_state.store);
@@ -1792,13 +1925,13 @@ void kvs_vector_destroy(void) {
 		return;
 	}
 
+	kvs_vector_embedding_provider_destroy(&g_vector_state.embedding_provider);
 	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
 	kvs_vector_store_destroy(&g_vector_state.store);
 
 	memset(&g_vector_state, 0, sizeof(g_vector_state));
 }
-
 //写入接口
 int kvs_vector_set(const char* question, size_t question_len,
                     const char* answer, size_t answer_len,
@@ -1986,7 +2119,7 @@ int kvs_vector_search(
 		effective_threshold = 0.5f;
 	}
 
-	ret = kvs_vector_build_embedding(query, query_len, &query_embedding, &query_dim);
+	ret = kvs_vector_embedding_generate(query, query_len, &query_embedding, &query_dim);
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}

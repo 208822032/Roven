@@ -1,4 +1,9 @@
 CC = gcc
+CXX = g++
+PKG_CONFIG ?= pkg-config
+PROTOC ?= protoc
+GRPC_CPP_PLUGIN ?= grpc_cpp_plugin
+GRPC_CPP_PLUGIN_PATH := $(shell which $(GRPC_CPP_PLUGIN) 2>/dev/null)
 
 # 与 kvs_config.h 中的 KVS_MAX_RESPONSE_SIZE 保持一致
 KVS_MAX_RESPONSE_SIZE ?= 1048576
@@ -9,6 +14,20 @@ SRC_PERSIST := src/persistence
 SRC_NETWORK := src/network
 SRC_DIST := src/distributed
 SRC_UTILS := src/utils
+EMBED_PROTO_DIR := embedding_server
+EMBED_CPP_GEN_DIR := $(EMBED_PROTO_DIR)/generated/cpp
+EMBED_PROTO := $(EMBED_PROTO_DIR)/embedding.proto
+EMBED_CPP_PB_CC := $(EMBED_CPP_GEN_DIR)/embedding.pb.cc
+EMBED_CPP_GRPC_CC := $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.cc
+EMBED_CPP_PB_O := $(EMBED_CPP_GEN_DIR)/embedding.pb.o
+EMBED_CPP_GRPC_O := $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.o
+EMBED_CPP_OBJS := $(EMBED_CPP_PB_O) $(EMBED_CPP_GRPC_O)
+
+GRPC_CFLAGS_RAW := $(shell $(PKG_CONFIG) --cflags grpc++ protobuf)
+GRPC_CFLAGS := $(filter-out -std=c++% -std=gnu++%,$(GRPC_CFLAGS_RAW))
+GRPC_LIBS := $(shell $(PKG_CONFIG) --libs grpc++ protobuf)
+
+CXXFLAGS = -I ./include -I ./src -I $(EMBED_CPP_GEN_DIR) -g $(GRPC_CFLAGS) -std=c++17
 
 NTYCO_DIR := NtyCo
 NTYCO_CORE_DIR := $(NTYCO_DIR)/core
@@ -77,6 +96,7 @@ TEST_PAPER_SYNC := $(TEST_DIR)/test_paper_sync
 TEST_BIGVALUE := $(TEST_DIR)/test_bigvalue
 TEST_AI_CHAT_SCHEMA := $(TEST_DIR)/ai_chat_schema_test
 TEST_VECTOR := $(TEST_DIR)/vector_testcase
+TEST_EMBED_GRPC_CLIENT := $(TEST_DIR)/embedding_grpc_client_test
 TEST_TTL_LOOKUP_SPLIT := $(TEST_DIR)/ttl_lookup_split_bench
 TEST_SKIPTABLE_TARGETED := $(TEST_DIR)/skiptable_targeted_bench
 
@@ -91,7 +111,8 @@ TEST_BINARIES = \
 	$(TEST_PAPER_SYNC) \
 	$(TEST_BIGVALUE) \
 	$(TEST_AI_CHAT_SCHEMA) \
-	$(TEST_VECTOR)
+	$(TEST_VECTOR) \
+	$(TEST_EMBED_GRPC_CLIENT)
 
 CLANG ?= clang
 # 尝试查找 bpftool，如果找不到则默认为 bpftool
@@ -133,6 +154,17 @@ $(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
 # 单元/集成测试可执行文件规则
+
+$(EMBED_CPP_GEN_DIR):
+	mkdir -p $@
+
+$(EMBED_CPP_PB_CC) $(EMBED_CPP_GRPC_CC): $(EMBED_PROTO) | $(EMBED_CPP_GEN_DIR)
+	cd $(EMBED_PROTO_DIR) && \
+	$(PROTOC) -I . \
+		--cpp_out=generated/cpp \
+		--grpc_out=generated/cpp \
+		--plugin=protoc-gen-grpc=$(GRPC_CPP_PLUGIN_PATH) \
+		embedding.proto
 
 $(TEST_CASE): $(TEST_DIR)/testcase.c
 	$(CC) $(CFLAGS) -o $@ $<
@@ -188,6 +220,9 @@ $(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c $(SRC_STORAGE)/kvs_mem
 $(TEST_VECTOR): $(TEST_DIR)/vector_testcase.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+$(TEST_EMBED_GRPC_CLIENT): $(TEST_DIR)/embedding_grpc_client_test.cc $(EMBED_CPP_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $< $(EMBED_CPP_OBJS) $(GRPC_LIBS) -lpthread
+
 # 生成 vmlinux.h
 $(VMLINUX_H):
 	@echo "Generating vmlinux.h..."
@@ -222,6 +257,9 @@ $(EBPF_SYNCD_BIN): \
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+%.o: %.cc
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
@@ -231,4 +269,9 @@ clean:
 	rm -f $(TEST_SKIPTABLE_TARGETED)
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H)
+	rm -f $(EMBED_CPP_OBJS)
+	rm -f $(EMBED_CPP_GEN_DIR)/embedding.pb.cc
+	rm -f $(EMBED_CPP_GEN_DIR)/embedding.pb.h
+	rm -f $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.cc
+	rm -f $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.h
 .PHONY: all clean
