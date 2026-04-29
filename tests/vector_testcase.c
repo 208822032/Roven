@@ -378,8 +378,8 @@ static void vector_resp_testcase(int fd) {
     testcase_contains(
         fd,
         "*1\r\n$5\r\nVINFO\r\n",
-        "dimension:64",
-        "VINFO-vector-dimension-64"
+        "dimension:384",
+        "VINFO-vector-dimension-384"
     );
 
     testcase_contains(
@@ -633,6 +633,13 @@ static void vector_resp_testcase(int fd) {
         "VINDEX-REBUILD-before-search-index-tests"
     );
 
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "dimension:384",
+        "VINFO-after-rebuild-before-search-dimension-384"
+    );
+
     testcase_raw(
         fd,
         "*3\r\n$4\r\nVSET\r\n$10\r\nsearch_key\r\n$13\r\nsearch_answer\r\n",
@@ -650,8 +657,8 @@ static void vector_resp_testcase(int fd) {
     testcase_contains(
         fd,
         "*1\r\n$5\r\nVINFO\r\n",
-        "dimension:64",
-        "VINFO-after-vset-dimension-64"
+        "dimension:384",
+        "VINFO-after-vset-dimension-384"
     );
 
     testcase_contains(

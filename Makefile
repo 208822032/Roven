@@ -16,12 +16,18 @@ SRC_DIST := src/distributed
 SRC_UTILS := src/utils
 EMBED_PROTO_DIR := embedding_server
 EMBED_CPP_GEN_DIR := $(EMBED_PROTO_DIR)/generated/cpp
+SRC_VECTOR_GRPC := src/vector_grpc
+EMBED_GRPC_BRIDGE_CC := $(SRC_VECTOR_GRPC)/kvs_embedding_grpc_client.cc
+EMBED_GRPC_BRIDGE_O := $(SRC_VECTOR_GRPC)/kvs_embedding_grpc_client.o
 EMBED_PROTO := $(EMBED_PROTO_DIR)/embedding.proto
 EMBED_CPP_PB_CC := $(EMBED_CPP_GEN_DIR)/embedding.pb.cc
 EMBED_CPP_GRPC_CC := $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.cc
 EMBED_CPP_PB_O := $(EMBED_CPP_GEN_DIR)/embedding.pb.o
 EMBED_CPP_GRPC_O := $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.o
 EMBED_CPP_OBJS := $(EMBED_CPP_PB_O) $(EMBED_CPP_GRPC_O)
+KVS_LOG_OBJS := \
+	$(SRC_UTILS)/kvs_log.o \
+	$(SRC_UTILS)/kvs_log_writer.o
 
 GRPC_CFLAGS_RAW := $(shell $(PKG_CONFIG) --cflags grpc++ protobuf)
 GRPC_CFLAGS := $(filter-out -std=c++% -std=gnu++%,$(GRPC_CFLAGS_RAW))
@@ -97,6 +103,8 @@ TEST_BIGVALUE := $(TEST_DIR)/test_bigvalue
 TEST_AI_CHAT_SCHEMA := $(TEST_DIR)/ai_chat_schema_test
 TEST_VECTOR := $(TEST_DIR)/vector_testcase
 TEST_EMBED_GRPC_CLIENT := $(TEST_DIR)/embedding_grpc_client_test
+TEST_EMBED_GRPC_C_ABI := $(TEST_DIR)/embedding_grpc_c_abi_test
+TEST_EMBED_GRPC_C_ABI_O := $(TEST_DIR)/embedding_grpc_c_abi_test.o
 TEST_TTL_LOOKUP_SPLIT := $(TEST_DIR)/ttl_lookup_split_bench
 TEST_SKIPTABLE_TARGETED := $(TEST_DIR)/skiptable_targeted_bench
 
@@ -112,7 +120,8 @@ TEST_BINARIES = \
 	$(TEST_BIGVALUE) \
 	$(TEST_AI_CHAT_SCHEMA) \
 	$(TEST_VECTOR) \
-	$(TEST_EMBED_GRPC_CLIENT)
+	$(TEST_EMBED_GRPC_CLIENT) \
+	$(TEST_EMBED_GRPC_C_ABI)
 
 CLANG ?= clang
 # 尝试查找 bpftool，如果找不到则默认为 bpftool
@@ -150,8 +159,16 @@ $(NTYCO_DIR)/objs/%.o: $(NTYCO_CORE_DIR)/%.c | $(NTYCO_DIR)/objs
 $(NTYCO_LIB): $(NTYCO_OBJS)
 	ar rcs $@ $^
 
-$(TARGET): $(OBJS)
-	$(CC) -o $@ $(OBJS) $(LDFLAGS)
+# $(TARGET): $(OBJS)
+# 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
+$(TARGET): $(OBJS) $(EMBED_GRPC_BRIDGE_O) $(EMBED_CPP_OBJS)
+	$(CXX) -o $@ \
+		$(OBJS) \
+		$(EMBED_GRPC_BRIDGE_O) \
+		$(EMBED_CPP_OBJS) \
+		$(LDFLAGS) \
+		$(GRPC_LIBS) \
+		-lpthread
 
 # 单元/集成测试可执行文件规则
 
@@ -223,6 +240,20 @@ $(TEST_VECTOR): $(TEST_DIR)/vector_testcase.c
 $(TEST_EMBED_GRPC_CLIENT): $(TEST_DIR)/embedding_grpc_client_test.cc $(EMBED_CPP_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(EMBED_CPP_OBJS) $(GRPC_LIBS) -lpthread
 
+$(EMBED_GRPC_BRIDGE_O): $(EMBED_GRPC_BRIDGE_CC) $(EMBED_CPP_PB_CC) $(EMBED_CPP_GRPC_CC)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(TEST_EMBED_GRPC_C_ABI_O): $(TEST_DIR)/embedding_grpc_c_abi_test.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TEST_EMBED_GRPC_C_ABI): $(TEST_EMBED_GRPC_C_ABI_O) $(EMBED_GRPC_BRIDGE_O) $(EMBED_CPP_OBJS) $(KVS_LOG_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ \
+		$(TEST_EMBED_GRPC_C_ABI_O) \
+		$(EMBED_GRPC_BRIDGE_O) \
+		$(EMBED_CPP_OBJS) \
+		$(KVS_LOG_OBJS) \
+		$(GRPC_LIBS) \
+		-lpthread
 # 生成 vmlinux.h
 $(VMLINUX_H):
 	@echo "Generating vmlinux.h..."
@@ -270,6 +301,8 @@ clean:
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H)
 	rm -f $(EMBED_CPP_OBJS)
+	rm -f $(EMBED_GRPC_BRIDGE_O)
+	rm -f $(TEST_EMBED_GRPC_C_ABI_O)
 	rm -f $(EMBED_CPP_GEN_DIR)/embedding.pb.cc
 	rm -f $(EMBED_CPP_GEN_DIR)/embedding.pb.h
 	rm -f $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.cc
