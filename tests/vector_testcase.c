@@ -855,6 +855,281 @@ static void vector_resp_testcase(int fd) {
         "VSEARCH-not-existing-empty"
     );
 
+        /*
+     * 第 14 步：id_map + free list 稳定性测试。
+     *
+     * 目标：
+     * 1. 同 question 不同 scope 通过 id_map 精确区分；
+     * 2. VDEL 后 id_map 删除映射，VGET 不再命中；
+     * 3. 删除槽位被 free list 复用后，旧 flat index stale entry 不能误命中新 record；
+     * 4. VINDEX REBUILD 后 id_map 和 flat index 都能重新正确工作。
+     */
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\nreuse_key\r\n",
+        "VDEL-clean-reuse_key-empty-scope-ignore-result"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*3\r\n$4\r\nVDEL\r\n$9\r\nreuse_key\r\n$8\r\nscope_a1\r\n",
+        "VDEL-clean-reuse_key-scope_a1-ignore-result"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*3\r\n$4\r\nVDEL\r\n$9\r\nreuse_key\r\n$8\r\nscope_a2\r\n",
+        "VDEL-clean-reuse_key-scope_a2-ignore-result"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\nfresh_key\r\n",
+        "VDEL-clean-fresh_key-empty-scope-ignore-result"
+    );
+
+    testcase_raw(
+        fd,
+        "*4\r\n$4\r\nVSET\r\n$9\r\nreuse_key\r\n$13\r\nreuse_answer1\r\n$8\r\nscope_a1\r\n",
+        "+OK\r\n",
+        "VSET-idmap-reuse_key-scope_a1"
+    );
+
+    testcase_raw(
+        fd,
+        "*4\r\n$4\r\nVSET\r\n$9\r\nreuse_key\r\n$13\r\nreuse_answer2\r\n$8\r\nscope_a2\r\n",
+        "+OK\r\n",
+        "VSET-idmap-reuse_key-scope_a2"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVGET\r\n$9\r\nreuse_key\r\n$8\r\nscope_a1\r\n",
+        "$13\r\nreuse_answer1\r\n",
+        "VGET-idmap-reuse_key-scope_a1"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVGET\r\n$9\r\nreuse_key\r\n$8\r\nscope_a2\r\n",
+        "$13\r\nreuse_answer2\r\n",
+        "VGET-idmap-reuse_key-scope_a2"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVDEL\r\n$9\r\nreuse_key\r\n$8\r\nscope_a1\r\n",
+        "+OK\r\n",
+        "VDEL-idmap-reuse_key-scope_a1"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVGET\r\n$9\r\nreuse_key\r\n$8\r\nscope_a1\r\n",
+        "+NO EXIST\r\n",
+        "VGET-idmap-reuse_key-scope_a1-after-del"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVGET\r\n$9\r\nreuse_key\r\n$8\r\nscope_a2\r\n",
+        "$13\r\nreuse_answer2\r\n",
+        "VGET-idmap-reuse_key-scope_a2-still-exists"
+    );
+
+    /*
+     * 写入 fresh_key，优先复用刚才删除的槽位。
+     * 如果 flat index 没有 record_id 校验，旧 reuse_key 的索引 entry
+     * 可能错误指向 fresh_key，导致搜索 reuse_key 时出现 fresh_answer。
+     */
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVSET\r\n$9\r\nfresh_key\r\n$12\r\nfresh_answer\r\n",
+        "+OK\r\n",
+        "VSET-free-list-fresh_key-after-delete"
+    );
+
+    testcase_raw(
+        fd,
+        "*2\r\n$4\r\nVGET\r\n$9\r\nfresh_key\r\n",
+        "$12\r\nfresh_answer\r\n",
+        "VGET-free-list-fresh_key"
+    );
+
+    testcase_not_contains(
+        fd,
+        "*2\r\n$7\r\nVSEARCH\r\n$9\r\nreuse_key\r\n",
+        "answer:fresh_answer",
+        "VSEARCH-stale-flat-index-not-fresh-answer"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "needs_rebuild:1",
+        "VINFO-idmap-free-list-needs-rebuild"
+    );
+
+    testcase_raw(
+        fd,
+        "*2\r\n$6\r\nVINDEX\r\n$7\r\nREBUILD\r\n",
+        "+OK\r\n",
+        "VINDEX-idmap-free-list-rebuild"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVGET\r\n$9\r\nreuse_key\r\n$8\r\nscope_a2\r\n",
+        "$13\r\nreuse_answer2\r\n",
+        "VGET-after-rebuild-reuse_key-scope_a2"
+    );
+
+    testcase_raw(
+        fd,
+        "*2\r\n$4\r\nVGET\r\n$9\r\nfresh_key\r\n",
+        "$12\r\nfresh_answer\r\n",
+        "VGET-after-rebuild-fresh_key"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVGET\r\n$9\r\nreuse_key\r\n$8\r\nscope_a1\r\n",
+        "+NO EXIST\r\n",
+        "VGET-after-rebuild-deleted-scope_a1"
+    );
+
+    testcase_contains(
+        fd,
+        "*2\r\n$7\r\nVSEARCH\r\n$9\r\nfresh_key\r\n",
+        "answer:fresh_answer",
+        "VSEARCH-after-rebuild-fresh_key"
+    );
+
+    /*
+     * 清理第 14 步新增数据，避免影响后续重复运行。
+     */
+    testcase_ignore_response(
+        fd,
+        "*3\r\n$4\r\nVDEL\r\n$9\r\nreuse_key\r\n$8\r\nscope_a2\r\n",
+        "VDEL-clean-after-idmap-reuse_key-scope_a2"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\nfresh_key\r\n",
+        "VDEL-clean-after-idmap-fresh_key"
+    );
+
+    testcase_raw(
+        fd,
+        "*2\r\n$6\r\nVINDEX\r\n$7\r\nREBUILD\r\n",
+        "+OK\r\n",
+        "VINDEX-clean-after-idmap-tests"
+    );
+
+        /*
+     * 第 15 步：topK 小根堆测试。
+     *
+     * 目标：
+     * 1. topk=1 只返回一条；
+     * 2. topk=2 返回两条；
+     * 3. exact match 仍然优先出现；
+     * 4. topK heap 替换旧有序数组后，VSEARCH 语义不变。
+     */
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\ntopk_key1\r\n",
+        "VDEL-clean-topk_key1-ignore-result"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\ntopk_key2\r\n",
+        "VDEL-clean-topk_key2-ignore-result"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\ntopk_key3\r\n",
+        "VDEL-clean-topk_key3-ignore-result"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVSET\r\n$9\r\ntopk_key1\r\n$12\r\ntopk_answer1\r\n",
+        "+OK\r\n",
+        "VSET-topk-key1"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVSET\r\n$9\r\ntopk_key2\r\n$12\r\ntopk_answer2\r\n",
+        "+OK\r\n",
+        "VSET-topk-key2"
+    );
+
+    testcase_raw(
+        fd,
+        "*3\r\n$4\r\nVSET\r\n$9\r\ntopk_key3\r\n$12\r\ntopk_answer3\r\n",
+        "+OK\r\n",
+        "VSET-topk-key3"
+    );
+
+    testcase_contains(
+        fd,
+        "*3\r\n$7\r\nVSEARCH\r\n$9\r\ntopk_key1\r\n$1\r\n1\r\n",
+        "*1\r\n",
+        "VSEARCH-topk-heap-top1-array-size"
+    );
+
+    testcase_contains(
+        fd,
+        "*3\r\n$7\r\nVSEARCH\r\n$9\r\ntopk_key1\r\n$1\r\n1\r\n",
+        "question:topk_key1",
+        "VSEARCH-topk-heap-top1-exact"
+    );
+
+    testcase_contains(
+        fd,
+        "*3\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$1\r\n2\r\n",
+        "*2\r\n",
+        "VSEARCH-topk-heap-top2-array-size"
+    );
+
+    testcase_contains(
+        fd,
+        "*3\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$1\r\n2\r\n",
+        "score:",
+        "VSEARCH-topk-heap-top2-score"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\ntopk_key1\r\n",
+        "VDEL-clean-after-topk-key1"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\ntopk_key2\r\n",
+        "VDEL-clean-after-topk-key2"
+    );
+
+    testcase_ignore_response(
+        fd,
+        "*2\r\n$4\r\nVDEL\r\n$9\r\ntopk_key3\r\n",
+        "VDEL-clean-after-topk-key3"
+    );
+
+    testcase_raw(
+        fd,
+        "*2\r\n$6\r\nVINDEX\r\n$7\r\nREBUILD\r\n",
+        "+OK\r\n",
+        "VINDEX-clean-after-topk-tests"
+    );
+
     printf("========== vector testcase pass ==========\n");
 }
 

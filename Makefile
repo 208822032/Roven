@@ -14,6 +14,7 @@ SRC_PERSIST := src/persistence
 SRC_NETWORK := src/network
 SRC_DIST := src/distributed
 SRC_UTILS := src/utils
+SRC_VECTOR := src/vector
 EMBED_PROTO_DIR := embedding_server
 EMBED_CPP_GEN_DIR := $(EMBED_PROTO_DIR)/generated/cpp
 SRC_VECTOR_GRPC := src/vector_grpc
@@ -58,7 +59,6 @@ BASE_SRCS = \
 	$(SRC_STORAGE)/kvs_rbtree.c \
 	$(SRC_STORAGE)/kvs_hash.c \
 	$(SRC_STORAGE)/kvs_skiptable.c \
-	$(SRC_STORAGE)/kvs_vector.c \
 	$(SRC_STORAGE)/kvs_mempool.c \
 	$(SRC_STORAGE)/jemalloc_wrapper.c \
 	$(SRC_DIST)/distributed.c \
@@ -75,7 +75,10 @@ BASE_SRCS = \
 	$(SRC_UTILS)/kvs_log.c \
 	$(SRC_UTILS)/kvs_log_writer.c \
 	$(SRC_UTILS)/netbuf.c \
-	$(SRC_UTILS)/tx_batcher.c
+	$(SRC_UTILS)/tx_batcher.c \
+	$(SRC_VECTOR)/kvs_vector.c \
+	$(SRC_VECTOR)/kvs_vector_index.c \
+	$(SRC_VECTOR)/kvs_vector_embedding.c
 	
 
 SRCS = $(BASE_SRCS) \
