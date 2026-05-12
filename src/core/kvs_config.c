@@ -57,6 +57,11 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     snprintf(cfg->embedding_grpc_addr, sizeof(cfg->embedding_grpc_addr), "%s", "127.0.0.1:50051");
     cfg->embedding_timeout_ms = 3000; // 3秒
     cfg->embedding_fallback = 1; // 默认允许 gRPC provider 失败时
+
+    snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
+    cfg->vector_hnsw_m = 32;
+    cfg->vector_hnsw_ef_construction = 256;
+    cfg->vector_hnsw_ef_search = 256;
 }
 
 static int parse_bool(const char *v, int def) {
@@ -164,6 +169,25 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             }
         } else if (strcasecmp(key, "embedding_fallback") == 0) {
             cfg->embedding_fallback = parse_bool(val, cfg->embedding_fallback);
+        } else if (strcasecmp(key, "vector_index_type") == 0) {
+            if (strcasecmp(val, "flat") == 0 || strcasecmp(val, "hnsw") == 0) {
+                snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", val);
+            }
+        } else if (strcasecmp(key, "vector_hnsw_m") == 0) {
+            int v = atoi(val);
+            if (v >= 4) {
+                cfg->vector_hnsw_m = v;
+            }
+        } else if (strcasecmp(key, "vector_hnsw_ef_construction") == 0) {
+            int v = atoi(val);
+            if (v > 0) {
+                cfg->vector_hnsw_ef_construction = v;
+            }
+        } else if (strcasecmp(key, "vector_hnsw_ef_search") == 0) {
+            int v = atoi(val);
+            if (v > 0) {
+                cfg->vector_hnsw_ef_search = v;
+            }
         }
     }
 
@@ -238,6 +262,34 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
         } else if (strcmp(argv[i], "--embedding_fallback") == 0) {
             if (i + 1 < argc) {
                 cfg->embedding_fallback = parse_bool(argv[++i], cfg->embedding_fallback);
+            }
+        } else if (strcmp(argv[i], "--vector_index_type") == 0) {
+            if (i + 1 < argc) {
+                const char *v = argv[++i];
+                if (strcasecmp(v, "flat") == 0 || strcasecmp(v, "hnsw") == 0) {
+                    snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", v);
+                }
+            }
+        } else if (strcmp(argv[i], "--vector_hnsw_m") == 0) {
+            if (i + 1 < argc) {
+                int v = atoi(argv[++i]);
+                if (v >= 4) {
+                    cfg->vector_hnsw_m = v;
+                }
+            }
+        } else if (strcmp(argv[i], "--vector_hnsw_ef_construction") == 0) {
+            if (i + 1 < argc) {
+                int v = atoi(argv[++i]);
+                if (v > 0) {
+                    cfg->vector_hnsw_ef_construction = v;
+                }
+            }
+        } else if (strcmp(argv[i], "--vector_hnsw_ef_search") == 0) {
+            if (i + 1 < argc) {
+                int v = atoi(argv[++i]);
+                if (v > 0) {
+                    cfg->vector_hnsw_ef_search = v;
+                }
             }
         }
     }

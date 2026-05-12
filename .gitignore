@@ -10,4 +10,5 @@ embedding_server/**/*.pyo
 embedding_server/**/*.pyd
 embedding_server/generated/
 embedding_server/.cache/
-embedding_server/models/
+embedding_server/model/
+# embedding_server/model/

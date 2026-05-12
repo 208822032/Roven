@@ -3,6 +3,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "msg_queue.h"
+#include <pthread.h>
+
 /*
  * 向量模块内部状态码。
  *
@@ -18,6 +21,19 @@ typedef enum kvs_vector_status_e {
 	KVS_VECTOR_ERR_NOT_IMPLEMENTED = -4,
 	KVS_VECTOR_ERR_NOT_INITIALIZED = -5,
 } kvs_vector_status_t;
+
+/*
+ * vector index 类型。
+ *
+ * 放在 public 区域，原因：
+ * 1. VINFO 需要向命令层暴露当前索引类型；
+ * 2. kvs_operation.c 不应该定义 KVS_VECTOR_INTERNAL；
+ * 3. 外部只需要知道 flat / hnsw，不需要知道内部索引结构。
+ */
+typedef enum kvs_vector_index_type_e {
+	KVS_VECTOR_INDEX_TYPE_FLAT = 0,
+	KVS_VECTOR_INDEX_TYPE_HNSW = 1,
+} kvs_vector_index_type_t;
 
 /*
  * VGET / VSEARCH 返回的单条检索结果。
@@ -52,6 +68,21 @@ typedef struct kvs_vector_info_s {
 	size_t dimension;
 	int index_ready;
 	int needs_rebuild;
+
+	/*
+	 * 0 = flat
+	 * 1 = hnsw
+	 */
+	int index_type;
+
+	size_t flat_physical_size;
+
+	size_t ann_size;
+	size_t ann_m;
+	size_t ann_ef_construction;
+	size_t ann_ef_search;
+	int ann_max_level;
+	int ann_ready;
 } kvs_vector_info_t;
 
 /********** 向量模块公开接口 **********/
@@ -67,6 +98,18 @@ int kvs_vector_set(
 	size_t answer_len,
 	const char *scope,
 	size_t scope_len
+);
+
+int kvs_vector_set_batch_async(
+	const char **questions,
+	const size_t *question_lens,
+	const char **answers,
+	const size_t *answer_lens,
+	const char **scopes,
+	const size_t *scope_lens,
+	size_t count,
+	size_t *success_count,
+	size_t *failed_count
 );
 
 int kvs_vector_get(
@@ -134,6 +177,19 @@ void kvs_vector_search_results_reset(
 #define KVS_VECTOR_INITIAL_ID_MAP_CAPACITY 32
 #define KVS_VECTOR_DEFAULT_DIMENSION 64
 
+#define KVS_VECTOR_ASYNC_QUEUE_CAPACITY 1024
+#define KVS_VECTOR_ASYNC_WORKER_COUNT 1
+
+/*
+ * 内部批量 embedding 默认批大小。
+ *
+ * 当前第 16 步先用于 C/vector 内部能力打通。
+ * 后续批量导入、AOF/RDB 批量恢复、模型重算都可以复用。
+ */
+#define KVS_VECTOR_EMBEDDING_BATCH_SIZE 64
+
+#define KVS_VECTOR_EMBEDDING_MAX_INFLIGHT 4
+
 extern kvs_config_t g_cfg;
 
 /********** embedding provider **********/
@@ -154,6 +210,8 @@ typedef struct kvs_vector_embedding_provider_s {
 	int grpc_healthy;
 	int grpc_dimension;
 } kvs_vector_embedding_provider_t;
+
+
 
 /********** record / store **********/
 
@@ -241,6 +299,64 @@ typedef struct kvs_vector_flat_index_s {
 	int needs_rebuild;
 } kvs_vector_flat_index_t;
 
+/********** ANN / HNSW index **********/
+
+#define KVS_VECTOR_HNSW_M 32
+#define KVS_VECTOR_HNSW_EF_CONSTRUCTION 256
+#define KVS_VECTOR_HNSW_EF_SEARCH 256
+
+/*
+ * 多层 HNSW 最大层数。
+ *
+ * level 从 0 开始，0 层是底层完整图；
+ * level 越高，节点越稀疏，用于远距离导航。
+ */
+#define KVS_VECTOR_HNSW_MAX_LEVEL 16
+
+// typedef enum kvs_vector_index_type_e {
+// 	KVS_VECTOR_INDEX_TYPE_FLAT = 0,
+// 	KVS_VECTOR_INDEX_TYPE_HNSW = 1,
+// } kvs_vector_index_type_t;
+
+typedef struct kvs_vector_ann_node_s {
+	size_t record_index;
+	uint64_t record_id;
+
+	/*
+	 * 当前节点最高层级。
+	 * 该节点拥有 [0, level] 共 level + 1 层邻居表。
+	 */
+	int level;
+
+	size_t **neighbors;
+	size_t *neighbor_counts;
+	size_t *neighbor_capacities;
+
+	int active;
+} kvs_vector_ann_node_t;
+
+typedef struct kvs_vector_ann_index_s {
+	kvs_vector_ann_node_t *nodes;
+
+	size_t size;
+	size_t capacity;
+	size_t dimension;
+
+	/*
+	 * HNSW 全局入口点和当前最高层。
+	 */
+	size_t entry_node;
+	int has_entry;
+	int max_level;
+
+	size_t m;
+	size_t ef_construction;
+	size_t ef_search;
+
+	int ready;
+	int needs_rebuild;
+} kvs_vector_ann_index_t;
+
 /********** topK **********/
 
 typedef struct kvs_vector_candidate_s {
@@ -263,14 +379,67 @@ typedef struct kvs_vector_query_ctx_s {
 	float threshold;
 } kvs_vector_query_ctx_t;
 
+typedef struct kvs_vector_batch_set_payload_s {
+	const char **questions;
+	const size_t *question_lens;
+
+	const char **answers;
+	const size_t *answer_lens;
+
+	const char **scopes;
+	const size_t *scope_lens;
+
+	size_t count;
+} kvs_vector_batch_set_payload_t;
+
 /********** global state **********/
+
+typedef enum kvs_vector_async_task_type_e {
+	KVS_VECTOR_ASYNC_TASK_NONE = 0,
+	KVS_VECTOR_ASYNC_TASK_STOP = 1,
+	KVS_VECTOR_ASYNC_TASK_BATCH_SET = 2,
+} kvs_vector_async_task_type_t;
+
+typedef struct kvs_vector_async_task_s {
+	kvs_vector_async_task_type_t type;
+
+	int result;
+	size_t success_count;
+	size_t failed_count;
+
+	pthread_mutex_t mu;
+	pthread_cond_t cond;
+	int done;
+
+	void *payload;
+} kvs_vector_async_task_t;
+
+typedef struct kvs_vector_async_dispatcher_s {
+	msg_queue_t queue;
+
+	pthread_t *workers;
+	size_t worker_count;
+
+	pthread_mutex_t mu;
+	pthread_cond_t cond;
+
+	int initialized;
+	int stopping;
+} kvs_vector_async_dispatcher_t;
 
 typedef struct kvs_vector_state_s {
 	int initialized;
 	kvs_vector_store_t store;
 	kvs_vector_id_map_t id_map;
+
+	kvs_vector_index_type_t index_type;
+
 	kvs_vector_flat_index_t flat_index;
+	kvs_vector_ann_index_t ann_index;
+
 	kvs_vector_embedding_provider_t embedding_provider;
+
+	kvs_vector_async_dispatcher_t async_dispatcher;
 } kvs_vector_state_t;
 
 extern kvs_vector_state_t g_vector_state;
@@ -289,6 +458,33 @@ int kvs_vector_embedding_generate(
 	const char *text,
 	size_t text_len,
 	float **out_embedding,
+	int *out_dim
+);
+
+/*
+ * 批量生成 embedding。
+ *
+ * 返回连续 float 数组：
+ *
+ *   embeddings[i * out_dim + j]
+ *
+ * 调用方使用 kvs_free 释放 out_embeddings。
+ */
+int kvs_vector_embedding_generate_batch(
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	float **out_embeddings,
+	int *out_dim
+);
+
+int kvs_vector_embedding_generate_batch_parallel(
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	size_t batch_size,
+	size_t max_inflight,
+	float **out_embeddings,
 	int *out_dim
 );
 
@@ -469,6 +665,55 @@ float kvs_vector_dot_product(
 	size_t dim
 );
 
+/********** ANN / HNSW-lite index **********/
+
+int kvs_vector_ann_index_init(
+	kvs_vector_ann_index_t *index,
+	size_t dimension,
+	size_t m,
+	size_t ef_construction,
+	size_t ef_search
+);
+
+void kvs_vector_ann_index_destroy(kvs_vector_ann_index_t *index);
+
+void kvs_vector_ann_index_reset(kvs_vector_ann_index_t *index);
+
+int kvs_vector_ann_index_reserve(
+	kvs_vector_ann_index_t *index,
+	size_t new_capacity
+);
+
+int kvs_vector_ann_index_add(
+	kvs_vector_ann_index_t *index,
+	size_t record_index,
+	const float *embedding,
+	int embedding_dim
+);
+
+int kvs_vector_ann_index_search(
+	kvs_vector_ann_index_t *index,
+	const float *query_embedding,
+	int query_dim,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity,
+	size_t *results_count
+);
+
+int kvs_vector_rebuild_ann_index_from_store(void);
+
+int kvs_vector_set_index_type_internal(kvs_vector_index_type_t index_type);
+
+int kvs_vector_ann_index_set_params_internal(
+	size_t m,
+	size_t ef_construction,
+	size_t ef_search
+);
+
 /********** topK heap **********/
 
 int kvs_vector_topk_heap_init(
@@ -494,4 +739,106 @@ int kvs_vector_topk_heap_export_desc(
 	const kvs_vector_store_t *store
 );
 
+int kvs_vector_async_dispatcher_init(
+	kvs_vector_async_dispatcher_t *dispatcher,
+	size_t queue_capacity,
+	size_t worker_count
+);
+
+void kvs_vector_async_dispatcher_destroy(
+	kvs_vector_async_dispatcher_t *dispatcher
+);
+
+int kvs_vector_async_submit_and_wait(
+	kvs_vector_async_dispatcher_t *dispatcher,
+	kvs_vector_async_task_t *task
+);
+
+void kvs_vector_async_task_init(
+	kvs_vector_async_task_t *task,
+	kvs_vector_async_task_type_t type,
+	void *payload
+);
+
+void kvs_vector_async_task_destroy(
+	kvs_vector_async_task_t *task
+);
+
+
+
+int kvs_vector_set_batch_internal(
+	const char **questions,
+	const size_t *question_lens,
+	const char **answers,
+	const size_t *answer_lens,
+	const char **scopes,
+	const size_t *scope_lens,
+	size_t count,
+	size_t *success_count,
+	size_t *failed_count
+);
+
+/*
+ * 纯存储层批量写入接口。
+ *
+ * 与 kvs_vector_set_batch_internal() 的区别：
+ * 1. 不生成 embedding；
+ * 2. 直接使用调用方传入的连续 embeddings；
+ * 3. 用于内部压测存储层 record / id_map / flat_index 写入性能。
+ *
+ * embeddings 布局：
+ *
+ *   embeddings[i * embedding_dim + j]
+ *
+ * 注意：
+ * 该函数仍然会复制每条 embedding 到 record 内部，
+ * 并同步追加到 flat_index。
+ */
+int kvs_vector_set_batch_with_embeddings_internal(
+	const char **questions,
+	const size_t *question_lens,
+	const char **answers,
+	const size_t *answer_lens,
+	const char **scopes,
+	const size_t *scope_lens,
+	const float *embeddings,
+	int embedding_dim,
+	size_t count,
+	size_t *success_count,
+	size_t *failed_count
+);
+
+/*
+ * 纯搜索层压测接口。
+ *
+ * 与 kvs_vector_search() 的区别：
+ * 1. 不调用 embedding provider；
+ * 2. 直接使用调用方传入的 query_embedding；
+ * 3. 用于压测 flat scan + dot product + topK 的纯搜索性能。
+ *
+ * query_embedding 维度必须等于 flat_index.dimension。
+ */
+int kvs_vector_search_with_embedding_internal(
+	const float *query_embedding,
+	int query_dim,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity,
+	size_t *results_count
+);
+
+int kvs_vector_record_set_fields_with_embedding(
+	kvs_vector_record_t *record,
+	const char *question,
+	size_t question_len,
+	const char *answer,
+	size_t answer_len,
+	const char *scope,
+	size_t scope_len,
+	const float *embedding,
+	int embedding_dim
+);
 #endif /* KVS_VECTOR_INTERNAL */

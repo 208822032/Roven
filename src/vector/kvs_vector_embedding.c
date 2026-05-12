@@ -457,6 +457,173 @@ int kvs_vector_grpc_embedding_generate(
 }
 
 /*
+ * gRPC 批量 embedding provider。
+ *
+ * C++ bridge 返回 malloc 分配的连续数组；
+ * vector 层复制到 kvs_malloc 内存后释放 bridge 内存。
+ */
+int kvs_vector_grpc_embedding_generate_batch(
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	float **out_embeddings,
+	int *out_dim
+) {
+	float *grpc_embeddings = NULL;
+	float *embedding_copy = NULL;
+	int grpc_dim = 0;
+	size_t bytes;
+	int ret;
+
+	if (!texts || !text_lens || text_count == 0 || !out_embeddings || !out_dim) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	*out_embeddings = NULL;
+	*out_dim = 0;
+
+	ret = kvs_embedding_grpc_generate_batch(
+		texts,
+		text_lens,
+		text_count,
+		&grpc_embeddings,
+		&grpc_dim
+	);
+	if (ret != KVS_EMBEDDING_GRPC_OK) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"grpc batch embedding generate failed count=%zu ret=%d",
+			text_count,
+			ret
+		);
+		return KVS_VECTOR_ERR;
+	}
+
+	if (!grpc_embeddings || grpc_dim <= 0) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"grpc batch embedding bad response count=%zu dimension=%d has_embeddings=%d",
+			text_count,
+			grpc_dim,
+			grpc_embeddings ? 1 : 0
+		);
+		kvs_embedding_grpc_free_embeddings(grpc_embeddings);
+		return KVS_VECTOR_ERR;
+	}
+
+	bytes = text_count * (size_t)grpc_dim * sizeof(float);
+	if (grpc_dim <= 0 || bytes / sizeof(float) / (size_t)grpc_dim != text_count) {
+		kvs_embedding_grpc_free_embeddings(grpc_embeddings);
+		return KVS_VECTOR_ERR;
+	}
+
+	embedding_copy = (float *)kvs_malloc(bytes);
+	if (!embedding_copy) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"grpc batch embedding copy allocation failed count=%zu dimension=%d bytes=%zu",
+			text_count,
+			grpc_dim,
+			bytes
+		);
+		kvs_embedding_grpc_free_embeddings(grpc_embeddings);
+		return KVS_VECTOR_ERR;
+	}
+
+	memcpy(embedding_copy, grpc_embeddings, bytes);
+	kvs_embedding_grpc_free_embeddings(grpc_embeddings);
+
+	*out_embeddings = embedding_copy;
+	*out_dim = grpc_dim;
+
+	KVS_LOG_DEBUG(
+		KVS_VECTOR_LOG_MODULE,
+		"grpc batch embedding generate success count=%zu dimension=%d",
+		text_count,
+		grpc_dim
+	);
+
+	return KVS_VECTOR_OK;
+}
+
+/*
+ * HASH 批量 embedding provider。
+ *
+ * 为了保持 provider 抽象一致，hash provider 也返回连续数组。
+ */
+int kvs_vector_hash_embedding_generate_batch(
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	float **out_embeddings,
+	int *out_dim
+) {
+	float *batch_embeddings = NULL;
+	size_t dim = KVS_VECTOR_DEFAULT_DIMENSION;
+	size_t i;
+	size_t bytes;
+
+	if (!texts || !text_lens || text_count == 0 || !out_embeddings || !out_dim) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	*out_embeddings = NULL;
+	*out_dim = 0;
+
+	bytes = text_count * dim * sizeof(float);
+	if (dim == 0 || bytes / sizeof(float) / dim != text_count) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	batch_embeddings = (float *)kvs_malloc(bytes);
+	if (!batch_embeddings) {
+		return KVS_VECTOR_ERR;
+	}
+
+	memset(batch_embeddings, 0, bytes);
+
+	for (i = 0; i < text_count; ++i) {
+		float *one_embedding = NULL;
+		int one_dim = 0;
+		int ret;
+
+		ret = kvs_vector_hash_embedding_generate(
+			texts[i],
+			text_lens[i],
+			&one_embedding,
+			&one_dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_free(batch_embeddings);
+			return ret;
+		}
+
+		if (!one_embedding || one_dim != (int)dim) {
+			if (one_embedding) {
+				kvs_free(one_embedding);
+			}
+			kvs_free(batch_embeddings);
+			return KVS_VECTOR_ERR;
+		}
+
+		memcpy(
+			batch_embeddings + (i * dim),
+			one_embedding,
+			dim * sizeof(float)
+		);
+
+		kvs_free(one_embedding);
+	}
+
+	*out_embeddings = batch_embeddings;
+	*out_dim = (int)dim;
+
+	return KVS_VECTOR_OK;
+}
+
+
+
+/*
  * embedding 统一入口。
  *
  * VSET / VSEARCH / VINDEX 只调用这个函数，不直接关心具体 provider。
@@ -491,6 +658,213 @@ int kvs_vector_embedding_generate(
 				text,
 				text_len,
 				out_embedding,
+				out_dim
+			);
+
+		default:
+			return KVS_VECTOR_ERR;
+	}
+}
+
+/*
+ * embedding 批量统一入口。
+ *
+ * 当前第 16 步只打通内部能力：
+ * 1. hash provider 支持批量；
+ * 2. grpc provider 支持批量；
+ * 3. 返回连续 float 数组，调用方用 kvs_free 释放。
+ */
+int kvs_vector_embedding_generate_batch(
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	float **out_embeddings,
+	int *out_dim
+) {
+	kvs_vector_embedding_provider_t *provider = &g_vector_state.embedding_provider;
+
+	if (!provider->initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	if (!texts || !text_lens || text_count == 0 || !out_embeddings || !out_dim) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	switch (provider->type) {
+		case KVS_VECTOR_EMBEDDING_PROVIDER_HASH:
+			return kvs_vector_hash_embedding_generate_batch(
+				texts,
+				text_lens,
+				text_count,
+				out_embeddings,
+				out_dim
+			);
+
+		case KVS_VECTOR_EMBEDDING_PROVIDER_GRPC:
+			return kvs_vector_grpc_embedding_generate_batch(
+				texts,
+				text_lens,
+				text_count,
+				out_embeddings,
+				out_dim
+			);
+
+		default:
+			return KVS_VECTOR_ERR;
+	}
+}
+
+/*
+ * gRPC 并发批量 embedding provider。
+ *
+ * C++ bridge 返回 malloc 分配的连续数组；
+ * vector 层复制到 kvs_malloc 内存后释放 bridge 内存。
+ */
+int kvs_vector_grpc_embedding_generate_batch_parallel(
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	size_t batch_size,
+	size_t max_inflight,
+	float **out_embeddings,
+	int *out_dim
+) {
+	float *grpc_embeddings = NULL;
+	float *embedding_copy = NULL;
+	int grpc_dim = 0;
+	size_t bytes;
+	int ret;
+
+	if (!texts || !text_lens || text_count == 0 || !out_embeddings || !out_dim) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	*out_embeddings = NULL;
+	*out_dim = 0;
+
+	if (batch_size == 0) {
+		batch_size = KVS_VECTOR_EMBEDDING_BATCH_SIZE;
+	}
+
+	if (max_inflight == 0) {
+		max_inflight = KVS_VECTOR_EMBEDDING_MAX_INFLIGHT;
+	}
+
+	ret = kvs_embedding_grpc_generate_batch_parallel(
+		texts,
+		text_lens,
+		text_count,
+		batch_size,
+		max_inflight,
+		&grpc_embeddings,
+		&grpc_dim
+	);
+	if (ret != KVS_EMBEDDING_GRPC_OK) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"grpc parallel batch embedding generate failed count=%zu batch_size=%zu max_inflight=%zu ret=%d",
+			text_count,
+			batch_size,
+			max_inflight,
+			ret
+		);
+		return KVS_VECTOR_ERR;
+	}
+
+	if (!grpc_embeddings || grpc_dim <= 0) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"grpc parallel batch embedding bad response count=%zu dimension=%d has_embeddings=%d",
+			text_count,
+			grpc_dim,
+			grpc_embeddings ? 1 : 0
+		);
+		kvs_embedding_grpc_free_embeddings(grpc_embeddings);
+		return KVS_VECTOR_ERR;
+	}
+
+	bytes = text_count * (size_t)grpc_dim * sizeof(float);
+	if ((size_t)grpc_dim == 0 ||
+	    bytes / sizeof(float) / (size_t)grpc_dim != text_count) {
+		kvs_embedding_grpc_free_embeddings(grpc_embeddings);
+		return KVS_VECTOR_ERR;
+	}
+
+	embedding_copy = (float *)kvs_malloc(bytes);
+	if (!embedding_copy) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"grpc parallel batch embedding copy allocation failed count=%zu dimension=%d bytes=%zu",
+			text_count,
+			grpc_dim,
+			bytes
+		);
+		kvs_embedding_grpc_free_embeddings(grpc_embeddings);
+		return KVS_VECTOR_ERR;
+	}
+
+	memcpy(embedding_copy, grpc_embeddings, bytes);
+	kvs_embedding_grpc_free_embeddings(grpc_embeddings);
+
+	*out_embeddings = embedding_copy;
+	*out_dim = grpc_dim;
+
+	KVS_LOG_DEBUG(
+		KVS_VECTOR_LOG_MODULE,
+		"grpc parallel batch embedding generate success count=%zu batch_size=%zu max_inflight=%zu dimension=%d",
+		text_count,
+		batch_size,
+		max_inflight,
+		grpc_dim
+	);
+
+	return KVS_VECTOR_OK;
+}
+
+/*
+ * embedding 并发批量统一入口。
+ *
+ * hash provider 没有远程 RPC，直接复用普通 batch。
+ * grpc provider 使用并发 batch。
+ */
+int kvs_vector_embedding_generate_batch_parallel(
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	size_t batch_size,
+	size_t max_inflight,
+	float **out_embeddings,
+	int *out_dim
+) {
+	kvs_vector_embedding_provider_t *provider = &g_vector_state.embedding_provider;
+
+	if (!provider->initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	if (!texts || !text_lens || text_count == 0 || !out_embeddings || !out_dim) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	switch (provider->type) {
+		case KVS_VECTOR_EMBEDDING_PROVIDER_HASH:
+			return kvs_vector_embedding_generate_batch(
+				texts,
+				text_lens,
+				text_count,
+				out_embeddings,
+				out_dim
+			);
+
+		case KVS_VECTOR_EMBEDDING_PROVIDER_GRPC:
+			return kvs_vector_grpc_embedding_generate_batch_parallel(
+				texts,
+				text_lens,
+				text_count,
+				batch_size,
+				max_inflight,
+				out_embeddings,
 				out_dim
 			);
 

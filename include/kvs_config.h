@@ -115,6 +115,17 @@ typedef struct kvs_config {
 
 	//gRPC provider 失败时是否回退到 hash provider
 	int embedding_fallback;
+
+	// vector index 配置
+	// vector_index_type:
+	//   flat: 精确 flat scan
+	//   hnsw: 多层 HNSW ANN
+	char vector_index_type[16];
+
+	// HNSW 参数
+	int vector_hnsw_m;
+	int vector_hnsw_ef_construction;
+	int vector_hnsw_ef_search;
 } kvs_config_t;
 
 // 默认配置初始化

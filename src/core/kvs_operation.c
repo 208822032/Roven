@@ -502,7 +502,7 @@ const char *command[] = {
     "AOFREWRITE",
     "QUIT",
     "FULLDUMP",
-    "VSET", "VGET", "VSEARCH", "VDEL", "VINDEX", "VINFO",
+    "VSET", "VBATCHSET", "VGET", "VSEARCH", "VDEL", "VINDEX", "VINFO"
 };
 
 const command_info command_table[] = {
@@ -561,6 +561,7 @@ const command_info command_table[] = {
 
     //V族命令
     {"VSET",    handle_vset_command,    -1, 1, -1, KVS_CMD_LOCK_WRITE},
+    {"VBATCHSET", handle_vbatchset_command, -1, 1, -1, KVS_CMD_LOCK_WRITE},
     {"VGET",    handle_vget_command,    -1, 0, -1, KVS_CMD_LOCK_READ},
     {"VSEARCH", handle_vsearch_command, -1, 0, -1, KVS_CMD_LOCK_READ},
     {"VDEL",    handle_vdel_command,    -1, 1, -1, KVS_CMD_LOCK_WRITE},
@@ -750,6 +751,64 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             if(count == 4){
                 ctx->scope = tokens[3];
                 ctx->scope_len = kvs_vcmd_token_len(tokens[3]);
+            }
+
+            return 0;
+        }
+
+        if (cmd == KVS_CMD_VBATCHSET) {
+            long n;
+            char *endptr = NULL;
+            int i;
+            int base;
+
+            if (count < 3) {
+                return -1;
+            }
+
+            errno = 0;
+            n = strtol(tokens[1], &endptr, 10);
+            if (endptr == tokens[1] || *endptr != '\0' || errno == ERANGE || n <= 0) {
+                return -1;
+            }
+
+            /*
+            * 第一版协议固定每条 3 个字段：
+            * question answer scope
+            *
+            * VBATCHSET count q1 a1 scope q2 a2 scope ...
+            */
+            if (count != 2 + (int)n * 3) {
+                return -1;
+            }
+
+            ctx->data_structure = -1;
+            ctx->batch_count = (size_t)n;
+
+            ctx->batch_questions = (char **)kvs_malloc(sizeof(char *) * ctx->batch_count);
+            ctx->batch_question_lens = (size_t *)kvs_malloc(sizeof(size_t) * ctx->batch_count);
+            ctx->batch_answers = (char **)kvs_malloc(sizeof(char *) * ctx->batch_count);
+            ctx->batch_answer_lens = (size_t *)kvs_malloc(sizeof(size_t) * ctx->batch_count);
+            ctx->batch_scopes = (char **)kvs_malloc(sizeof(char *) * ctx->batch_count);
+            ctx->batch_scope_lens = (size_t *)kvs_malloc(sizeof(size_t) * ctx->batch_count);
+
+            if (!ctx->batch_questions || !ctx->batch_question_lens ||
+                !ctx->batch_answers || !ctx->batch_answer_lens ||
+                !ctx->batch_scopes || !ctx->batch_scope_lens) {
+                return -1;
+            }
+
+            for (i = 0; i < (int)ctx->batch_count; ++i) {
+                base = 2 + i * 3;
+
+                ctx->batch_questions[i] = tokens[base];
+                ctx->batch_question_lens[i] = kvs_vcmd_token_len(tokens[base]);
+
+                ctx->batch_answers[i] = tokens[base + 1];
+                ctx->batch_answer_lens[i] = kvs_vcmd_token_len(tokens[base + 1]);
+
+                ctx->batch_scopes[i] = tokens[base + 2];
+                ctx->batch_scope_lens[i] = kvs_vcmd_token_len(tokens[base + 2]);
             }
 
             return 0;
@@ -1017,6 +1076,27 @@ int check_arity(const command_info *cmd, int argc){
     if (strcmp(cmd->name, "VSET") == 0) {
         return argc == 3 || argc == 4;
     }
+
+    if (strcmp(cmd->name, "VBATCHSET") == 0) {
+	if (argc < 3) {
+		return 0;
+	}
+
+	/*
+	 * VBATCHSET count q1 a1 scope1 q2 a2 scope1 ...
+	 * argc = 2 + count * 3
+	 *
+	 * 第一版固定每条都带 scope，方便解析和压测。
+	 */
+	char *endptr = NULL;
+	long n;
+
+	errno = 0;
+	n = strtol("0", &endptr, 10);
+	(void)n;
+
+	return 1;
+}
 
     if (strcmp(cmd->name, "VGET") == 0) {
         return argc == 2 || argc == 3;
@@ -1673,7 +1753,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
         );
     }
 
-    off += resp_generate_array_start(response + off, 8);
+    off += resp_generate_array_start(response + off, 16);
 
     n = snprintf(item, sizeof(item), "total_records:%zu", info->total_records);
     if (n < 0 || n >= (int)sizeof(item)) {
@@ -1722,6 +1802,54 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+        n = snprintf(item, sizeof(item), "index_type:%s",
+        info->index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "flat_physical_size:%zu", info->flat_physical_size);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "ann_size:%zu", info->ann_size);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "ann_m:%zu", info->ann_m);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "ann_ef_construction:%zu", info->ann_ef_construction);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "ann_ef_search:%zu", info->ann_ef_search);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "ann_max_level:%d", info->ann_max_level);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "ann_ready:%d", info->ann_ready);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
     return off;
 }
@@ -1744,6 +1872,48 @@ int handle_vset_command(command_context_t *ctx, char *response) {
     );
 
     return handle_vector_status_response(status, response);
+}
+
+int handle_vbatchset_command(command_context_t *ctx, char *response) {
+	size_t success_count = 0;
+	size_t failed_count = 0;
+	int ret;
+	char buf[128];
+
+	if (!ctx || !response || ctx->batch_count == 0 ||
+	    !ctx->batch_questions || !ctx->batch_question_lens ||
+	    !ctx->batch_answers || !ctx->batch_answer_lens) {
+		return resp_generate_error(response, "ERR invalid VBATCHSET argument");
+	}
+
+	ret = kvs_vector_set_batch_async(
+		(const char **)ctx->batch_questions,
+		ctx->batch_question_lens,
+		(const char **)ctx->batch_answers,
+		ctx->batch_answer_lens,
+		(const char **)ctx->batch_scopes,
+		ctx->batch_scope_lens,
+		ctx->batch_count,
+		&success_count,
+		&failed_count
+	);
+
+	if (ret != KVS_VECTOR_OK) {
+		snprintf(
+			buf,
+			sizeof(buf),
+			"ERR VBATCHSET failed success=%zu failed=%zu",
+			success_count,
+			failed_count
+		);
+		return resp_generate_error(response, buf);
+	}
+
+	/*
+	 * 第一版返回简单 OK，方便客户端压测。
+	 * 后续可以改成数组：success / failed / count。
+	 */
+	return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
 }
 
 int handle_vget_command(command_context_t *ctx, char *response) {

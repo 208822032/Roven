@@ -110,6 +110,11 @@ TEST_EMBED_GRPC_C_ABI := $(TEST_DIR)/embedding_grpc_c_abi_test
 TEST_EMBED_GRPC_C_ABI_O := $(TEST_DIR)/embedding_grpc_c_abi_test.o
 TEST_TTL_LOOKUP_SPLIT := $(TEST_DIR)/ttl_lookup_split_bench
 TEST_SKIPTABLE_TARGETED := $(TEST_DIR)/skiptable_targeted_bench
+TEST_VECTOR_IMPORT_BENCH := $(TEST_DIR)/vector_import_bench
+TEST_VECTOR_STORE_BENCH := $(TEST_DIR)/vector_store_bench
+TEST_VECTOR_STORE_BENCH_O := $(TEST_DIR)/vector_store_bench.o
+TEST_VECTOR_SEARCH_BENCH := $(TEST_DIR)/vector_search_bench
+TEST_VECTOR_SEARCH_BENCH_O := $(TEST_DIR)/vector_search_bench.o
 
 TEST_BINARIES = \
 	$(TEST_CASE) \
@@ -124,7 +129,10 @@ TEST_BINARIES = \
 	$(TEST_AI_CHAT_SCHEMA) \
 	$(TEST_VECTOR) \
 	$(TEST_EMBED_GRPC_CLIENT) \
-	$(TEST_EMBED_GRPC_C_ABI)
+	$(TEST_EMBED_GRPC_C_ABI) \
+	$(TEST_VECTOR_IMPORT_BENCH) \
+	$(TEST_VECTOR_STORE_BENCH) \
+	$(TEST_VECTOR_SEARCH_BENCH)
 
 CLANG ?= clang
 # 尝试查找 bpftool，如果找不到则默认为 bpftool
@@ -240,6 +248,9 @@ $(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c $(SRC_STORAGE)/kvs_mem
 $(TEST_VECTOR): $(TEST_DIR)/vector_testcase.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+$(TEST_VECTOR_IMPORT_BENCH): $(TEST_DIR)/vector_import_bench.c
+	$(CC) $(CFLAGS) -o $@ $<
+
 $(TEST_EMBED_GRPC_CLIENT): $(TEST_DIR)/embedding_grpc_client_test.cc $(EMBED_CPP_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(EMBED_CPP_OBJS) $(GRPC_LIBS) -lpthread
 
@@ -257,6 +268,52 @@ $(TEST_EMBED_GRPC_C_ABI): $(TEST_EMBED_GRPC_C_ABI_O) $(EMBED_GRPC_BRIDGE_O) $(EM
 		$(KVS_LOG_OBJS) \
 		$(GRPC_LIBS) \
 		-lpthread
+
+VECTOR_STORE_BENCH_OBJS := \
+	$(SRC_CORE)/kvs_config.o \
+	$(SRC_CORE)/kvs_globals.o \
+	$(SRC_STORAGE)/kvs_mempool.o \
+	$(SRC_STORAGE)/jemalloc_wrapper.o \
+	$(SRC_STORAGE)/kvs_array.o \
+	$(SRC_STORAGE)/kvs_rbtree.o \
+	$(SRC_STORAGE)/kvs_hash.o \
+	$(SRC_STORAGE)/kvs_skiptable.o \
+	$(SRC_UTILS)/msg_queue.o \
+	$(KVS_LOG_OBJS) \
+	$(SRC_VECTOR)/kvs_vector.o \
+	$(SRC_VECTOR)/kvs_vector_index.o \
+	$(SRC_VECTOR)/kvs_vector_embedding.o
+
+$(TEST_VECTOR_STORE_BENCH_O): $(TEST_DIR)/vector_store_bench.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TEST_VECTOR_STORE_BENCH): $(TEST_VECTOR_STORE_BENCH_O) $(VECTOR_STORE_BENCH_OBJS) $(EMBED_GRPC_BRIDGE_O) $(EMBED_CPP_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ \
+		$(TEST_VECTOR_STORE_BENCH_O) \
+		$(VECTOR_STORE_BENCH_OBJS) \
+		$(EMBED_GRPC_BRIDGE_O) \
+		$(EMBED_CPP_OBJS) \
+		$(LDFLAGS) \
+		$(GRPC_LIBS) \
+		-lpthread \
+		-ldl
+
+VECTOR_SEARCH_BENCH_OBJS := $(VECTOR_STORE_BENCH_OBJS)
+
+$(TEST_VECTOR_SEARCH_BENCH_O): $(TEST_DIR)/vector_search_bench.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TEST_VECTOR_SEARCH_BENCH): $(TEST_VECTOR_SEARCH_BENCH_O) $(VECTOR_SEARCH_BENCH_OBJS) $(EMBED_GRPC_BRIDGE_O) $(EMBED_CPP_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ \
+		$(TEST_VECTOR_SEARCH_BENCH_O) \
+		$(VECTOR_SEARCH_BENCH_OBJS) \
+		$(EMBED_GRPC_BRIDGE_O) \
+		$(EMBED_CPP_OBJS) \
+		$(LDFLAGS) \
+		$(GRPC_LIBS) \
+		-lpthread \
+		-ldl
+
 # 生成 vmlinux.h
 $(VMLINUX_H):
 	@echo "Generating vmlinux.h..."
@@ -306,6 +363,8 @@ clean:
 	rm -f $(EMBED_CPP_OBJS)
 	rm -f $(EMBED_GRPC_BRIDGE_O)
 	rm -f $(TEST_EMBED_GRPC_C_ABI_O)
+	rm -f $(TEST_VECTOR_STORE_BENCH_O)
+	rm -f $(TEST_VECTOR_SEARCH_BENCH_O)
 	rm -f $(EMBED_CPP_GEN_DIR)/embedding.pb.cc
 	rm -f $(EMBED_CPP_GEN_DIR)/embedding.pb.h
 	rm -f $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.cc

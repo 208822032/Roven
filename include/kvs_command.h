@@ -34,6 +34,17 @@ typedef struct {
 	float threshold;
 	char *query_text;
 	size_t query_text_len;
+	/* VBATCHSET 批量写入字段 */
+	size_t batch_count;
+
+	char **batch_questions;
+	size_t *batch_question_lens;
+
+	char **batch_answers;
+	size_t *batch_answer_lens;
+
+	char **batch_scopes;
+	size_t *batch_scope_lens;
 } command_context_t;
 
 typedef int (*command_handler)(command_context_t *ctx, char *response);
@@ -74,6 +85,7 @@ int handle_fulldump(command_context_t *ctx, char *response);
 
 //V族命令
 int handle_vset_command(command_context_t *ctx, char *response);
+int handle_vbatchset_command(command_context_t *ctx, char *response);
 int handle_vget_command(command_context_t *ctx, char *response);
 int handle_vsearch_command(command_context_t *ctx, char *response);
 int handle_vdel_command(command_context_t *ctx, char *response);

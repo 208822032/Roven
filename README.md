@@ -687,3 +687,9 @@ TTL 行为约定：
 
 
 python3 server.py --host 127.0.0.1 --port 50051 --model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+python3 server.py --host 127.0.0.1 --port 50051 --model ./model --workers 4 
+python3 server.py \
+  --host 127.0.0.1 \
+  --port 50051 \
+  --model sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 \
+  --workers 4

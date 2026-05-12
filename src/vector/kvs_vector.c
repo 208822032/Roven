@@ -23,6 +23,248 @@ kvs_vector_state_t g_vector_state;
 // 	info->needs_rebuild = 0;
 // }
 
+static void *kvs_vector_async_worker_main(void *arg) {
+	kvs_vector_async_dispatcher_t *dispatcher;
+	void *item = NULL;
+
+	dispatcher = (kvs_vector_async_dispatcher_t *)arg;
+	if (!dispatcher) {
+		return NULL;
+	}
+
+	for (;;) {
+		kvs_vector_async_task_t *task = NULL;
+
+		pthread_mutex_lock(&dispatcher->mu);
+
+		while (!dispatcher->stopping &&
+		       msg_queue_pop(&dispatcher->queue, &item) != 0) {
+			pthread_cond_wait(&dispatcher->cond, &dispatcher->mu);
+		}
+
+		if (dispatcher->stopping) {
+			pthread_mutex_unlock(&dispatcher->mu);
+			break;
+		}
+
+		pthread_mutex_unlock(&dispatcher->mu);
+
+		task = (kvs_vector_async_task_t *)item;
+		if (!task) {
+			continue;
+		}
+
+		switch (task->type) {
+			case KVS_VECTOR_ASYNC_TASK_STOP:
+				task->result = KVS_VECTOR_OK;
+				break;
+
+			case KVS_VECTOR_ASYNC_TASK_BATCH_SET:
+            {
+                kvs_vector_batch_set_payload_t *payload;
+
+                payload = (kvs_vector_batch_set_payload_t *)task->payload;
+                if (!payload) {
+                    task->result = KVS_VECTOR_ERR_INVALID_ARG;
+                    break;
+                }
+
+                task->result = kvs_vector_set_batch_internal(
+                    payload->questions,
+                    payload->question_lens,
+                    payload->answers,
+                    payload->answer_lens,
+                    payload->scopes,
+                    payload->scope_lens,
+                    payload->count,
+                    &task->success_count,
+                    &task->failed_count
+                );
+                break;
+            }
+
+			default:
+				task->result = KVS_VECTOR_ERR_INVALID_ARG;
+				break;
+		}
+
+		pthread_mutex_lock(&task->mu);
+		task->done = 1;
+		pthread_cond_signal(&task->cond);
+		pthread_mutex_unlock(&task->mu);
+	}
+
+	return NULL;
+}
+
+void kvs_vector_async_task_init(
+	kvs_vector_async_task_t *task,
+	kvs_vector_async_task_type_t type,
+	void *payload
+) {
+	if (!task) {
+		return;
+	}
+
+	memset(task, 0, sizeof(*task));
+
+	task->type = type;
+	task->payload = payload;
+	task->result = KVS_VECTOR_ERR;
+	task->success_count = 0;
+	task->failed_count = 0;
+	task->done = 0;
+
+	pthread_mutex_init(&task->mu, NULL);
+	pthread_cond_init(&task->cond, NULL);
+}
+
+void kvs_vector_async_task_destroy(kvs_vector_async_task_t *task) {
+	if (!task) {
+		return;
+	}
+
+	pthread_cond_destroy(&task->cond);
+	pthread_mutex_destroy(&task->mu);
+
+	memset(task, 0, sizeof(*task));
+}
+
+int kvs_vector_async_dispatcher_init(
+	kvs_vector_async_dispatcher_t *dispatcher,
+	size_t queue_capacity,
+	size_t worker_count
+) {
+	size_t i;
+
+	if (!dispatcher || queue_capacity == 0 || worker_count == 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	memset(dispatcher, 0, sizeof(*dispatcher));
+
+	if (msg_queue_init(&dispatcher->queue, (int)queue_capacity) != 0) {
+		return KVS_VECTOR_ERR;
+	}
+
+	pthread_mutex_init(&dispatcher->mu, NULL);
+	pthread_cond_init(&dispatcher->cond, NULL);
+
+	dispatcher->workers = (pthread_t *)kvs_malloc(worker_count * sizeof(pthread_t));
+	if (!dispatcher->workers) {
+		msg_queue_destroy(&dispatcher->queue);
+		pthread_cond_destroy(&dispatcher->cond);
+		pthread_mutex_destroy(&dispatcher->mu);
+		return KVS_VECTOR_ERR;
+	}
+
+	memset(dispatcher->workers, 0, worker_count * sizeof(pthread_t));
+
+	dispatcher->worker_count = worker_count;
+	dispatcher->stopping = 0;
+
+	for (i = 0; i < worker_count; ++i) {
+		if (pthread_create(
+				&dispatcher->workers[i],
+				NULL,
+				kvs_vector_async_worker_main,
+				dispatcher) != 0) {
+			dispatcher->stopping = 1;
+			pthread_cond_broadcast(&dispatcher->cond);
+
+			for (size_t j = 0; j < i; ++j) {
+				pthread_join(dispatcher->workers[j], NULL);
+			}
+
+			kvs_free(dispatcher->workers);
+			dispatcher->workers = NULL;
+			msg_queue_destroy(&dispatcher->queue);
+			pthread_cond_destroy(&dispatcher->cond);
+			pthread_mutex_destroy(&dispatcher->mu);
+			return KVS_VECTOR_ERR;
+		}
+	}
+
+	dispatcher->initialized = 1;
+
+	KVS_LOG_INFO(
+		KVS_VECTOR_LOG_MODULE,
+		"vector async dispatcher initialized queue_capacity=%zu worker_count=%zu",
+		queue_capacity,
+		worker_count
+	);
+
+	return KVS_VECTOR_OK;
+}
+
+void kvs_vector_async_dispatcher_destroy(
+	kvs_vector_async_dispatcher_t *dispatcher
+) {
+	size_t i;
+
+	if (!dispatcher || !dispatcher->initialized) {
+		return;
+	}
+
+	pthread_mutex_lock(&dispatcher->mu);
+	dispatcher->stopping = 1;
+	pthread_cond_broadcast(&dispatcher->cond);
+	pthread_mutex_unlock(&dispatcher->mu);
+
+	for (i = 0; i < dispatcher->worker_count; ++i) {
+		pthread_join(dispatcher->workers[i], NULL);
+	}
+
+	if (dispatcher->workers) {
+		kvs_free(dispatcher->workers);
+		dispatcher->workers = NULL;
+	}
+
+	msg_queue_destroy(&dispatcher->queue);
+
+	pthread_cond_destroy(&dispatcher->cond);
+	pthread_mutex_destroy(&dispatcher->mu);
+
+	memset(dispatcher, 0, sizeof(*dispatcher));
+
+	KVS_LOG_INFO(KVS_VECTOR_LOG_MODULE, "vector async dispatcher destroyed");
+}
+
+int kvs_vector_async_submit_and_wait(
+	kvs_vector_async_dispatcher_t *dispatcher,
+	kvs_vector_async_task_t *task
+) {
+	int ret;
+
+	if (!dispatcher || !dispatcher->initialized || !task) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	pthread_mutex_lock(&dispatcher->mu);
+
+	if (dispatcher->stopping) {
+		pthread_mutex_unlock(&dispatcher->mu);
+		return KVS_VECTOR_ERR;
+	}
+
+	ret = msg_queue_push(&dispatcher->queue, task);
+	if (ret != 0) {
+		pthread_mutex_unlock(&dispatcher->mu);
+		return KVS_VECTOR_ERR;
+	}
+
+	pthread_cond_signal(&dispatcher->cond);
+	pthread_mutex_unlock(&dispatcher->mu);
+
+	pthread_mutex_lock(&task->mu);
+	while (!task->done) {
+		pthread_cond_wait(&task->cond, &task->mu);
+	}
+	pthread_mutex_unlock(&task->mu);
+
+	return task->result;
+}
+
 /*
  * 统一检查 vector 模块是否已经初始化。
  */
@@ -112,6 +354,22 @@ static kvs_vector_record_t *kvs_vector_find_free_slot(void) {
 	return &store->records[record_index];
 }
 
+static kvs_vector_index_type_t kvs_vector_index_type_from_config(void) {
+	if (strcasecmp(g_cfg.vector_index_type, "hnsw") == 0) {
+		return KVS_VECTOR_INDEX_TYPE_HNSW;
+	}
+
+	return KVS_VECTOR_INDEX_TYPE_FLAT;
+}
+
+static size_t kvs_vector_hnsw_param_or_default(int value, size_t def) {
+	if (value <= 0) {
+		return def;
+	}
+
+	return (size_t)value;
+}
+
 /*
  * 从内部状态生成 VINFO。
  *
@@ -178,8 +436,34 @@ static void kvs_vector_info_from_state(
 	 */
 	info->index_size = active_records;
 	info->dimension = state->flat_index.dimension;
-	info->index_ready = state->flat_index.ready;
-	info->needs_rebuild = state->flat_index.needs_rebuild;
+
+	info->index_type = (int)state->index_type;
+
+	if (state->index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+		info->index_ready = state->ann_index.ready;
+		info->needs_rebuild =
+			state->flat_index.needs_rebuild ||
+			state->ann_index.needs_rebuild;
+
+		info->ann_size = state->ann_index.size;
+		info->ann_m = state->ann_index.m;
+		info->ann_ef_construction = state->ann_index.ef_construction;
+		info->ann_ef_search = state->ann_index.ef_search;
+		info->ann_max_level = state->ann_index.max_level;
+		info->ann_ready = state->ann_index.ready;
+	} else {
+		info->index_ready = state->flat_index.ready;
+		info->needs_rebuild = state->flat_index.needs_rebuild;
+
+		info->ann_size = state->ann_index.size;
+		info->ann_m = state->ann_index.m;
+		info->ann_ef_construction = state->ann_index.ef_construction;
+		info->ann_ef_search = state->ann_index.ef_search;
+		info->ann_max_level = state->ann_index.max_level;
+		info->ann_ready = state->ann_index.ready;
+	}
+
+	info->flat_physical_size = state->flat_index.size;
 }
 
 //初始化全局状态
@@ -221,14 +505,6 @@ int kvs_vector_init(void) {
 		goto fail;
 	}
 
-	// ret = kvs_vector_flat_index_init(
-	// 	&g_vector_state.flat_index,
-	// 	KVS_VECTOR_DEFAULT_DIMENSION
-	// );
-	// if (ret != KVS_VECTOR_OK) {
-	// 	goto fail;
-	// }
-
 	ret = kvs_vector_embedding_provider_init(&g_vector_state.embedding_provider);
 	if (ret != KVS_VECTOR_OK) {
 		goto fail;
@@ -245,14 +521,49 @@ int kvs_vector_init(void) {
 		goto fail;
 	}
 
+	g_vector_state.index_type = kvs_vector_index_type_from_config();
+
+	ret = kvs_vector_ann_index_init(
+		&g_vector_state.ann_index,
+		g_vector_state.flat_index.dimension,
+		kvs_vector_hnsw_param_or_default(
+			g_cfg.vector_hnsw_m,
+			KVS_VECTOR_HNSW_M
+		),
+		kvs_vector_hnsw_param_or_default(
+			g_cfg.vector_hnsw_ef_construction,
+			KVS_VECTOR_HNSW_EF_CONSTRUCTION
+		),
+		kvs_vector_hnsw_param_or_default(
+			g_cfg.vector_hnsw_ef_search,
+			KVS_VECTOR_HNSW_EF_SEARCH
+		)
+	);
+	if (ret != KVS_VECTOR_OK) {
+		goto fail;
+	}
+
+    ret = kvs_vector_async_dispatcher_init(
+		&g_vector_state.async_dispatcher,
+		KVS_VECTOR_ASYNC_QUEUE_CAPACITY,
+		KVS_VECTOR_ASYNC_WORKER_COUNT
+	);
+	if (ret != KVS_VECTOR_OK) {
+		goto fail;
+	}
+
 	g_vector_state.initialized = 1;
 
 	KVS_LOG_INFO(
 		KVS_VECTOR_LOG_MODULE,
-		"vector module initialized provider=%s dimension=%zu capacity=%zu",
+		"vector module initialized provider=%s dimension=%zu capacity=%zu index_type=%s hnsw_m=%zu ef_construction=%zu ef_search=%zu",
 		kvs_vector_embedding_provider_name(),
 		g_vector_state.flat_index.dimension,
-		g_vector_state.store.capacity
+		g_vector_state.store.capacity,
+		g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat",
+		g_vector_state.ann_index.m,
+		g_vector_state.ann_index.ef_construction,
+		g_vector_state.ann_index.ef_search
 	);
 
 	return KVS_VECTOR_OK;
@@ -263,7 +574,9 @@ fail:
 		"vector module init failed ret=%d",
 		ret
 	);
+	kvs_vector_async_dispatcher_destroy(&g_vector_state.async_dispatcher);  
 	kvs_vector_embedding_provider_destroy(&g_vector_state.embedding_provider);
+	kvs_vector_ann_index_destroy(&g_vector_state.ann_index);
 	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
 	kvs_vector_store_destroy(&g_vector_state.store);
@@ -278,7 +591,10 @@ void kvs_vector_destroy(void) {
 		return;
 	}
 
+	kvs_vector_async_dispatcher_destroy(&g_vector_state.async_dispatcher);
+	
 	kvs_vector_embedding_provider_destroy(&g_vector_state.embedding_provider);
+	kvs_vector_ann_index_destroy(&g_vector_state.ann_index);
 	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
 	kvs_vector_store_destroy(&g_vector_state.store);
@@ -418,6 +734,34 @@ int kvs_vector_set(const char* question, size_t question_len,
 		return ret;
 	}
 
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+		ret = kvs_vector_ann_index_add(
+			&g_vector_state.ann_index,
+			record_index,
+			free_slot->embedding,
+			free_slot->embedding_dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"vector set failed while adding ann index record_index=%zu embedding_dim=%d ret=%d",
+				record_index,
+				free_slot->embedding_dim,
+				ret
+			);
+
+			kvs_vector_id_map_remove(
+				&g_vector_state.id_map,
+				free_slot->question,
+				free_slot->question_len,
+				free_slot->scope,
+				free_slot->scope_len
+			);
+			kvs_vector_record_destroy(free_slot);
+			return ret;
+		}
+	}
+
 	if (was_deleted && store->deleted_records > 0) {
 		store->deleted_records--;
 	}
@@ -435,6 +779,607 @@ int kvs_vector_set(const char* question, size_t question_len,
 	);
 
 	return KVS_VECTOR_OK;
+}
+
+/*
+ * 批量写入内部实现。
+ *
+ * 注意：
+ * 这个函数在 vector async worker 中执行。
+ * 当前保持 worker_count=1，避免多个 batch 同时修改 store/id_map/flat_index。
+ */
+int kvs_vector_set_batch_internal(
+	const char **questions,
+	const size_t *question_lens,
+	const char **answers,
+	const size_t *answer_lens,
+	const char **scopes,
+	const size_t *scope_lens,
+	size_t count,
+	size_t *success_count,
+	size_t *failed_count
+) {
+	kvs_vector_store_t *store;
+	float *batch_embeddings = NULL;
+	int embedding_dim = 0;
+	size_t i;
+	size_t success = 0;
+	size_t failed = 0;
+	size_t new_slot_need;
+	int ret;
+
+	if (success_count) {
+		*success_count = 0;
+	}
+
+	if (failed_count) {
+		*failed_count = 0;
+	}
+
+	ret = kvs_vector_validate_initialized();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	if (!questions || !question_lens || !answers || !answer_lens || count == 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	for (i = 0; i < count; ++i) {
+		if (!questions[i] || question_lens[i] == 0 || !answers[i]) {
+			return KVS_VECTOR_ERR_INVALID_ARG;
+		}
+	}
+
+	/*
+	* 一次性批量生成 embedding。
+	*
+	* 当前默认使用普通 batch，而不是 parallel batch。
+	*
+	* 原因：
+	* 1. sentence-transformers / PyTorch 在 CPU 上本身会使用多线程；
+	* 2. 客户端侧把一个 batch 拆成多个并发 gRPC 请求，会造成 CPU 线程竞争；
+	* 3. 实测 parallel batch 的 10000 条写入吞吐低于普通 batch；
+	* 4. 所以默认写入路径保持单次 batch encode，parallel 接口仅保留用于实验。
+	*/
+	ret = kvs_vector_embedding_generate_batch(
+		questions,
+		question_lens,
+		count,
+		&batch_embeddings,
+		&embedding_dim
+	);
+	if (ret != KVS_VECTOR_OK) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"vector batch set embedding generate failed count=%zu ret=%d",
+			count,
+			ret
+		);
+		return ret;
+	}
+
+	if (!batch_embeddings || embedding_dim <= 0) {
+		if (batch_embeddings) {
+			kvs_free(batch_embeddings);
+		}
+		return KVS_VECTOR_ERR;
+	}
+
+	store = &g_vector_state.store;
+
+	/*
+	 * 预留 store/id_map/flat_index 容量，减少批量写入中的反复扩容。
+	 * free list 中的 deleted 槽位可以复用，所以这里只做保守估算。
+	 */
+	new_slot_need = count;
+	if (store->free_count >= count) {
+		new_slot_need = 0;
+	} else {
+		new_slot_need = count - store->free_count;
+	}
+
+	if (new_slot_need > 0) {
+		ret = kvs_vector_store_ensure_capacity(
+			store,
+			store->next_slot + new_slot_need
+		);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_free(batch_embeddings);
+			return ret;
+		}
+	}
+
+	ret = kvs_vector_id_map_reserve(
+		&g_vector_state.id_map,
+		(g_vector_state.id_map.size + count) * 2
+	);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_free(batch_embeddings);
+		return ret;
+	}
+
+	ret = kvs_vector_flat_index_reserve(
+		&g_vector_state.flat_index,
+		g_vector_state.flat_index.size + count
+	);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_free(batch_embeddings);
+		return ret;
+	}
+
+	for (i = 0; i < count; ++i) {
+		kvs_vector_record_t *record;
+		kvs_vector_record_t *free_slot;
+		const char *scope = NULL;
+		size_t scope_len = 0;
+		size_t record_index;
+		int was_deleted = 0;
+		const float *embedding;
+
+		if (scopes && scope_lens && scopes[i]) {
+			scope = scopes[i];
+			scope_len = scope_lens[i];
+		}
+
+		/*
+		 * 已存在则只覆盖 answer。
+		 * question 不变，embedding 不变。
+		 */
+		record = kvs_vector_find_record(
+			questions[i],
+			question_lens[i],
+			scope,
+			scope_len
+		);
+		if (record) {
+			ret = kvs_vector_record_update_answer(
+				record,
+				answers[i],
+				answer_lens[i]
+			);
+			if (ret == KVS_VECTOR_OK) {
+				success++;
+			} else {
+				failed++;
+			}
+			continue;
+		}
+
+		free_slot = kvs_vector_find_free_slot();
+		if (!free_slot) {
+			failed++;
+			continue;
+		}
+
+		was_deleted = (free_slot->state == KVS_VECTOR_RECORD_DELETED) ? 1 : 0;
+		record_index = (size_t)(free_slot - store->records);
+		embedding = batch_embeddings + (i * (size_t)embedding_dim);
+
+		ret = kvs_vector_record_set_fields_with_embedding(
+			free_slot,
+			questions[i],
+			question_lens[i],
+			answers[i],
+			answer_lens[i],
+			scope,
+			scope_len,
+			embedding,
+			embedding_dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			failed++;
+			continue;
+		}
+
+		ret = kvs_vector_id_map_put(
+			&g_vector_state.id_map,
+			free_slot->question,
+			free_slot->question_len,
+			free_slot->scope,
+			free_slot->scope_len,
+			record_index
+		);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_vector_record_destroy(free_slot);
+			failed++;
+			continue;
+		}
+
+		ret = kvs_vector_flat_index_add(
+			&g_vector_state.flat_index,
+			record_index,
+			free_slot->embedding,
+			free_slot->embedding_dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_vector_id_map_remove(
+				&g_vector_state.id_map,
+				free_slot->question,
+				free_slot->question_len,
+				free_slot->scope,
+				free_slot->scope_len
+			);
+			kvs_vector_record_destroy(free_slot);
+			failed++;
+			continue;
+		}
+
+		if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+			ret = kvs_vector_ann_index_add(
+				&g_vector_state.ann_index,
+				record_index,
+				free_slot->embedding,
+				free_slot->embedding_dim
+			);
+			if (ret != KVS_VECTOR_OK) {
+				kvs_vector_id_map_remove(
+					&g_vector_state.id_map,
+					free_slot->question,
+					free_slot->question_len,
+					free_slot->scope,
+					free_slot->scope_len
+				);
+				kvs_vector_record_destroy(free_slot);
+				failed++;
+				continue;
+			}
+		}
+
+		if (was_deleted && store->deleted_records > 0) {
+			store->deleted_records--;
+		}
+
+		store->active_records++;
+		store->total_records = store->active_records + store->deleted_records;
+		success++;
+	}
+
+	kvs_free(batch_embeddings);
+
+	if (success_count) {
+		*success_count = success;
+	}
+
+	if (failed_count) {
+		*failed_count = failed;
+	}
+
+	KVS_LOG_INFO(
+		KVS_VECTOR_LOG_MODULE,
+		"vector batch set finished count=%zu success=%zu failed=%zu active_records=%zu",
+		count,
+		success,
+		failed,
+		store->active_records
+	);
+
+	return failed == 0 ? KVS_VECTOR_OK : KVS_VECTOR_ERR;
+}
+
+/*
+ * 纯存储层批量写入内部实现。
+ *
+ * 该函数用于压测 KVLite vector 存储层本身，不调用 embedding provider。
+ *
+ * 压测覆盖：
+ * 1. question / answer / scope 字符串复制；
+ * 2. record 分配和字段初始化；
+ * 3. id_map 写入；
+ * 4. flat_index 追加；
+ * 5. 384 维 float 向量复制。
+ *
+ * embeddings 布局：
+ *
+ *   embeddings[i * embedding_dim + j]
+ *
+ * 注意：
+ * 当前函数假设由单线程调用，和 kvs_vector_set_batch_internal 一样，
+ * 不额外加锁。外层如果并发调用，需要先保护 g_vector_state。
+ */
+int kvs_vector_set_batch_with_embeddings_internal(
+	const char **questions,
+	const size_t *question_lens,
+	const char **answers,
+	const size_t *answer_lens,
+	const char **scopes,
+	const size_t *scope_lens,
+	const float *embeddings,
+	int embedding_dim,
+	size_t count,
+	size_t *success_count,
+	size_t *failed_count
+) {
+	kvs_vector_store_t *store;
+	size_t i;
+	size_t success = 0;
+	size_t failed = 0;
+	size_t new_slot_need;
+	int ret;
+
+	if (success_count) {
+		*success_count = 0;
+	}
+
+	if (failed_count) {
+		*failed_count = 0;
+	}
+
+	ret = kvs_vector_validate_initialized();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	if (!questions || !question_lens ||
+	    !answers || !answer_lens ||
+	    !embeddings || embedding_dim <= 0 ||
+	    count == 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	for (i = 0; i < count; ++i) {
+		if (!questions[i] || question_lens[i] == 0 || !answers[i]) {
+			return KVS_VECTOR_ERR_INVALID_ARG;
+		}
+	}
+
+	store = &g_vector_state.store;
+
+	/*
+	 * 纯存储压测仍然保持批量预留容量，
+	 * 避免扩容成本干扰每条写入性能。
+	 */
+	new_slot_need = count;
+	if (store->free_count >= count) {
+		new_slot_need = 0;
+	} else {
+		new_slot_need = count - store->free_count;
+	}
+
+	if (new_slot_need > 0) {
+		ret = kvs_vector_store_ensure_capacity(
+			store,
+			store->next_slot + new_slot_need
+		);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
+	}
+
+	ret = kvs_vector_id_map_reserve(
+		&g_vector_state.id_map,
+		(g_vector_state.id_map.size + count) * 2
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	ret = kvs_vector_flat_index_reserve(
+		&g_vector_state.flat_index,
+		g_vector_state.flat_index.size + count
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	for (i = 0; i < count; ++i) {
+		kvs_vector_record_t *record;
+		kvs_vector_record_t *free_slot;
+		const char *scope = NULL;
+		size_t scope_len = 0;
+		size_t record_index;
+		int was_deleted = 0;
+		const float *embedding;
+
+		if (scopes && scope_lens && scopes[i]) {
+			scope = scopes[i];
+			scope_len = scope_lens[i];
+		}
+
+		/*
+		 * 如果已经存在，只覆盖 answer。
+		 * 这里不重写 embedding，保持和 VSET / VBATCHSET 语义一致：
+		 * question 不变时，向量不变。
+		 */
+		record = kvs_vector_find_record(
+			questions[i],
+			question_lens[i],
+			scope,
+			scope_len
+		);
+		if (record) {
+			ret = kvs_vector_record_update_answer(
+				record,
+				answers[i],
+				answer_lens[i]
+			);
+			if (ret == KVS_VECTOR_OK) {
+				success++;
+			} else {
+				failed++;
+			}
+			continue;
+		}
+
+		free_slot = kvs_vector_find_free_slot();
+		if (!free_slot) {
+			failed++;
+			continue;
+		}
+
+		was_deleted = (free_slot->state == KVS_VECTOR_RECORD_DELETED) ? 1 : 0;
+		record_index = (size_t)(free_slot - store->records);
+		embedding = embeddings + (i * (size_t)embedding_dim);
+
+		ret = kvs_vector_record_set_fields_with_embedding(
+			free_slot,
+			questions[i],
+			question_lens[i],
+			answers[i],
+			answer_lens[i],
+			scope,
+			scope_len,
+			embedding,
+			embedding_dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			failed++;
+			continue;
+		}
+
+		ret = kvs_vector_id_map_put(
+			&g_vector_state.id_map,
+			free_slot->question,
+			free_slot->question_len,
+			free_slot->scope,
+			free_slot->scope_len,
+			record_index
+		);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_vector_record_destroy(free_slot);
+			failed++;
+			continue;
+		}
+
+		ret = kvs_vector_flat_index_add(
+			&g_vector_state.flat_index,
+			record_index,
+			free_slot->embedding,
+			free_slot->embedding_dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_vector_id_map_remove(
+				&g_vector_state.id_map,
+				free_slot->question,
+				free_slot->question_len,
+				free_slot->scope,
+				free_slot->scope_len
+			);
+			kvs_vector_record_destroy(free_slot);
+			failed++;
+			continue;
+		}
+
+		if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+			ret = kvs_vector_ann_index_add(
+				&g_vector_state.ann_index,
+				record_index,
+				free_slot->embedding,
+				free_slot->embedding_dim
+			);
+			if (ret != KVS_VECTOR_OK) {
+				kvs_vector_id_map_remove(
+					&g_vector_state.id_map,
+					free_slot->question,
+					free_slot->question_len,
+					free_slot->scope,
+					free_slot->scope_len
+				);
+				kvs_vector_record_destroy(free_slot);
+				failed++;
+				continue;
+			}
+		}
+
+		if (was_deleted && store->deleted_records > 0) {
+			store->deleted_records--;
+		}
+
+		store->active_records++;
+		store->total_records = store->active_records + store->deleted_records;
+		success++;
+	}
+
+	if (success_count) {
+		*success_count = success;
+	}
+
+	if (failed_count) {
+		*failed_count = failed;
+	}
+
+	KVS_LOG_INFO(
+		KVS_VECTOR_LOG_MODULE,
+		"vector store bench batch finished count=%zu success=%zu failed=%zu active_records=%zu",
+		count,
+		success,
+		failed,
+		store->active_records
+	);
+
+	return failed == 0 ? KVS_VECTOR_OK : KVS_VECTOR_ERR;
+}
+
+
+
+/*
+ * 批量写入异步入口。
+ *
+ * 当前语义：
+ * 1. 投递到 msg_queue；
+ * 2. 后台 worker 执行；
+ * 3. 当前调用线程等待完成；
+ * 4. 返回时数据已经写入。
+ */
+int kvs_vector_set_batch_async(
+	const char **questions,
+	const size_t *question_lens,
+	const char **answers,
+	const size_t *answer_lens,
+	const char **scopes,
+	const size_t *scope_lens,
+	size_t count,
+	size_t *success_count,
+	size_t *failed_count
+) {
+	kvs_vector_batch_set_payload_t payload;
+	kvs_vector_async_task_t task;
+	int ret;
+
+	if (success_count) {
+		*success_count = 0;
+	}
+
+	if (failed_count) {
+		*failed_count = 0;
+	}
+
+	if (!questions || !question_lens || !answers || !answer_lens || count == 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	memset(&payload, 0, sizeof(payload));
+
+	payload.questions = questions;
+	payload.question_lens = question_lens;
+	payload.answers = answers;
+	payload.answer_lens = answer_lens;
+	payload.scopes = scopes;
+	payload.scope_lens = scope_lens;
+	payload.count = count;
+
+	kvs_vector_async_task_init(
+		&task,
+		KVS_VECTOR_ASYNC_TASK_BATCH_SET,
+		&payload
+	);
+
+	ret = kvs_vector_async_submit_and_wait(
+		&g_vector_state.async_dispatcher,
+		&task
+	);
+
+	if (success_count) {
+		*success_count = task.success_count;
+	}
+
+	if (failed_count) {
+		*failed_count = task.failed_count;
+	}
+
+	kvs_vector_async_task_destroy(&task);
+
+	return ret;
 }
 
 //查询接口
@@ -514,7 +1459,8 @@ int kvs_vector_search(
 		return ret;
 	}
 
-	if (!query || query_len == 0 || !results || results_capacity == 0 || !results_count) {
+	if (!query || query_len == 0 ||
+	    !results || results_capacity == 0 || !results_count) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
@@ -533,10 +1479,15 @@ int kvs_vector_search(
 
 	effective_threshold = threshold;
 	if (effective_threshold <= 0.0f) {
-		effective_threshold = 0.5f;
+		effective_threshold = -1.0f;
 	}
 
-	ret = kvs_vector_embedding_generate(query, query_len, &query_embedding, &query_dim);
+	ret = kvs_vector_embedding_generate(
+		query,
+		query_len,
+		&query_embedding,
+		&query_dim
+	);
 	if (ret != KVS_VECTOR_OK) {
 		KVS_LOG_ERROR(
 			KVS_VECTOR_LOG_MODULE,
@@ -548,6 +1499,52 @@ int kvs_vector_search(
 		return ret;
 	}
 
+	/*
+	 * 正式 HNSW 路径。
+	 *
+	 * 如果当前配置为 hnsw，直接走多层 HNSW ANN。
+	 * threshold <= 0 表示不过滤。
+	 */
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+		ret = kvs_vector_ann_index_search(
+			&g_vector_state.ann_index,
+			query_embedding,
+			query_dim,
+			scope,
+			scope_len,
+			topk,
+			effective_threshold,
+			results,
+			results_capacity,
+			results_count
+		);
+
+		kvs_free(query_embedding);
+		return ret;
+	}
+
+	/*
+	 * flat 精确路径。
+	 */
+	index = &g_vector_state.flat_index;
+
+	if (!index->vectors || !index->record_indices ||
+	    index->size == 0 || index->dimension == 0) {
+		kvs_free(query_embedding);
+		return KVS_VECTOR_OK;
+	}
+
+	if ((size_t)query_dim != index->dimension) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"vector search dimension mismatch query_dim=%d index_dimension=%zu",
+			query_dim,
+			index->dimension
+		);
+		kvs_free(query_embedding);
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
 	ret = kvs_vector_topk_heap_init(&heap, limit);
 	if (ret != KVS_VECTOR_OK) {
 		kvs_free(query_embedding);
@@ -555,20 +1552,10 @@ int kvs_vector_search(
 	}
 	heap_initialized = 1;
 
-	index = &g_vector_state.flat_index;
-
-	if (!index->vectors || !index->record_indices || index->size == 0 || index->dimension == 0) {
-		kvs_vector_topk_heap_destroy(&heap);
-		kvs_free(query_embedding);
-		return KVS_VECTOR_OK;
-	}
-
 	for (i = 0; i < index->size; ++i) {
 		size_t record_index = index->record_indices[i];
 		float *indexed_vector;
 		kvs_vector_record_t *record;
-		float vector_score;
-		float text_score;
 		float score;
 
 		if (record_index >= g_vector_state.store.capacity) {
@@ -577,6 +1564,9 @@ int kvs_vector_search(
 
 		record = &g_vector_state.store.records[record_index];
 
+		/*
+		 * 防止 free list 复用槽位后，旧 flat index entry 误命中新 record。
+		 */
 		if (index->record_ids && index->record_ids[i] != record->id) {
 			continue;
 		}
@@ -585,31 +1575,13 @@ int kvs_vector_search(
 			continue;
 		}
 
-		if ((size_t)query_dim != index->dimension) {
-			KVS_LOG_DEBUG(
-				KVS_VECTOR_LOG_MODULE,
-				"vector search skip dimension mismatch query_dim=%d index_dimension=%zu record_index=%zu",
-				query_dim,
-				index->dimension,
-				record_index
-			);
-			continue;
-		}
-
 		indexed_vector = index->vectors + (i * index->dimension);
 
-		vector_score = kvs_vector_dot_product(
+		score = kvs_vector_dot_product(
 			query_embedding,
 			indexed_vector,
 			index->dimension
 		);
-
-		text_score = kvs_vector_record_score(record, query, query_len);
-		score = vector_score > text_score ? vector_score : text_score;
-
-		if (score <= 0.0f) {
-			continue;
-		}
 
 		if (score < effective_threshold) {
 			continue;
@@ -639,25 +1611,174 @@ int kvs_vector_search(
 		kvs_vector_topk_heap_destroy(&heap);
 	}
 
+	kvs_free(query_embedding);
+
+	return ret;
+}
+
+/*
+ * 纯搜索层压测接口。
+ *
+ * 该函数不生成 query embedding，而是直接使用调用方传入的 query_embedding。
+ *
+ * 目的：
+ * 1. 绕过 embedding provider；
+ * 2. 避免 hash provider 64 维和 mock 384 维 index 不一致；
+ * 3. 单独压测 flat scan + dot product + topK heap 性能。
+ */
+int kvs_vector_search_with_embedding_internal(
+	const float *query_embedding,
+	int query_dim,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity,
+	size_t *results_count
+) {
+	kvs_vector_flat_index_t *index;
+	kvs_vector_topk_heap_t heap;
+	size_t i;
+	size_t limit;
+	int ret;
+	float effective_threshold;
+	int heap_initialized = 0;
+
+	memset(&heap, 0, sizeof(heap));
+
+	if (results && results_capacity > 0) {
+		kvs_vector_search_results_reset(results, results_capacity);
+	}
+
+	if (results_count) {
+		*results_count = 0;
+	}
+
+	ret = kvs_vector_validate_initialized();
 	if (ret != KVS_VECTOR_OK) {
-		kvs_free(query_embedding);
 		return ret;
 	}
 
-	KVS_LOG_DEBUG(
-		KVS_VECTOR_LOG_MODULE,
-		"vector search success query_len=%zu scope_len=%zu topk=%d threshold=%.6f result_count=%zu query_dim=%d",
-		query_len,
-		scope_len,
-		topk,
-		threshold,
-		*results_count,
-		query_dim
+	if (!query_embedding ||
+	    query_dim <= 0 ||
+	    !results ||
+	    results_capacity == 0 ||
+	    !results_count) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	if (!scope) {
+		scope_len = 0;
+	}
+
+	if (topk <= 0) {
+		topk = 1;
+	}
+
+	limit = (size_t)topk;
+	if (limit > results_capacity) {
+		limit = results_capacity;
+	}
+
+	effective_threshold = threshold;
+	if (effective_threshold <= 0.0f) {
+		effective_threshold = -1.0f;
+	}
+
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+		return kvs_vector_ann_index_search(
+			&g_vector_state.ann_index,
+			query_embedding,
+			query_dim,
+			scope,
+			scope_len,
+			topk,
+			threshold,
+			results,
+			results_capacity,
+			results_count
+		);
+	}
+
+	index = &g_vector_state.flat_index;
+
+	if (!index->vectors ||
+	    !index->record_indices ||
+	    index->size == 0 ||
+	    index->dimension == 0) {
+		return KVS_VECTOR_OK;
+	}
+
+	if ((size_t)query_dim != index->dimension) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	ret = kvs_vector_topk_heap_init(&heap, limit);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	heap_initialized = 1;
+
+	for (i = 0; i < index->size; ++i) {
+		size_t record_index = index->record_indices[i];
+		float *indexed_vector;
+		kvs_vector_record_t *record;
+		float score;
+
+		if (record_index >= g_vector_state.store.capacity) {
+			continue;
+		}
+
+		record = &g_vector_state.store.records[record_index];
+
+		/*
+		 * 防止 VDEL 后 flat_index 里存在 stale entry。
+		 */
+		if (index->record_ids && index->record_ids[i] != record->id) {
+			continue;
+		}
+
+		if (!kvs_vector_record_scope_match(record, scope, scope_len)) {
+			continue;
+		}
+
+		indexed_vector = index->vectors + (i * index->dimension);
+
+		score = kvs_vector_dot_product(
+			query_embedding,
+			indexed_vector,
+			index->dimension
+		);
+
+		if (score < effective_threshold) {
+			continue;
+		}
+
+		ret = kvs_vector_topk_heap_push(
+			&heap,
+			record_index,
+			score
+		);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_vector_topk_heap_destroy(&heap);
+			return ret;
+		}
+	}
+
+	ret = kvs_vector_topk_heap_export_desc(
+		&heap,
+		results,
+		results_capacity,
+		results_count,
+		&g_vector_state.store
 	);
 
-	kvs_free(query_embedding);
+	if (heap_initialized) {
+		kvs_vector_topk_heap_destroy(&heap);
+	}
 
-	return KVS_VECTOR_OK;
+	return ret;
 }
 
 //删除接口
@@ -785,6 +1906,13 @@ int kvs_vector_index_rebuild(void) {
 			ret
 		);
 		return ret;
+	}
+
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+		ret = kvs_vector_rebuild_ann_index_from_store();
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
 	}
 
 	KVS_LOG_INFO(
