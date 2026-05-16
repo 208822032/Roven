@@ -29,8 +29,6 @@ size_t kvs_vector_next_pow2(size_t value) {
  *
  * 注意：
  * 这里按长度处理，不要求 data 必须是 NUL 结尾。
- *
- * 当前第 3 步暂时未被业务路径调用，后续 VSET / VGET 会使用。
  */
  uint32_t kvs_vector_hash_key(const char *data, size_t len) {
 	uint32_t hash = 0;
@@ -83,9 +81,6 @@ size_t kvs_vector_next_pow2(size_t value) {
  * 2. answer；
  * 3. scope；
  * 4. normalized_question。
- *
- * 当前第 3 步还没有真实写入流程，但先提供该 helper，
- * 后续 VSET 可以直接复用。
  */
  char *kvs_vector_dup_string(const char *src, size_t src_len, size_t *out_len) {
 	char *dst;
@@ -490,7 +485,7 @@ int kvs_vector_record_set_fields_with_embedding(
 /*
  * 判断一条 record 是否匹配 question + scope。
  *
- * 第 5 步只做精确命中：
+ * 精确命中语义：
  * 1. record 必须是 ACTIVE；
  * 2. record 不能被删除；
  * 3. question 长度和内容必须完全一致；
@@ -578,9 +573,12 @@ int kvs_vector_record_set_fields_with_embedding(
 }
 
 /*
- * 简单字符重叠计数。
+ * CLEANUP_CANDIDATE:
+ * Currently unused legacy text scoring path.
+ * Keep temporarily for safe cleanup review.
  *
- * 这是 VSEARCH MVP 的字符级相似度基础，不是最终 embedding 检索。
+ * Was: VSEARCH MVP character-level overlap count.
+ * Superseded by vector embedding dot product.
  */
 static size_t kvs_vector_char_overlap_count(
 	const char *lhs,
@@ -609,14 +607,12 @@ static size_t kvs_vector_char_overlap_count(
 }
 
 /*
- * 字符级相似度打分。
+ * CLEANUP_CANDIDATE:
+ * Currently unused legacy text scoring path.
+ * Keep temporarily for safe cleanup review.
  *
- * MVP 规则：
- * 1. exact match：1.0
- * 2. query 被 question 包含，或 question 被 query 包含：0.85
- * 3. 字符重叠：0.1 ~ 0.8
- *
- * 后续接 embedding 后，可以替换这里为 dot product / cosine / L2。
+ * Was: character-level similarity scoring.
+ * Superseded by vector embedding dot product.
  */
 static float kvs_vector_text_score(
 	const char *query,
@@ -664,10 +660,10 @@ static float kvs_vector_text_score(
 }
 
 /*
- * 计算一条 record 对 query 的搜索分数。
- *
- * 第 7 步优先使用 question 和 normalized_question。
- * answer 暂不参与打分，避免答案文本过长导致误召回。
+ * CLEANUP_CANDIDATE:
+ * Currently unused legacy text scoring path. No current caller found.
+ * Keep temporarily for safe cleanup review.
+ * Remove together with declaration in kvs_vector.h after Index abstraction.
  */
  float kvs_vector_record_score(
 	const kvs_vector_record_t *record,
@@ -1093,8 +1089,7 @@ static int kvs_vector_id_map_insert_entry(
 /*
  * 扩容 / 重建 id map。
  *
- * 当前第 3 步主要用于初始化空表。
- * 后续 VSET/VDEL 实现时会复用该逻辑。
+ * 用于初始化空表，以及 VSET/VDEL 写入时自动扩容。
  */
  int kvs_vector_id_map_reserve(kvs_vector_id_map_t *map, size_t new_capacity) {
 	kvs_vector_id_entry_t *old_entries;
@@ -1537,13 +1532,9 @@ static int kvs_vector_id_map_lookup_slot(
 }
 
 /*
- * 第 6 步的 VINDEX REBUILD 占位实现。
- *
- * 当前还没有真正的向量索引，所以 rebuild 只做：
- * 1. 清理 flat index 内部状态；
- * 2. index_size 归零；
- * 3. index_ready 保持 0；
- * 4. needs_rebuild 清零。
+ * CLEANUP_CANDIDATE:
+ * Obsolete placeholder — fully replaced by kvs_vector_rebuild_flat_index_from_store().
+ * Safe to remove after Index abstraction phase if still unused.
  */
 //  int kvs_vector_rebuild_flat_index_placeholder(void) {
 // 	kvs_vector_flat_index_reset(&g_vector_state.flat_index);

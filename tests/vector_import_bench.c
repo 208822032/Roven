@@ -554,6 +554,87 @@ static int send_vsearch(
 	return read_resp(fd, raw);
 }
 
+static int send_vsearch_batch(
+	int fd,
+	char queries[][BENCH_KEY_SIZE],
+	size_t batch_count,
+	const char *scope,
+	int topk,
+	resp_raw_t *raw
+) {
+	const char **parts;
+	size_t *lens;
+	char count_buf[64];
+	char topk_buf[32];
+	size_t part_count;
+	size_t i;
+	size_t p = 0;
+	int ret;
+
+	if (!queries || batch_count == 0 || !raw) {
+		return -1;
+	}
+
+	/*
+	 * VSEARCH BATCH count topk scope query1 query2 ... queryN
+	 */
+	part_count = 5 + batch_count;
+
+	parts = (const char **)malloc(sizeof(char *) * part_count);
+	lens = (size_t *)malloc(sizeof(size_t) * part_count);
+	if (!parts || !lens) {
+		if (parts) {
+			free(parts);
+		}
+		if (lens) {
+			free(lens);
+		}
+		return -1;
+	}
+
+	snprintf(count_buf, sizeof(count_buf), "%zu", batch_count);
+	snprintf(topk_buf, sizeof(topk_buf), "%d", topk);
+
+	parts[p] = "VSEARCH";
+	lens[p] = strlen(parts[p]);
+	p++;
+
+	parts[p] = "BATCH";
+	lens[p] = strlen(parts[p]);
+	p++;
+
+	parts[p] = count_buf;
+	lens[p] = strlen(count_buf);
+	p++;
+
+	parts[p] = topk_buf;
+	lens[p] = strlen(topk_buf);
+	p++;
+
+	/*
+	 * scope 必传；空 scope 传空 bulk string。
+	 */
+	parts[p] = scope ? scope : "";
+	lens[p] = strlen(parts[p]);
+	p++;
+
+	for (i = 0; i < batch_count; ++i) {
+		parts[p] = queries[i];
+		lens[p] = strlen(queries[i]);
+		p++;
+	}
+
+	ret = send_resp_command(fd, parts, lens, part_count);
+	if (ret == 0) {
+		ret = read_resp(fd, raw);
+	}
+
+	free(parts);
+	free(lens);
+
+	return ret;
+}
+
 static int send_vinfo(int fd, resp_raw_t *raw) {
 	const char *parts[1];
 	size_t lens[1];
@@ -578,8 +659,7 @@ static void make_answer(char *buf, size_t cap, const char *prefix, size_t i) {
 
 static void print_usage(const char *prog) {
 	printf("Usage:\n");
-	printf("  %s <host> <port> <count> [scope] [prefix] [batch_size] [get_count] [search_count] [topk]\n", prog);
-	printf("\n");
+	printf("  %s <host> <port> <count> [scope] [prefix] [batch_size] [get_count] [search_count] [topk] [search_batch_size]\n", prog);printf("\n");
 	printf("Examples:\n");
 	printf("  %s 192.168.36.141 9300 1000\n", prog);
 	printf("  %s 192.168.36.141 9300 10000 bench_scope bench 1\n", prog);
@@ -604,6 +684,9 @@ int main(int argc, char **argv) {
 	size_t get_count = 0;
 	size_t search_count = 0;
 	int topk = 10;
+
+	size_t search_batch_size = 1;
+	size_t search_request_count = 0;
 
 	size_t get_success = 0;
 	size_t get_failed = 0;
@@ -660,6 +743,13 @@ int main(int argc, char **argv) {
 		topk = atoi(argv[9]);
 		if (topk <= 0) {
 			topk = 10;
+		}
+	}
+
+	if (argc >= 11) {
+		search_batch_size = (size_t)strtoull(argv[10], NULL, 10);
+		if (search_batch_size == 0) {
+			search_batch_size = 1;
 		}
 	}
 
@@ -900,35 +990,98 @@ int main(int argc, char **argv) {
 
 	if (search_count > 0 && success > 0) {
 		printf("========== VSEARCH bench begin ==========\n");
+		printf("search_batch_size=%zu\n", search_batch_size);
 
 		search_start_ms = now_ms();
 
-		for (i = 0; i < search_count; ++i) {
-			size_t idx = i % success;
+		i = 0;
+		while (i < search_count) {
+			if (search_batch_size <= 1) {
+				size_t idx = i % success;
 
-			make_question(question, sizeof(question), prefix, idx);
+				make_question(question, sizeof(question), prefix, idx);
 
-			if (send_vsearch(fd, question, scope, topk, &raw) != 0) {
-				search_failed++;
-				continue;
-			}
-
-			/*
-			 * VSEARCH 正常返回 RESP array:
-			 *   *N\r\n...
-			 */
-			if (raw.data[0] == '*') {
-				search_success++;
-			} else {
-				search_failed++;
-
-				if (search_failed <= 3) {
-					fprintf(stderr,
-					        "VSEARCH unexpected response at i=%zu query=%s response:\n%s\n",
-					        i,
-					        question,
-					        raw.data);
+				search_request_count++;
+				if (send_vsearch(fd, question, scope, topk, &raw) != 0) {
+					search_failed++;
+					i++;
+					continue;
 				}
+
+				/*
+				* VSEARCH 正常返回 RESP array:
+				*   *N\r\n...
+				*/
+				if (raw.data[0] == '*') {
+					search_success++;
+				} else {
+					search_failed++;
+
+					if (search_failed <= 3) {
+						fprintf(stderr,
+								"VSEARCH unexpected response at i=%zu query=%s response:\n%s\n",
+								i,
+								question,
+								raw.data);
+					}
+				}
+
+				i++;
+			} else {
+				char (*batch_queries)[BENCH_KEY_SIZE];
+				size_t current_batch = search_batch_size;
+				size_t j;
+
+				if (current_batch > search_count - i) {
+					current_batch = search_count - i;
+				}
+
+				batch_queries = malloc(sizeof(char[BENCH_KEY_SIZE]) * current_batch);
+				if (!batch_queries) {
+					fprintf(stderr, "malloc batch search buffer failed\n");
+					search_failed += current_batch;
+					break;
+				}
+
+				for (j = 0; j < current_batch; ++j) {
+					size_t idx = (i + j) % success;
+					make_question(batch_queries[j], BENCH_KEY_SIZE, prefix, idx);
+				}
+
+				search_request_count++;
+				if (send_vsearch_batch(
+						fd,
+						batch_queries,
+						current_batch,
+						scope,
+						topk,
+						&raw) != 0) {
+					search_failed += current_batch;
+					free(batch_queries);
+					i += current_batch;
+					continue;
+				}
+
+				/*
+				* 批量 VSEARCH 正常返回二维 RESP array:
+				*   *batch_count\r\n...
+				*/
+				if (raw.data[0] == '*') {
+					search_success += current_batch;
+				} else {
+					search_failed += current_batch;
+
+					if (search_failed <= 3) {
+						fprintf(stderr,
+								"VSEARCH batch unexpected response at i=%zu batch=%zu response:\n%s\n",
+								i,
+								current_batch,
+								raw.data);
+					}
+				}
+
+				free(batch_queries);
+				i += current_batch;
 			}
 		}
 
@@ -946,6 +1099,9 @@ int main(int argc, char **argv) {
 			printf("search_failed=%zu\n", search_failed);
 			printf("search_elapsed_ms=%lld\n", (long long)(search_end_ms - search_start_ms));
 			printf("search_qps=%.2f\n", (double)search_success / sec);
+			printf("search_request_qps=%.2f\n", (double)search_request_count / sec);
+			printf("search_request_count=%zu\n", search_request_count);
+			printf("search_batch_size=%zu\n", search_batch_size);
 			printf("topk=%d\n", topk);
 		}
 	}

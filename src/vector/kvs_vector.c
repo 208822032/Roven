@@ -512,10 +512,7 @@ int kvs_vector_init(void) {
 
 	ret = kvs_vector_flat_index_init(
 		&g_vector_state.flat_index,
-		g_vector_state.embedding_provider.grpc_healthy &&
-		g_vector_state.embedding_provider.grpc_dimension > 0
-			? (size_t)g_vector_state.embedding_provider.grpc_dimension
-			: KVS_VECTOR_DEFAULT_DIMENSION
+		KVS_VECTOR_DEFAULT_DIMENSION
 	);
 	if (ret != KVS_VECTOR_OK) {
 		goto fail;
@@ -769,6 +766,11 @@ int kvs_vector_set(const char* question, size_t question_len,
 	store->active_records++;
 	store->total_records = store->active_records + store->deleted_records;
 
+	/*
+	 * CLEANUP_CANDIDATE:
+	 * Too noisy during batch import. Re-enable only for single-record debugging.
+	 */
+	/*
 	KVS_LOG_DEBUG(
 		KVS_VECTOR_LOG_MODULE,
 		"vector set success question_len=%zu scope_len=%zu embedding_dim=%d active_records=%zu",
@@ -777,6 +779,7 @@ int kvs_vector_set(const char* question, size_t question_len,
 		free_slot->embedding_dim,
 		store->active_records
 	);
+	*/
 
 	return KVS_VECTOR_OK;
 }
@@ -838,7 +841,7 @@ int kvs_vector_set_batch_internal(
 	*
 	* 原因：
 	* 1. sentence-transformers / PyTorch 在 CPU 上本身会使用多线程；
-	* 2. 客户端侧把一个 batch 拆成多个并发 gRPC 请求，会造成 CPU 线程竞争；
+	* 2. 客户端侧拆成多个并发请求会造成 CPU 线程竞争；
 	* 3. 实测 parallel batch 的 10000 条写入吞吐低于普通 batch；
 	* 4. 所以默认写入路径保持单次 batch encode，parallel 接口仅保留用于实验。
 	*/
@@ -1614,6 +1617,128 @@ int kvs_vector_search(
 	kvs_free(query_embedding);
 
 	return ret;
+}
+
+/*
+ * 批量检索接口。
+ *
+ * 关键优化点：
+ * 1. 单条 kvs_vector_search() 每次都会调用一次 embedding provider；
+ * 2. 每次调用会触发一次 embedding 生成；
+ * 3. 批量入口先统一调用 kvs_vector_embedding_generate_batch()，
+ *    然后对每条 query embedding 复用现有 HNSW / flat 搜索逻辑。
+ *
+ * results 布局：
+ *   results[i * results_capacity_per_query + j]
+ *
+ * results_counts 布局：
+ *   results_counts[i]
+ */
+int kvs_vector_search_batch(
+	const char **queries,
+	const size_t *query_lens,
+	size_t query_count,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity_per_query,
+	size_t *results_counts
+) {
+	float *batch_embeddings = NULL;
+	int embedding_dim = 0;
+	size_t i;
+	int ret;
+
+	ret = kvs_vector_validate_initialized();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	if (!queries || !query_lens || query_count == 0 ||
+	    !results || results_capacity_per_query == 0 || !results_counts) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	if (!scope) {
+		scope_len = 0;
+	}
+
+	if (topk <= 0) {
+		topk = 1;
+	}
+
+	for (i = 0; i < query_count; ++i) {
+		results_counts[i] = 0;
+
+		if (!queries[i] || query_lens[i] == 0) {
+			return KVS_VECTOR_ERR_INVALID_ARG;
+		}
+	}
+
+	kvs_vector_search_results_reset(
+		results,
+		query_count * results_capacity_per_query
+	);
+
+	ret = kvs_vector_embedding_generate_batch(
+		queries,
+		query_lens,
+		query_count,
+		&batch_embeddings,
+		&embedding_dim
+	);
+	if (ret != KVS_VECTOR_OK) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"vector batch search embedding generate failed count=%zu ret=%d",
+			query_count,
+			ret
+		);
+		return ret;
+	}
+
+	if (!batch_embeddings || embedding_dim <= 0) {
+		if (batch_embeddings) {
+			kvs_free(batch_embeddings);
+		}
+		return KVS_VECTOR_ERR;
+	}
+
+	for (i = 0; i < query_count; ++i) {
+		const float *query_embedding;
+		kvs_vector_search_result_t *query_results;
+
+		query_embedding = batch_embeddings + (i * (size_t)embedding_dim);
+		query_results = results + (i * results_capacity_per_query);
+
+		ret = kvs_vector_search_with_embedding_internal(
+			query_embedding,
+			embedding_dim,
+			scope,
+			scope_len,
+			topk,
+			threshold,
+			query_results,
+			results_capacity_per_query,
+			&results_counts[i]
+		);
+		if (ret != KVS_VECTOR_OK) {
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"vector batch search failed index=%zu count=%zu ret=%d",
+				i,
+				query_count,
+				ret
+			);
+			kvs_free(batch_embeddings);
+			return ret;
+		}
+	}
+
+	kvs_free(batch_embeddings);
+	return KVS_VECTOR_OK;
 }
 
 /*

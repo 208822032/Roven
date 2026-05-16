@@ -838,37 +838,83 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             float parsed_threshold = 0.0f;
 
             /*
-            * VSEARCH query
-            * VSEARCH query topk
-            * VSEARCH query scope
-            * VSEARCH query scope topk
-            * VSEARCH query scope topk threshold
+            * 旧协议保持兼容：
+            *   VSEARCH query
+            *   VSEARCH query topk
+            *   VSEARCH query scope
+            *   VSEARCH query scope topk
+            *   VSEARCH query scope topk threshold
             *
-            * 解析规则：
+            * 新批量协议
+            *   VSEARCH BATCH count topk scope query1 query2 ... queryN
             *
-            * count == 2:
-            *   tokens[1] = query
-            *
-            * count == 3:
-            *   如果 tokens[2] 是正整数，则认为是 topk
-            *   否则认为是 scope
-            *
-            * count == 4:
-            *   tokens[2] = scope
-            *   tokens[3] = topk
-            *
-            * count == 5:
-            *   tokens[2] = scope
-            *   tokens[3] = topk
-            *   tokens[4] = threshold
-            *
-            * 如果想指定空 scope 并传 topk，可以用：
-            *   VSEARCH query "" topk
-            *
-            * RESP 里空 scope 对应：
-            *   $0\r\n\r\n
+            * 说明：
+            * 1. scope 必传；空 scope 用 RESP 空 bulk string；
+            * 2. batch 分支暂不额外传 threshold，默认沿用 ctx->threshold=0.0；
+            * 3. 查询文本复用 ctx->batch_questions / ctx->batch_question_lens。
             */
-            if (count < 2 || count > 5) {
+            if (count < 2) {
+                return -1;
+            }
+
+            if (strcasecmp(tokens[1], "BATCH") == 0) {
+                long n;
+                char *endptr = NULL;
+                int i;
+                int base;
+
+                if (count < 6) {
+                    return -1;
+                }
+
+                errno = 0;
+                n = strtol(tokens[2], &endptr, 10);
+                if (endptr == tokens[2] || *endptr != '\0' ||
+                    errno == ERANGE || n <= 0 || n > 1024) {
+                    return -1;
+                }
+
+                if (kvs_vcmd_parse_positive_int(tokens[3], &parsed_topk) != 0) {
+                    return -1;
+                }
+
+                /*
+                * VSEARCH BATCH count topk scope q1 q2 ... qN
+                *
+                * argc = 5 + count
+                */
+                if (count != 5 + (int)n) {
+                    return -1;
+                }
+
+                ctx->batch_count = (size_t)n;
+                ctx->topk = parsed_topk;
+                ctx->scope = tokens[4];
+                ctx->scope_len = kvs_vcmd_token_len(tokens[4]);
+
+                ctx->batch_questions = (char **)kvs_malloc(sizeof(char *) * ctx->batch_count);
+                ctx->batch_question_lens = (size_t *)kvs_malloc(sizeof(size_t) * ctx->batch_count);
+                if (!ctx->batch_questions || !ctx->batch_question_lens) {
+                    return -1;
+                }
+
+                base = 5;
+                for (i = 0; i < (int)ctx->batch_count; ++i) {
+                    ctx->batch_questions[i] = tokens[base + i];
+                    ctx->batch_question_lens[i] = kvs_vcmd_token_len(tokens[base + i]);
+
+                    if (!ctx->batch_questions[i] || ctx->batch_question_lens[i] == 0) {
+                        return -1;
+                    }
+                }
+
+                return 0;
+            }
+
+            /*
+            * 下面是旧单条协议。
+            */
+            if (count > 5) {
                 return -1;
             }
 
@@ -1088,12 +1134,19 @@ int check_arity(const command_info *cmd, int argc){
 	 *
 	 * 第一版固定每条都带 scope，方便解析和压测。
 	 */
+	/*
+	 * CLEANUP_CANDIDATE:
+	 * This strtol("0") block is dead code and has no validation effect.
+	 * Real VBATCHSET validation is in parse_command_argument().
+	 */
+	/*
 	char *endptr = NULL;
 	long n;
 
 	errno = 0;
 	n = strtol("0", &endptr, 10);
 	(void)n;
+	*/
 
 	return 1;
 }
@@ -1103,7 +1156,11 @@ int check_arity(const command_info *cmd, int argc){
     }
 
     if (strcmp(cmd->name, "VSEARCH") == 0) {
-        return argc >= 2 && argc <= 5;
+        /*
+        * 旧协议由 parse_command_argument 精确限制到 2..5；
+        * 批量协议 VSEARCH BATCH count topk scope q1 ... qN 需要更多参数。
+        */
+        return argc >= 2;
     }
 
     if (strcmp(cmd->name, "VDEL") == 0) {
@@ -1660,6 +1717,12 @@ int handle_fulldump(command_context_t* ctx, char* response){
     return off;
 }
 
+/*
+ * CLEANUP_CANDIDATE:
+ * Unused handler — no current caller in command table or elsewhere.
+ * Each V-family command has its own handler.
+ * Safe to remove after Index abstraction phase if still unused.
+ */
 static int handle_v_not_implemented(command_context_t *ctx, char *response) {
     (void)ctx;
     return resp_generate_simple_string_n(response, '-', "NOT IMPLEMENTED", sizeof("NOT IMPLEMENTED") - 1);
@@ -1950,99 +2013,200 @@ int handle_vget_command(command_context_t *ctx, char *response) {
 }
 
 int handle_vsearch_command(command_context_t *ctx, char *response) {
-    int status;
-    int topk;
-    size_t results_count = 0;
-    size_t results_capacity;
-    size_t i;
-    int off = 0;
-    int n;
-    kvs_vector_search_result_t *results = NULL;
+	int status;
+	int topk;
+	size_t results_capacity;
+	int off = 0;
+	int n;
 
-    if (!ctx || !ctx->query_text) {
-        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
-    }
+	if (!ctx) {
+		return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+	}
 
-    topk = ctx->topk;
-    if (topk <= 0) {
-        topk = 1;
-    }
+	topk = ctx->topk;
+	if (topk <= 0) {
+		topk = 1;
+	}
 
-    if (topk > 1024) {
-        return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
-    }
+	if (topk > 1024) {
+		return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+	}
 
-    results_capacity = (size_t)topk;
+	results_capacity = (size_t)topk;
 
-    results = (kvs_vector_search_result_t *)kvs_malloc(
-        results_capacity * sizeof(kvs_vector_search_result_t)
-    );
-    if (!results) {
-        return handle_vector_status_response(KVS_VECTOR_ERR, response);
-    }
+	/*
+	 * 批量 VSEARCH：
+	 *   VSEARCH BATCH count topk scope query1 query2 ... queryN
+	 *
+	 * 返回二维 RESP array：
+	 *   [
+	 *     ["score:...|scope:...|question:...|answer:...", ...],
+	 *     ["score:...|scope:...|question:...|answer:...", ...]
+	 *   ]
+	 */
+	if (ctx->batch_count > 0) {
+		size_t query_count = ctx->batch_count;
+		size_t *results_counts = NULL;
+		kvs_vector_search_result_t *results = NULL;
+		size_t qi;
+		size_t ri;
 
-    kvs_vector_search_results_reset(results, results_capacity);
+		if (!ctx->batch_questions || !ctx->batch_question_lens) {
+			return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+		}
 
-    status = kvs_vector_search(
-        ctx->query_text,
-        ctx->query_text_len,
-        ctx->scope,
-        ctx->scope_len,
-        topk,
-        ctx->threshold,
-        results,
-        results_capacity,
-        &results_count
-    );
+		results_counts = (size_t *)kvs_malloc(sizeof(size_t) * query_count);
+		results = (kvs_vector_search_result_t *)kvs_malloc(
+			sizeof(kvs_vector_search_result_t) * query_count * results_capacity
+		);
+		if (!results_counts || !results) {
+			if (results_counts) {
+				kvs_free(results_counts);
+			}
+			if (results) {
+				kvs_free(results);
+			}
+			return handle_vector_status_response(KVS_VECTOR_ERR, response);
+		}
 
-    if (status != KVS_VECTOR_OK) {
-        kvs_free(results);
-        return handle_vector_status_response(status, response);
-    }
+		status = kvs_vector_search_batch(
+			(const char **)ctx->batch_questions,
+			ctx->batch_question_lens,
+			query_count,
+			ctx->scope,
+			ctx->scope_len,
+			topk,
+			ctx->threshold,
+			results,
+			results_capacity,
+			results_counts
+		);
 
-    /*
-     * 当前 vector search 还没有真正实现。
-     * 后续实现后，这里返回 RESP 数组。
-     *
-     * MVP 格式：
-     * [
-     *   "score:<score>|scope:<scope>|question:<question>|answer:<answer>",
-     *   ...
-     * ]
-     */
-    off += resp_generate_array_start(response + off, (int)results_count);
+		if (status != KVS_VECTOR_OK) {
+			kvs_free(results_counts);
+			kvs_free(results);
+			return handle_vector_status_response(status, response);
+		}
 
-    for (i = 0; i < results_count; ++i) {
-        char item[1024];
+		off += resp_generate_array_start(response + off, (int)query_count);
 
-        n = snprintf(
-            item,
-            sizeof(item),
-            "score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
-            results[i].score,
-            (int)results[i].scope_len,
-            results[i].scope ? results[i].scope : "",
-            (int)results[i].question_len,
-            results[i].question ? results[i].question : "",
-            (int)results[i].answer_len,
-            results[i].answer ? results[i].answer : ""
-        );
+		for (qi = 0; qi < query_count; ++qi) {
+			kvs_vector_search_result_t *query_results;
+			size_t query_result_count;
 
-        if (n < 0 || n >= (int)sizeof(item)) {
-            kvs_free(results);
-            return resp_generate_simple_string_n(
-                response,
-                '-',
-                "ERR response too large",
-                sizeof("ERR response too large") - 1
-            );
-        }
+			query_results = results + (qi * results_capacity);
+			query_result_count = results_counts[qi];
 
-        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
-    }
+			off += resp_generate_array_start(response + off, (int)query_result_count);
 
-    kvs_free(results);
-    return off;
+			for (ri = 0; ri < query_result_count; ++ri) {
+				char item[1024];
+
+				n = snprintf(
+					item,
+					sizeof(item),
+					"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+					query_results[ri].score,
+					(int)query_results[ri].scope_len,
+					query_results[ri].scope ? query_results[ri].scope : "",
+					(int)query_results[ri].question_len,
+					query_results[ri].question ? query_results[ri].question : "",
+					(int)query_results[ri].answer_len,
+					query_results[ri].answer ? query_results[ri].answer : ""
+				);
+
+				if (n < 0 || n >= (int)sizeof(item)) {
+					kvs_free(results_counts);
+					kvs_free(results);
+					return resp_generate_simple_string_n(
+						response,
+						'-',
+						"ERR response too large",
+						sizeof("ERR response too large") - 1
+					);
+				}
+
+				off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+			}
+		}
+
+		kvs_free(results_counts);
+		kvs_free(results);
+		return off;
+	}
+
+	/*
+	 * 旧单条 VSEARCH 路径保持原返回格式不变。
+	 */
+	{
+		size_t results_count = 0;
+		size_t i;
+		kvs_vector_search_result_t *results = NULL;
+
+		if (!ctx->query_text) {
+			return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+		}
+
+		results = (kvs_vector_search_result_t *)kvs_malloc(
+			results_capacity * sizeof(kvs_vector_search_result_t)
+		);
+		if (!results) {
+			return handle_vector_status_response(KVS_VECTOR_ERR, response);
+		}
+
+		kvs_vector_search_results_reset(results, results_capacity);
+
+		status = kvs_vector_search(
+			ctx->query_text,
+			ctx->query_text_len,
+			ctx->scope,
+			ctx->scope_len,
+			topk,
+			ctx->threshold,
+			results,
+			results_capacity,
+			&results_count
+		);
+
+		if (status != KVS_VECTOR_OK) {
+			kvs_free(results);
+			return handle_vector_status_response(status, response);
+		}
+
+		off += resp_generate_array_start(response + off, (int)results_count);
+
+		for (i = 0; i < results_count; ++i) {
+			char item[1024];
+
+			n = snprintf(
+				item,
+				sizeof(item),
+				"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+				results[i].score,
+				(int)results[i].scope_len,
+				results[i].scope ? results[i].scope : "",
+				(int)results[i].question_len,
+				results[i].question ? results[i].question : "",
+				(int)results[i].answer_len,
+				results[i].answer ? results[i].answer : ""
+			);
+
+			if (n < 0 || n >= (int)sizeof(item)) {
+				kvs_free(results);
+				return resp_generate_simple_string_n(
+					response,
+					'-',
+					"ERR response too large",
+					sizeof("ERR response too large") - 1
+				);
+			}
+
+			off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+		}
+
+		kvs_free(results);
+		return off;
+	}
 }
 
 int handle_vdel_command(command_context_t *ctx, char *response) {
