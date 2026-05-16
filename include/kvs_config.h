@@ -101,20 +101,8 @@ typedef struct kvs_config {
 	char log_file[256];
 	char ebpf_conf[256];          // eBPF 配置文件路径
 
-	//向量embedding配置
-	// embedding_provider:
-	//   hash: 使用本地 hash embedding
-	//   grpc: 使用外部 gRPC embedding server
+	// embedding_provider: 使用本地 hash embedding
 	char embedding_provider[16];
-
-	//grpc embedding server 地址
-	char embedding_grpc_addr[128];
-
-	//单次embedding超时时间 
-	int embedding_timeout_ms;
-
-	//gRPC provider 失败时是否回退到 hash provider
-	int embedding_fallback;
 
 	// vector index 配置
 	// vector_index_type:
@@ -146,10 +134,7 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path);
 //  --log_level <error|warn|info|debug>
 //  --log_async <yes|no>
 //  --log_file <path>
-//  --embedding_provider <hash|grpc>
-//  --embedding_grpc_addr <addr>
-//  --embedding_timeout_ms <ms>
-//  --embedding_fallback <yes|no>
+//  --embedding_provider <hash>
 void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const char **config_path_out);
 
 #endif // KVS_CONFIG_H

@@ -132,6 +132,29 @@ int kvs_vector_search(
 	size_t *results_count
 );
 
+/*
+ * 批量 VSEARCH 入口。
+ *
+ * 语义：
+ * 1. 一次批量生成 query embeddings；
+ * 2. 每个 query embedding 仍复用现有 HNSW / flat 搜索路径；
+ * 3. results 按 query 顺序连续存放：
+ *      results[i * results_capacity_per_query + j]
+ * 4. results_counts[i] 表示第 i 个 query 实际返回数量。
+ */
+int kvs_vector_search_batch(
+	const char **queries,
+	const size_t *query_lens,
+	size_t query_count,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity_per_query,
+	size_t *results_counts
+);
+
 int kvs_vector_del(
 	const char *question,
 	size_t question_len,
@@ -164,7 +187,7 @@ void kvs_vector_search_results_reset(
 
 #include "kvs_api.h"
 #include "kvs_config.h"
-#include "kvs_embedding_grpc_client.h"
+
 #include "kvs_log.h"
 
 #include <string.h>
@@ -183,8 +206,8 @@ void kvs_vector_search_results_reset(
 /*
  * 内部批量 embedding 默认批大小。
  *
- * 当前第 16 步先用于 C/vector 内部能力打通。
- * 后续批量导入、AOF/RDB 批量恢复、模型重算都可以复用。
+ * 用于 VBATCHSET / VSEARCH BATCH 内部批量 embedding 生成。
+ * 批量导入、AOF/RDB 批量恢复、模型重算都可以复用。
  */
 #define KVS_VECTOR_EMBEDDING_BATCH_SIZE 64
 
@@ -196,19 +219,12 @@ extern kvs_config_t g_cfg;
 
 typedef enum kvs_vector_embedding_provider_type_e {
 	KVS_VECTOR_EMBEDDING_PROVIDER_HASH = 0,
-	KVS_VECTOR_EMBEDDING_PROVIDER_GRPC = 1,
 } kvs_vector_embedding_provider_type_t;
 
 typedef struct kvs_vector_embedding_provider_s {
 	kvs_vector_embedding_provider_type_t type;
 	const char *name;
 	int initialized;
-
-	char grpc_addr[128];
-	int grpc_timeout_ms;
-	int fallback_to_hash;
-	int grpc_healthy;
-	int grpc_dimension;
 } kvs_vector_embedding_provider_t;
 
 
@@ -313,6 +329,11 @@ typedef struct kvs_vector_flat_index_s {
  */
 #define KVS_VECTOR_HNSW_MAX_LEVEL 16
 
+/*
+ * CLEANUP_CANDIDATE:
+ * Duplicate enum — moved to public area (L33-36) above.
+ * Safe to remove after Index abstraction phase if still unused.
+ */
 // typedef enum kvs_vector_index_type_e {
 // 	KVS_VECTOR_INDEX_TYPE_FLAT = 0,
 // 	KVS_VECTOR_INDEX_TYPE_HNSW = 1,
@@ -478,6 +499,11 @@ int kvs_vector_embedding_generate_batch(
 	int *out_dim
 );
 
+/*
+ * Experimental API:
+ * Retained for benchmarking only. Not used by default path.
+ * Default path uses kvs_vector_embedding_generate_batch().
+ */
 int kvs_vector_embedding_generate_batch_parallel(
 	const char **texts,
 	const size_t *text_lens,
@@ -562,6 +588,11 @@ void kvs_vector_search_result_from_record(
 	const kvs_vector_record_t *record
 );
 
+/*
+ * CLEANUP_CANDIDATE:
+ * Legacy text-score API. No current caller found.
+ * Remove together with implementation after Index abstraction.
+ */
 float kvs_vector_record_score(
 	const kvs_vector_record_t *record,
 	const char *query,

@@ -54,9 +54,6 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     //初始化embedding相关配置
     //默认使用本地hash 
     snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", "hash");
-    snprintf(cfg->embedding_grpc_addr, sizeof(cfg->embedding_grpc_addr), "%s", "127.0.0.1:50051");
-    cfg->embedding_timeout_ms = 3000; // 3秒
-    cfg->embedding_fallback = 1; // 默认允许 gRPC provider 失败时
 
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
     cfg->vector_hnsw_m = 32;
@@ -157,18 +154,7 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
         } else if (strcasecmp(key, "ebpf_conf") == 0) {
             snprintf(cfg->ebpf_conf, sizeof(cfg->ebpf_conf), "%s", val);
         }else if (strcasecmp(key, "embedding_provider") == 0) {
-            if (strcasecmp(val, "hash") == 0 || strcasecmp(val, "grpc") == 0) {
-                snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", val);
-            }
-        } else if (strcasecmp(key, "embedding_grpc_addr") == 0) {
-            snprintf(cfg->embedding_grpc_addr, sizeof(cfg->embedding_grpc_addr), "%s", val);
-        } else if (strcasecmp(key, "embedding_timeout_ms") == 0) {
-            int timeout_ms = atoi(val);
-            if (timeout_ms > 0) {
-                cfg->embedding_timeout_ms = timeout_ms;
-            }
-        } else if (strcasecmp(key, "embedding_fallback") == 0) {
-            cfg->embedding_fallback = parse_bool(val, cfg->embedding_fallback);
+            snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", val);
         } else if (strcasecmp(key, "vector_index_type") == 0) {
             if (strcasecmp(val, "flat") == 0 || strcasecmp(val, "hnsw") == 0) {
                 snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", val);
@@ -243,25 +229,7 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
         }*/
         else if (strcmp(argv[i], "--embedding_provider") == 0) {
             if (i + 1 < argc) {
-                const char *provider = argv[++i];
-                if (strcasecmp(provider, "hash") == 0 || strcasecmp(provider, "grpc") == 0) {
-                    snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", provider);
-                }
-            }
-        } else if (strcmp(argv[i], "--embedding_grpc_addr") == 0) {
-            if (i + 1 < argc) {
-                snprintf(cfg->embedding_grpc_addr, sizeof(cfg->embedding_grpc_addr), "%s", argv[++i]);
-            }
-        } else if (strcmp(argv[i], "--embedding_timeout_ms") == 0) {
-            if (i + 1 < argc) {
-                int timeout_ms = atoi(argv[++i]);
-                if (timeout_ms > 0) {
-                    cfg->embedding_timeout_ms = timeout_ms;
-                }
-            }
-        } else if (strcmp(argv[i], "--embedding_fallback") == 0) {
-            if (i + 1 < argc) {
-                cfg->embedding_fallback = parse_bool(argv[++i], cfg->embedding_fallback);
+                snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", argv[++i]);
             }
         } else if (strcmp(argv[i], "--vector_index_type") == 0) {
             if (i + 1 < argc) {

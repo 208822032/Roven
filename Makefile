@@ -1,9 +1,6 @@
 CC = gcc
 CXX = g++
 PKG_CONFIG ?= pkg-config
-PROTOC ?= protoc
-GRPC_CPP_PLUGIN ?= grpc_cpp_plugin
-GRPC_CPP_PLUGIN_PATH := $(shell which $(GRPC_CPP_PLUGIN) 2>/dev/null)
 
 # 与 kvs_config.h 中的 KVS_MAX_RESPONSE_SIZE 保持一致
 KVS_MAX_RESPONSE_SIZE ?= 1048576
@@ -15,26 +12,11 @@ SRC_NETWORK := src/network
 SRC_DIST := src/distributed
 SRC_UTILS := src/utils
 SRC_VECTOR := src/vector
-EMBED_PROTO_DIR := embedding_server
-EMBED_CPP_GEN_DIR := $(EMBED_PROTO_DIR)/generated/cpp
-SRC_VECTOR_GRPC := src/vector_grpc
-EMBED_GRPC_BRIDGE_CC := $(SRC_VECTOR_GRPC)/kvs_embedding_grpc_client.cc
-EMBED_GRPC_BRIDGE_O := $(SRC_VECTOR_GRPC)/kvs_embedding_grpc_client.o
-EMBED_PROTO := $(EMBED_PROTO_DIR)/embedding.proto
-EMBED_CPP_PB_CC := $(EMBED_CPP_GEN_DIR)/embedding.pb.cc
-EMBED_CPP_GRPC_CC := $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.cc
-EMBED_CPP_PB_O := $(EMBED_CPP_GEN_DIR)/embedding.pb.o
-EMBED_CPP_GRPC_O := $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.o
-EMBED_CPP_OBJS := $(EMBED_CPP_PB_O) $(EMBED_CPP_GRPC_O)
 KVS_LOG_OBJS := \
 	$(SRC_UTILS)/kvs_log.o \
 	$(SRC_UTILS)/kvs_log_writer.o
 
-GRPC_CFLAGS_RAW := $(shell $(PKG_CONFIG) --cflags grpc++ protobuf)
-GRPC_CFLAGS := $(filter-out -std=c++% -std=gnu++%,$(GRPC_CFLAGS_RAW))
-GRPC_LIBS := $(shell $(PKG_CONFIG) --libs grpc++ protobuf)
-
-CXXFLAGS = -I ./include -I ./src -I $(EMBED_CPP_GEN_DIR) -g $(GRPC_CFLAGS) -std=c++17
+CXXFLAGS = -I ./include -I ./src -g -std=c++17
 
 NTYCO_DIR := NtyCo
 NTYCO_CORE_DIR := $(NTYCO_DIR)/core
@@ -105,9 +87,6 @@ TEST_PAPER_SYNC := $(TEST_DIR)/test_paper_sync
 TEST_BIGVALUE := $(TEST_DIR)/test_bigvalue
 TEST_AI_CHAT_SCHEMA := $(TEST_DIR)/ai_chat_schema_test
 TEST_VECTOR := $(TEST_DIR)/vector_testcase
-TEST_EMBED_GRPC_CLIENT := $(TEST_DIR)/embedding_grpc_client_test
-TEST_EMBED_GRPC_C_ABI := $(TEST_DIR)/embedding_grpc_c_abi_test
-TEST_EMBED_GRPC_C_ABI_O := $(TEST_DIR)/embedding_grpc_c_abi_test.o
 TEST_TTL_LOOKUP_SPLIT := $(TEST_DIR)/ttl_lookup_split_bench
 TEST_SKIPTABLE_TARGETED := $(TEST_DIR)/skiptable_targeted_bench
 TEST_VECTOR_IMPORT_BENCH := $(TEST_DIR)/vector_import_bench
@@ -128,8 +107,6 @@ TEST_BINARIES = \
 	$(TEST_BIGVALUE) \
 	$(TEST_AI_CHAT_SCHEMA) \
 	$(TEST_VECTOR) \
-	$(TEST_EMBED_GRPC_CLIENT) \
-	$(TEST_EMBED_GRPC_C_ABI) \
 	$(TEST_VECTOR_IMPORT_BENCH) \
 	$(TEST_VECTOR_STORE_BENCH) \
 	$(TEST_VECTOR_SEARCH_BENCH)
@@ -172,27 +149,13 @@ $(NTYCO_LIB): $(NTYCO_OBJS)
 
 # $(TARGET): $(OBJS)
 # 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
-$(TARGET): $(OBJS) $(EMBED_GRPC_BRIDGE_O) $(EMBED_CPP_OBJS)
-	$(CXX) -o $@ \
+$(TARGET): $(OBJS)
+	$(CC) -o $@ \
 		$(OBJS) \
-		$(EMBED_GRPC_BRIDGE_O) \
-		$(EMBED_CPP_OBJS) \
 		$(LDFLAGS) \
-		$(GRPC_LIBS) \
 		-lpthread
 
 # 单元/集成测试可执行文件规则
-
-$(EMBED_CPP_GEN_DIR):
-	mkdir -p $@
-
-$(EMBED_CPP_PB_CC) $(EMBED_CPP_GRPC_CC): $(EMBED_PROTO) | $(EMBED_CPP_GEN_DIR)
-	cd $(EMBED_PROTO_DIR) && \
-	$(PROTOC) -I . \
-		--cpp_out=generated/cpp \
-		--grpc_out=generated/cpp \
-		--plugin=protoc-gen-grpc=$(GRPC_CPP_PLUGIN_PATH) \
-		embedding.proto
 
 $(TEST_CASE): $(TEST_DIR)/testcase.c
 	$(CC) $(CFLAGS) -o $@ $<
@@ -251,24 +214,6 @@ $(TEST_VECTOR): $(TEST_DIR)/vector_testcase.c
 $(TEST_VECTOR_IMPORT_BENCH): $(TEST_DIR)/vector_import_bench.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_EMBED_GRPC_CLIENT): $(TEST_DIR)/embedding_grpc_client_test.cc $(EMBED_CPP_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $< $(EMBED_CPP_OBJS) $(GRPC_LIBS) -lpthread
-
-$(EMBED_GRPC_BRIDGE_O): $(EMBED_GRPC_BRIDGE_CC) $(EMBED_CPP_PB_CC) $(EMBED_CPP_GRPC_CC)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(TEST_EMBED_GRPC_C_ABI_O): $(TEST_DIR)/embedding_grpc_c_abi_test.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(TEST_EMBED_GRPC_C_ABI): $(TEST_EMBED_GRPC_C_ABI_O) $(EMBED_GRPC_BRIDGE_O) $(EMBED_CPP_OBJS) $(KVS_LOG_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ \
-		$(TEST_EMBED_GRPC_C_ABI_O) \
-		$(EMBED_GRPC_BRIDGE_O) \
-		$(EMBED_CPP_OBJS) \
-		$(KVS_LOG_OBJS) \
-		$(GRPC_LIBS) \
-		-lpthread
-
 VECTOR_STORE_BENCH_OBJS := \
 	$(SRC_CORE)/kvs_config.o \
 	$(SRC_CORE)/kvs_globals.o \
@@ -287,14 +232,11 @@ VECTOR_STORE_BENCH_OBJS := \
 $(TEST_VECTOR_STORE_BENCH_O): $(TEST_DIR)/vector_store_bench.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TEST_VECTOR_STORE_BENCH): $(TEST_VECTOR_STORE_BENCH_O) $(VECTOR_STORE_BENCH_OBJS) $(EMBED_GRPC_BRIDGE_O) $(EMBED_CPP_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ \
+$(TEST_VECTOR_STORE_BENCH): $(TEST_VECTOR_STORE_BENCH_O) $(VECTOR_STORE_BENCH_OBJS)
+	$(CC) -o $@ \
 		$(TEST_VECTOR_STORE_BENCH_O) \
 		$(VECTOR_STORE_BENCH_OBJS) \
-		$(EMBED_GRPC_BRIDGE_O) \
-		$(EMBED_CPP_OBJS) \
 		$(LDFLAGS) \
-		$(GRPC_LIBS) \
 		-lpthread \
 		-ldl
 
@@ -303,14 +245,11 @@ VECTOR_SEARCH_BENCH_OBJS := $(VECTOR_STORE_BENCH_OBJS)
 $(TEST_VECTOR_SEARCH_BENCH_O): $(TEST_DIR)/vector_search_bench.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TEST_VECTOR_SEARCH_BENCH): $(TEST_VECTOR_SEARCH_BENCH_O) $(VECTOR_SEARCH_BENCH_OBJS) $(EMBED_GRPC_BRIDGE_O) $(EMBED_CPP_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ \
+$(TEST_VECTOR_SEARCH_BENCH): $(TEST_VECTOR_SEARCH_BENCH_O) $(VECTOR_SEARCH_BENCH_OBJS)
+	$(CC) -o $@ \
 		$(TEST_VECTOR_SEARCH_BENCH_O) \
 		$(VECTOR_SEARCH_BENCH_OBJS) \
-		$(EMBED_GRPC_BRIDGE_O) \
-		$(EMBED_CPP_OBJS) \
 		$(LDFLAGS) \
-		$(GRPC_LIBS) \
 		-lpthread \
 		-ldl
 
@@ -360,13 +299,6 @@ clean:
 	rm -f $(TEST_SKIPTABLE_TARGETED)
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H)
-	rm -f $(EMBED_CPP_OBJS)
-	rm -f $(EMBED_GRPC_BRIDGE_O)
-	rm -f $(TEST_EMBED_GRPC_C_ABI_O)
 	rm -f $(TEST_VECTOR_STORE_BENCH_O)
 	rm -f $(TEST_VECTOR_SEARCH_BENCH_O)
-	rm -f $(EMBED_CPP_GEN_DIR)/embedding.pb.cc
-	rm -f $(EMBED_CPP_GEN_DIR)/embedding.pb.h
-	rm -f $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.cc
-	rm -f $(EMBED_CPP_GEN_DIR)/embedding.grpc.pb.h
 .PHONY: all clean

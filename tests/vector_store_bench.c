@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
     * kvs_vector_init() 在 hash provider 下会把 flat_index 初始化成
     * KVS_VECTOR_DEFAULT_DIMENSION，也就是 64 维。
     *
-    * 但本压测默认要模拟真实 gRPC embedding 的 384 维写入，
+    * 但本压测需要模拟特定维度的写入测试，
     * 所以这里在还没有写入任何 record 前，重新初始化 flat_index 维度。
     */
     if (g_vector_state.flat_index.dimension != (size_t)dimension) {

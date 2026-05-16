@@ -2,13 +2,5 @@
 build/
 .vscode/
 paper.txt
-# embedding server
-embedding_server/.venv/
-embedding_server/__pycache__/
-embedding_server/**/*.pyc
-embedding_server/**/*.pyo
-embedding_server/**/*.pyd
-embedding_server/generated/
-embedding_server/.cache/
-embedding_server/model/
-# embedding_server/model/
+迭代路径表.md
+CLAUDE.md
