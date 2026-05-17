@@ -1,6 +1,9 @@
 #define KVS_VECTOR_INTERNAL
 #include "kvs_vector.h"
 #include <stdlib.h>
+#include <math.h>
+
+#define KVS_VECTOR_HNSW_SCOPE_EF_MAX 2048
 
 /*
  * 计算不小于 value 的 2 的幂。
@@ -1685,7 +1688,197 @@ static int kvs_vector_id_map_lookup_slot(
  *
  * 会扫描当前 store 中所有 ACTIVE record，把它们的 embedding 重新写入连续数组。
  */
- int kvs_vector_rebuild_flat_index_from_store(void) {
+ int kvs_vector_flat_index_search(
+    kvs_vector_flat_index_t *index,
+    const float *query_embedding,
+    int query_dim,
+    const char *scope,
+    size_t scope_len,
+    int topk,
+    float threshold,
+    kvs_vector_metric_type_t metric,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity,
+    size_t *results_count
+) {
+    kvs_vector_topk_heap_t heap;
+    size_t limit;
+    size_t i;
+    float effective_threshold;
+    int ret;
+    int heap_initialized = 0;
+
+    memset(&heap, 0, sizeof(heap));
+
+    if (results && results_capacity > 0) {
+        kvs_vector_search_results_reset(results, results_capacity);
+    }
+
+    if (results_count) {
+        *results_count = 0;
+    }
+
+    if (!index ||
+        !query_embedding ||
+        query_dim <= 0 ||
+        !results ||
+        results_capacity == 0 ||
+        !results_count) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    if (!scope) {
+        scope_len = 0;
+    }
+
+    if (topk <= 0) {
+        topk = 1;
+    }
+
+    limit = (size_t)topk;
+    if (limit > results_capacity) {
+        limit = results_capacity;
+    }
+
+    effective_threshold = threshold;
+    if (effective_threshold <= 0.0f) {
+        effective_threshold = -1.0f;
+    }
+
+    if (!index->vectors ||
+        !index->record_indices ||
+        index->size == 0 ||
+        index->dimension == 0) {
+        return KVS_VECTOR_OK;
+    }
+
+    if ((size_t)query_dim != index->dimension) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    ret = kvs_vector_topk_heap_init(&heap, limit);
+    if (ret != KVS_VECTOR_OK) {
+        return ret;
+    }
+    heap_initialized = 1;
+
+    for (i = 0; i < index->size; ++i) {
+        size_t record_index = index->record_indices[i];
+        float *indexed_vector;
+        kvs_vector_record_t *record;
+        float score;
+
+        if (record_index >= g_vector_state.store.capacity) {
+            continue;
+        }
+
+        record = &g_vector_state.store.records[record_index];
+
+        if (index->record_ids && index->record_ids[i] != record->id) {
+            continue;
+        }
+
+        if (!kvs_vector_record_scope_match(record, scope, scope_len)) {
+            continue;
+        }
+
+        indexed_vector = index->vectors + (i * index->dimension);
+
+        score = kvs_vector_metric_score(
+            query_embedding,
+            indexed_vector,
+            index->dimension,
+            metric
+        );
+
+        if (score < effective_threshold) {
+            continue;
+        }
+
+        ret = kvs_vector_topk_heap_push(
+            &heap,
+            record_index,
+            score
+        );
+        if (ret != KVS_VECTOR_OK) {
+            if (heap_initialized) {
+                kvs_vector_topk_heap_destroy(&heap);
+            }
+            return ret;
+        }
+    }
+
+    ret = kvs_vector_topk_heap_export_desc(
+        &heap,
+        results,
+        results_capacity,
+        results_count,
+        &g_vector_state.store
+    );
+
+    if (heap_initialized) {
+        kvs_vector_topk_heap_destroy(&heap);
+    }
+
+    return ret;
+}
+
+int kvs_vector_flat_index_search_batch(
+    kvs_vector_flat_index_t *index,
+    const float *query_embeddings,
+    size_t query_count,
+    int query_dim,
+    const char *scope,
+    size_t scope_len,
+    int topk,
+    float threshold,
+    kvs_vector_metric_type_t metric,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity_per_query,
+    size_t *results_counts
+) {
+    size_t i;
+    int ret;
+
+    if (!index ||
+        !query_embeddings ||
+        query_count == 0 ||
+        query_dim <= 0 ||
+        !results ||
+        results_capacity_per_query == 0 ||
+        !results_counts) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    for (i = 0; i < query_count; ++i) {
+        const float *query_embedding;
+        kvs_vector_search_result_t *query_results;
+
+        query_embedding = query_embeddings + (i * (size_t)query_dim);
+        query_results = results + (i * results_capacity_per_query);
+
+        ret = kvs_vector_flat_index_search(
+            index,
+            query_embedding,
+            query_dim,
+            scope,
+            scope_len,
+            topk,
+            threshold,
+            metric,
+            query_results,
+            results_capacity_per_query,
+            &results_counts[i]
+        );
+        if (ret != KVS_VECTOR_OK) {
+            return ret;
+        }
+    }
+
+    return KVS_VECTOR_OK;
+}
+
+int kvs_vector_rebuild_flat_index_from_store(void) {
 	kvs_vector_flat_index_t *index = &g_vector_state.flat_index;
 	kvs_vector_store_t *store = &g_vector_state.store;
 	size_t i;
@@ -1756,6 +1949,98 @@ static int kvs_vector_id_map_lookup_slot(
 	}
 
 	return score;
+}
+
+float kvs_vector_l2_score(
+    const float *lhs,
+    const float *rhs,
+    size_t dim
+) {
+    size_t i;
+    float dist = 0.0f;
+
+    if (!lhs || !rhs || dim == 0) {
+        return 0.0f;
+    }
+
+    for (i = 0; i < dim; ++i) {
+        float d = lhs[i] - rhs[i];
+        dist += d * d;
+    }
+
+    return 1.0f / (1.0f + dist);
+}
+
+float kvs_vector_cosine_score(
+    const float *lhs,
+    const float *rhs,
+    size_t dim
+) {
+    size_t i;
+    float dot = 0.0f;
+    float lhs_norm = 0.0f;
+    float rhs_norm = 0.0f;
+
+    if (!lhs || !rhs || dim == 0) {
+        return 0.0f;
+    }
+
+    for (i = 0; i < dim; ++i) {
+        dot += lhs[i] * rhs[i];
+        lhs_norm += lhs[i] * lhs[i];
+        rhs_norm += rhs[i] * rhs[i];
+    }
+
+    if (lhs_norm <= 0.0f || rhs_norm <= 0.0f) {
+        return 0.0f;
+    }
+
+    return dot / (sqrtf(lhs_norm) * sqrtf(rhs_norm));
+}
+
+float kvs_vector_metric_score(
+    const float *lhs,
+    const float *rhs,
+    size_t dim,
+    kvs_vector_metric_type_t metric
+) {
+    switch (metric) {
+        case KVS_VECTOR_METRIC_L2:
+            return kvs_vector_l2_score(lhs, rhs, dim);
+
+        case KVS_VECTOR_METRIC_COSINE:
+            return kvs_vector_cosine_score(lhs, rhs, dim);
+
+        case KVS_VECTOR_METRIC_IP:
+        default:
+            return kvs_vector_dot_product(lhs, rhs, dim);
+    }
+}
+
+const char *kvs_vector_metric_name(kvs_vector_metric_type_t metric) {
+    switch (metric) {
+        case KVS_VECTOR_METRIC_L2:
+            return "l2";
+
+        case KVS_VECTOR_METRIC_COSINE:
+            return "cosine";
+
+        case KVS_VECTOR_METRIC_IP:
+        default:
+            return "ip";
+    }
+}
+
+kvs_vector_metric_type_t kvs_vector_metric_from_config(void) {
+    if (strcasecmp(g_cfg.vector_metric, "l2") == 0) {
+        return KVS_VECTOR_METRIC_L2;
+    }
+
+    if (strcasecmp(g_cfg.vector_metric, "cosine") == 0) {
+        return KVS_VECTOR_METRIC_COSINE;
+    }
+
+    return KVS_VECTOR_METRIC_IP;
 }
 
 
@@ -2010,6 +2295,49 @@ typedef struct kvs_vector_ann_tmp_candidate_s {
 	float score;
 	int expanded;
 } kvs_vector_ann_tmp_candidate_t;
+
+static size_t kvs_vector_ann_effective_ef_search(
+    const kvs_vector_ann_index_t *index,
+    const char *scope,
+    size_t scope_len
+) {
+    size_t effective_ef;
+    size_t factor;
+
+    if (!index) {
+        return KVS_VECTOR_HNSW_EF_SEARCH;
+    }
+
+    effective_ef = index->ef_search;
+    if (effective_ef == 0) {
+        effective_ef = KVS_VECTOR_HNSW_EF_SEARCH;
+    }
+
+    if (!scope || scope_len == 0) {
+        return effective_ef;
+    }
+
+    if (g_cfg.vector_scope_overfetch_factor <= 1) {
+        return effective_ef;
+    }
+
+    factor = (size_t)g_cfg.vector_scope_overfetch_factor;
+
+    if (effective_ef > KVS_VECTOR_HNSW_SCOPE_EF_MAX / factor) {
+        effective_ef = KVS_VECTOR_HNSW_SCOPE_EF_MAX;
+    } else {
+        effective_ef *= factor;
+        if (effective_ef > KVS_VECTOR_HNSW_SCOPE_EF_MAX) {
+            effective_ef = KVS_VECTOR_HNSW_SCOPE_EF_MAX;
+        }
+    }
+
+    if (effective_ef < 1) {
+        effective_ef = 1;
+    }
+
+    return effective_ef;
+}
 
 static int kvs_vector_ann_candidate_better(
 	const kvs_vector_ann_tmp_candidate_t *lhs,
@@ -2520,10 +2848,11 @@ static int kvs_vector_ann_neighbor_add_or_replace(
 		return KVS_VECTOR_ERR;
 	}
 
-	new_score = kvs_vector_dot_product(
+	new_score = kvs_vector_metric_score(
 		owner_embedding,
 		neighbor_embedding,
-		index->dimension
+		index->dimension,
+		g_vector_state.metric_type
 	);
 
 	{
@@ -2546,10 +2875,11 @@ static int kvs_vector_ann_neighbor_add_or_replace(
 				break;
 			}
 
-			old_score = kvs_vector_dot_product(
+			old_score = kvs_vector_metric_score(
 				owner_embedding,
 				old_neighbor_embedding,
-				index->dimension
+				index->dimension,
+				g_vector_state.metric_type
 			);
 
 			if (!has_worst || old_score < worst_score) {
@@ -2593,10 +2923,11 @@ static size_t kvs_vector_ann_greedy_search_layer(
 		return current;
 	}
 
-	current_score = kvs_vector_dot_product(
+	current_score = kvs_vector_metric_score(
 		query_embedding,
 		current_embedding,
-		index->dimension
+		index->dimension,
+		g_vector_state.metric_type
 	);
 
 	while (changed) {
@@ -2628,10 +2959,11 @@ static size_t kvs_vector_ann_greedy_search_layer(
 				continue;
 			}
 
-			score = kvs_vector_dot_product(
+			score = kvs_vector_metric_score(
 				query_embedding,
 				neighbor_embedding,
-				index->dimension
+				index->dimension,
+				g_vector_state.metric_type
 			);
 
 			if (score > current_score ||
@@ -2739,10 +3071,11 @@ static int kvs_vector_ann_collect_candidates_layer(
 		return KVS_VECTOR_ERR;
 	}
 
-	entry_score = kvs_vector_dot_product(
+	entry_score = kvs_vector_metric_score(
 		query_embedding,
 		entry_embedding,
-		index->dimension
+		index->dimension,
+		g_vector_state.metric_type
 	);
 
 	visited[entry_node] = 1;
@@ -2832,10 +3165,11 @@ static int kvs_vector_ann_collect_candidates_layer(
 				continue;
 			}
 
-			score = kvs_vector_dot_product(
+			score = kvs_vector_metric_score(
 				query_embedding,
 				neighbor_embedding,
-				index->dimension
+				index->dimension,
+				g_vector_state.metric_type
 			);
 
 			if (result_count < result_capacity) {
@@ -3074,6 +3408,7 @@ int kvs_vector_ann_index_search(
 	size_t scope_len,
 	int topk,
 	float threshold,
+	kvs_vector_metric_type_t metric,
 	kvs_vector_search_result_t *results,
 	size_t results_capacity,
 	size_t *results_count
@@ -3083,9 +3418,12 @@ int kvs_vector_ann_index_search(
 	kvs_vector_topk_heap_t heap;
 	size_t limit;
 	size_t current;
+	size_t effective_ef;
 	float effective_threshold;
 	int level;
 	int ret;
+
+	(void)metric;
 
 	memset(&heap, 0, sizeof(heap));
 
@@ -3128,6 +3466,12 @@ int kvs_vector_ann_index_search(
 		effective_threshold = -1.0f;
 	}
 
+	effective_ef = kvs_vector_ann_effective_ef_search(
+		index,
+		scope,
+		scope_len
+	);
+
 	current = index->entry_node;
 
 	for (level = index->max_level; level > 0; --level) {
@@ -3146,7 +3490,7 @@ int kvs_vector_ann_index_search(
 		query_dim,
 		current,
 		0,
-		index->ef_search,
+		effective_ef,
 		&candidates,
 		&candidate_count
 	);
@@ -3211,6 +3555,61 @@ int kvs_vector_ann_index_search(
 	kvs_free(candidates);
 
 	return ret;
+}
+
+int kvs_vector_ann_index_search_batch(
+    kvs_vector_ann_index_t *index,
+    const float *query_embeddings,
+    size_t query_count,
+    int query_dim,
+    const char *scope,
+    size_t scope_len,
+    int topk,
+    float threshold,
+    kvs_vector_metric_type_t metric,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity_per_query,
+    size_t *results_counts
+) {
+    size_t i;
+    int ret;
+
+    if (!index ||
+        !query_embeddings ||
+        query_count == 0 ||
+        query_dim <= 0 ||
+        !results ||
+        results_capacity_per_query == 0 ||
+        !results_counts) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    for (i = 0; i < query_count; ++i) {
+        const float *query_embedding;
+        kvs_vector_search_result_t *query_results;
+
+        query_embedding = query_embeddings + (i * (size_t)query_dim);
+        query_results = results + (i * results_capacity_per_query);
+
+        ret = kvs_vector_ann_index_search(
+            index,
+            query_embedding,
+            query_dim,
+            scope,
+            scope_len,
+            topk,
+            threshold,
+            metric,
+            query_results,
+            results_capacity_per_query,
+            &results_counts[i]
+        );
+        if (ret != KVS_VECTOR_OK) {
+            return ret;
+        }
+    }
+
+    return KVS_VECTOR_OK;
 }
 
 int kvs_vector_rebuild_ann_index_from_store(void) {

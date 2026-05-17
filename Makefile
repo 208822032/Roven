@@ -69,7 +69,7 @@ SRCS = $(BASE_SRCS) \
 EXTRA_CFLAGS ?=
 OPT_CFLAGS ?= -O2
 CFLAGS = -I ./NtyCo/core/ -I ./include -I ./src -I $(JEMALLOC_INCLUDE) -DSYNC_MODE=$(SYNC_MODE) -g $(OPT_CFLAGS) $(EXTRA_CFLAGS)
-LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl $(EXTRA_LIBS)  $(JEMALLOC_LIB)
+LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -lm $(EXTRA_LIBS)  $(JEMALLOC_LIB)
 
 TARGET = kvstore
 OBJS = $(SRCS:.c=.o)

@@ -110,10 +110,37 @@ typedef struct kvs_config {
 	//   hnsw: 多层 HNSW ANN
 	char vector_index_type[16];
 
+	/*
+	 * vector_metric:
+	 *   ip     : inner product, larger score is better
+	 *   l2     : converted to score = 1 / (1 + squared_l2), larger is better
+	 *   cosine : cosine similarity, larger score is better
+	 *
+	 * Default: ip
+	 *
+	 * Keep ip as default to preserve the current dot-product behavior.
+	 */
+	char vector_metric[16];
+
 	// HNSW 参数
 	int vector_hnsw_m;
 	int vector_hnsw_ef_construction;
 	int vector_hnsw_ef_search;
+
+	/*
+	 * Scope overfetch factor for HNSW scoped search.
+	 *
+	 * When scope is non-empty, HNSW expands candidate collection:
+	 *
+	 *   effective_ef = min(ef_search * vector_scope_overfetch_factor, 2048)
+	 *
+	 * The final returned result count is still limited by user topK.
+	 *
+	 * Range: 1 ~ 32
+	 * Default: 4
+	 * 1 means disabled.
+	 */
+	int vector_scope_overfetch_factor;
 } kvs_config_t;
 
 // 默认配置初始化
@@ -135,6 +162,8 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path);
 //  --log_async <yes|no>
 //  --log_file <path>
 //  --embedding_provider <hash>
+//  --vector_metric <ip|l2|cosine>
+//  --vector_scope_overfetch_factor <1-32>
 void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const char **config_path_out);
 
 #endif // KVS_CONFIG_H

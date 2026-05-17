@@ -36,6 +36,27 @@ typedef enum kvs_vector_index_type_e {
 } kvs_vector_index_type_t;
 
 /*
+ * Vector metric type.
+ *
+ * Internal search score convention:
+ *   larger score is always better.
+ *
+ * IP:
+ *   score = dot(lhs, rhs)
+ *
+ * L2:
+ *   score = 1 / (1 + squared_l2(lhs, rhs))
+ *
+ * COSINE:
+ *   score = dot(lhs, rhs) / (||lhs|| * ||rhs||)
+ */
+typedef enum kvs_vector_metric_type_e {
+    KVS_VECTOR_METRIC_IP = 0,
+    KVS_VECTOR_METRIC_L2 = 1,
+    KVS_VECTOR_METRIC_COSINE = 2,
+} kvs_vector_metric_type_t;
+
+/*
  * VGET / VSEARCH 返回的单条检索结果。
  *
  * 注意：
@@ -74,6 +95,7 @@ typedef struct kvs_vector_info_s {
 	 * 1 = hnsw
 	 */
 	int index_type;
+	int metric_type;
 
 	size_t flat_physical_size;
 
@@ -329,16 +351,6 @@ typedef struct kvs_vector_flat_index_s {
  */
 #define KVS_VECTOR_HNSW_MAX_LEVEL 16
 
-/*
- * CLEANUP_CANDIDATE:
- * Duplicate enum — moved to public area (L33-36) above.
- * Safe to remove after Index abstraction phase if still unused.
- */
-// typedef enum kvs_vector_index_type_e {
-// 	KVS_VECTOR_INDEX_TYPE_FLAT = 0,
-// 	KVS_VECTOR_INDEX_TYPE_HNSW = 1,
-// } kvs_vector_index_type_t;
-
 typedef struct kvs_vector_ann_node_s {
 	size_t record_index;
 	uint64_t record_id;
@@ -377,6 +389,71 @@ typedef struct kvs_vector_ann_index_s {
 	int ready;
 	int needs_rebuild;
 } kvs_vector_ann_index_t;
+
+/********** FAISS-like index abstraction **********/
+
+typedef struct kvs_vector_index_search_params_s {
+    const char *scope;
+    size_t scope_len;
+    int topk;
+    float threshold;
+} kvs_vector_index_search_params_t;
+
+typedef struct kvs_vector_index_batch_params_s {
+    const char *scope;
+    size_t scope_len;
+    int topk;
+    float threshold;
+} kvs_vector_index_batch_params_t;
+
+struct kvs_vector_index_s;
+
+typedef struct kvs_vector_index_ops_s {
+    int (*add)(
+        struct kvs_vector_index_s *index,
+        size_t record_index,
+        const float *embedding,
+        int embedding_dim
+    );
+
+    int (*search)(
+        struct kvs_vector_index_s *index,
+        const float *query_embedding,
+        int query_dim,
+        const kvs_vector_index_search_params_t *params,
+        kvs_vector_search_result_t *results,
+        size_t results_capacity,
+        size_t *results_count
+    );
+
+    int (*search_batch)(
+        struct kvs_vector_index_s *index,
+        const float *query_embeddings,
+        size_t query_count,
+        int query_dim,
+        const kvs_vector_index_batch_params_t *params,
+        kvs_vector_search_result_t *results,
+        size_t results_capacity_per_query,
+        size_t *results_counts
+    );
+
+    int (*rebuild)(struct kvs_vector_index_s *index);
+
+    int (*info)(
+        struct kvs_vector_index_s *index,
+        kvs_vector_info_t *info
+    );
+
+    void (*destroy)(struct kvs_vector_index_s *index);
+} kvs_vector_index_ops_t;
+
+typedef struct kvs_vector_index_s {
+    kvs_vector_index_type_t type;
+    kvs_vector_metric_type_t metric;
+    size_t dimension;
+    void *impl;
+    const kvs_vector_index_ops_t *ops;
+} kvs_vector_index_t;
 
 /********** topK **********/
 
@@ -454,9 +531,12 @@ typedef struct kvs_vector_state_s {
 	kvs_vector_id_map_t id_map;
 
 	kvs_vector_index_type_t index_type;
+	kvs_vector_metric_type_t metric_type;
 
 	kvs_vector_flat_index_t flat_index;
 	kvs_vector_ann_index_t ann_index;
+
+	kvs_vector_index_t current_index;
 
 	kvs_vector_embedding_provider_t embedding_provider;
 
@@ -696,6 +776,108 @@ float kvs_vector_dot_product(
 	size_t dim
 );
 
+float kvs_vector_l2_score(
+	const float *lhs,
+	const float *rhs,
+	size_t dim
+);
+
+float kvs_vector_cosine_score(
+	const float *lhs,
+	const float *rhs,
+	size_t dim
+);
+
+float kvs_vector_metric_score(
+	const float *lhs,
+	const float *rhs,
+	size_t dim,
+	kvs_vector_metric_type_t metric
+);
+
+const char *kvs_vector_metric_name(kvs_vector_metric_type_t metric);
+
+kvs_vector_metric_type_t kvs_vector_metric_from_config(void);
+
+int kvs_vector_index_bind_current(void);
+
+int kvs_vector_index_add_current(
+	size_t record_index,
+	const float *embedding,
+	int embedding_dim
+);
+
+int kvs_vector_index_search_current(
+	const float *query_embedding,
+	int query_dim,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity,
+	size_t *results_count
+);
+
+int kvs_vector_index_search_batch_current(
+	const float *query_embeddings,
+	size_t query_count,
+	int query_dim,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity_per_query,
+	size_t *results_counts
+);
+
+int kvs_vector_index_rebuild_current(void);
+
+int kvs_vector_flat_index_search(
+	kvs_vector_flat_index_t *index,
+	const float *query_embedding,
+	int query_dim,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_metric_type_t metric,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity,
+	size_t *results_count
+);
+
+int kvs_vector_flat_index_search_batch(
+	kvs_vector_flat_index_t *index,
+	const float *query_embeddings,
+	size_t query_count,
+	int query_dim,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_metric_type_t metric,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity_per_query,
+	size_t *results_counts
+);
+
+int kvs_vector_ann_index_search_batch(
+	kvs_vector_ann_index_t *index,
+	const float *query_embeddings,
+	size_t query_count,
+	int query_dim,
+	const char *scope,
+	size_t scope_len,
+	int topk,
+	float threshold,
+	kvs_vector_metric_type_t metric,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity_per_query,
+	size_t *results_counts
+);
+
 /********** ANN / HNSW-lite index **********/
 
 int kvs_vector_ann_index_init(
@@ -730,6 +912,7 @@ int kvs_vector_ann_index_search(
 	size_t scope_len,
 	int topk,
 	float threshold,
+	kvs_vector_metric_type_t metric,
 	kvs_vector_search_result_t *results,
 	size_t results_capacity,
 	size_t *results_count

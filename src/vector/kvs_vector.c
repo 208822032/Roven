@@ -370,6 +370,331 @@ static size_t kvs_vector_hnsw_param_or_default(int value, size_t def) {
 	return (size_t)value;
 }
 
+static int kvs_vector_flat_ops_add(
+    kvs_vector_index_t *index,
+    size_t record_index,
+    const float *embedding,
+    int embedding_dim
+) {
+    if (!index || !index->impl) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    return kvs_vector_flat_index_add(
+        (kvs_vector_flat_index_t *)index->impl,
+        record_index,
+        embedding,
+        embedding_dim
+    );
+}
+
+static int kvs_vector_hnsw_ops_add(
+    kvs_vector_index_t *index,
+    size_t record_index,
+    const float *embedding,
+    int embedding_dim
+) {
+    if (!index || !index->impl) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    return kvs_vector_ann_index_add(
+        (kvs_vector_ann_index_t *)index->impl,
+        record_index,
+        embedding,
+        embedding_dim
+    );
+}
+
+static int kvs_vector_flat_ops_search(
+    kvs_vector_index_t *index,
+    const float *query_embedding,
+    int query_dim,
+    const kvs_vector_index_search_params_t *params,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity,
+    size_t *results_count
+) {
+    if (!index || !index->impl || !params) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    return kvs_vector_flat_index_search(
+        (kvs_vector_flat_index_t *)index->impl,
+        query_embedding,
+        query_dim,
+        params->scope,
+        params->scope_len,
+        params->topk,
+        params->threshold,
+        index->metric,
+        results,
+        results_capacity,
+        results_count
+    );
+}
+
+static int kvs_vector_hnsw_ops_search(
+    kvs_vector_index_t *index,
+    const float *query_embedding,
+    int query_dim,
+    const kvs_vector_index_search_params_t *params,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity,
+    size_t *results_count
+) {
+    if (!index || !index->impl || !params) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    return kvs_vector_ann_index_search(
+        (kvs_vector_ann_index_t *)index->impl,
+        query_embedding,
+        query_dim,
+        params->scope,
+        params->scope_len,
+        params->topk,
+        params->threshold,
+        index->metric,
+        results,
+        results_capacity,
+        results_count
+    );
+}
+
+static int kvs_vector_flat_ops_search_batch(
+    kvs_vector_index_t *index,
+    const float *query_embeddings,
+    size_t query_count,
+    int query_dim,
+    const kvs_vector_index_batch_params_t *params,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity_per_query,
+    size_t *results_counts
+) {
+    if (!index || !index->impl || !params) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    return kvs_vector_flat_index_search_batch(
+        (kvs_vector_flat_index_t *)index->impl,
+        query_embeddings,
+        query_count,
+        query_dim,
+        params->scope,
+        params->scope_len,
+        params->topk,
+        params->threshold,
+        index->metric,
+        results,
+        results_capacity_per_query,
+        results_counts
+    );
+}
+
+static int kvs_vector_hnsw_ops_search_batch(
+    kvs_vector_index_t *index,
+    const float *query_embeddings,
+    size_t query_count,
+    int query_dim,
+    const kvs_vector_index_batch_params_t *params,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity_per_query,
+    size_t *results_counts
+) {
+    if (!index || !index->impl || !params) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    return kvs_vector_ann_index_search_batch(
+        (kvs_vector_ann_index_t *)index->impl,
+        query_embeddings,
+        query_count,
+        query_dim,
+        params->scope,
+        params->scope_len,
+        params->topk,
+        params->threshold,
+        index->metric,
+        results,
+        results_capacity_per_query,
+        results_counts
+    );
+}
+
+static int kvs_vector_flat_ops_rebuild(kvs_vector_index_t *index) {
+    (void)index;
+    return kvs_vector_rebuild_flat_index_from_store();
+}
+
+static int kvs_vector_hnsw_ops_rebuild(kvs_vector_index_t *index) {
+    (void)index;
+    return kvs_vector_rebuild_ann_index_from_store();
+}
+
+static int kvs_vector_index_ops_info(
+    kvs_vector_index_t *index,
+    kvs_vector_info_t *info
+) {
+    if (!index || !info) {
+        return KVS_VECTOR_ERR_INVALID_ARG;
+    }
+
+    info->metric_type = (int)index->metric;
+    return KVS_VECTOR_OK;
+}
+
+static void kvs_vector_flat_ops_destroy(kvs_vector_index_t *index) {
+    if (!index || !index->impl) {
+        return;
+    }
+
+    kvs_vector_flat_index_destroy((kvs_vector_flat_index_t *)index->impl);
+}
+
+static void kvs_vector_hnsw_ops_destroy(kvs_vector_index_t *index) {
+    if (!index || !index->impl) {
+        return;
+    }
+
+    kvs_vector_ann_index_destroy((kvs_vector_ann_index_t *)index->impl);
+}
+
+static const kvs_vector_index_ops_t g_kvs_vector_flat_ops = {
+    .add = kvs_vector_flat_ops_add,
+    .search = kvs_vector_flat_ops_search,
+    .search_batch = kvs_vector_flat_ops_search_batch,
+    .rebuild = kvs_vector_flat_ops_rebuild,
+    .info = kvs_vector_index_ops_info,
+    .destroy = kvs_vector_flat_ops_destroy,
+};
+
+static const kvs_vector_index_ops_t g_kvs_vector_hnsw_ops = {
+    .add = kvs_vector_hnsw_ops_add,
+    .search = kvs_vector_hnsw_ops_search,
+    .search_batch = kvs_vector_hnsw_ops_search_batch,
+    .rebuild = kvs_vector_hnsw_ops_rebuild,
+    .info = kvs_vector_index_ops_info,
+    .destroy = kvs_vector_hnsw_ops_destroy,
+};
+
+int kvs_vector_index_bind_current(void) {
+    kvs_vector_index_t *index = &g_vector_state.current_index;
+
+    memset(index, 0, sizeof(*index));
+
+    index->type = g_vector_state.index_type;
+    index->metric = g_vector_state.metric_type;
+
+    if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+        index->dimension = g_vector_state.ann_index.dimension;
+        index->impl = &g_vector_state.ann_index;
+        index->ops = &g_kvs_vector_hnsw_ops;
+    } else {
+        index->dimension = g_vector_state.flat_index.dimension;
+        index->impl = &g_vector_state.flat_index;
+        index->ops = &g_kvs_vector_flat_ops;
+    }
+
+    return KVS_VECTOR_OK;
+}
+
+int kvs_vector_index_add_current(
+    size_t record_index,
+    const float *embedding,
+    int embedding_dim
+) {
+    kvs_vector_index_t *index = &g_vector_state.current_index;
+
+    if (!index->ops || !index->ops->add) {
+        return KVS_VECTOR_ERR_NOT_INITIALIZED;
+    }
+
+    return index->ops->add(index, record_index, embedding, embedding_dim);
+}
+
+int kvs_vector_index_search_current(
+    const float *query_embedding,
+    int query_dim,
+    const char *scope,
+    size_t scope_len,
+    int topk,
+    float threshold,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity,
+    size_t *results_count
+) {
+    kvs_vector_index_t *index = &g_vector_state.current_index;
+    kvs_vector_index_search_params_t params;
+
+    if (!index->ops || !index->ops->search) {
+        return KVS_VECTOR_ERR_NOT_INITIALIZED;
+    }
+
+    memset(&params, 0, sizeof(params));
+    params.scope = scope;
+    params.scope_len = scope_len;
+    params.topk = topk;
+    params.threshold = threshold;
+
+    return index->ops->search(
+        index,
+        query_embedding,
+        query_dim,
+        &params,
+        results,
+        results_capacity,
+        results_count
+    );
+}
+
+int kvs_vector_index_search_batch_current(
+    const float *query_embeddings,
+    size_t query_count,
+    int query_dim,
+    const char *scope,
+    size_t scope_len,
+    int topk,
+    float threshold,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity_per_query,
+    size_t *results_counts
+) {
+    kvs_vector_index_t *index = &g_vector_state.current_index;
+    kvs_vector_index_batch_params_t params;
+
+    if (!index->ops || !index->ops->search_batch) {
+        return KVS_VECTOR_ERR_NOT_INITIALIZED;
+    }
+
+    memset(&params, 0, sizeof(params));
+    params.scope = scope;
+    params.scope_len = scope_len;
+    params.topk = topk;
+    params.threshold = threshold;
+
+    return index->ops->search_batch(
+        index,
+        query_embeddings,
+        query_count,
+        query_dim,
+        &params,
+        results,
+        results_capacity_per_query,
+        results_counts
+    );
+}
+
+int kvs_vector_index_rebuild_current(void) {
+    kvs_vector_index_t *index = &g_vector_state.current_index;
+
+    if (!index->ops || !index->ops->rebuild) {
+        return KVS_VECTOR_ERR_NOT_INITIALIZED;
+    }
+
+    return index->ops->rebuild(index);
+}
+
 /*
  * 从内部状态生成 VINFO。
  *
@@ -438,6 +763,7 @@ static void kvs_vector_info_from_state(
 	info->dimension = state->flat_index.dimension;
 
 	info->index_type = (int)state->index_type;
+	info->metric_type = (int)state->metric_type;
 
 	if (state->index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
 		info->index_ready = state->ann_index.ready;
@@ -519,6 +845,7 @@ int kvs_vector_init(void) {
 	}
 
 	g_vector_state.index_type = kvs_vector_index_type_from_config();
+	g_vector_state.metric_type = kvs_vector_metric_from_config();
 
 	ret = kvs_vector_ann_index_init(
 		&g_vector_state.ann_index,
@@ -540,6 +867,11 @@ int kvs_vector_init(void) {
 		goto fail;
 	}
 
+	ret = kvs_vector_index_bind_current();
+	if (ret != KVS_VECTOR_OK) {
+		goto fail;
+	}
+
     ret = kvs_vector_async_dispatcher_init(
 		&g_vector_state.async_dispatcher,
 		KVS_VECTOR_ASYNC_QUEUE_CAPACITY,
@@ -553,11 +885,12 @@ int kvs_vector_init(void) {
 
 	KVS_LOG_INFO(
 		KVS_VECTOR_LOG_MODULE,
-		"vector module initialized provider=%s dimension=%zu capacity=%zu index_type=%s hnsw_m=%zu ef_construction=%zu ef_search=%zu",
+		"vector module initialized provider=%s dimension=%zu capacity=%zu index_type=%s metric=%s hnsw_m=%zu ef_construction=%zu ef_search=%zu",
 		kvs_vector_embedding_provider_name(),
 		g_vector_state.flat_index.dimension,
 		g_vector_state.store.capacity,
 		g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat",
+		kvs_vector_metric_name(g_vector_state.metric_type),
 		g_vector_state.ann_index.m,
 		g_vector_state.ann_index.ef_construction,
 		g_vector_state.ann_index.ef_search
@@ -732,8 +1065,7 @@ int kvs_vector_set(const char* question, size_t question_len,
 	}
 
 	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
-		ret = kvs_vector_ann_index_add(
-			&g_vector_state.ann_index,
+		ret = kvs_vector_index_add_current(
 			record_index,
 			free_slot->embedding,
 			free_slot->embedding_dim
@@ -741,7 +1073,7 @@ int kvs_vector_set(const char* question, size_t question_len,
 		if (ret != KVS_VECTOR_OK) {
 			KVS_LOG_ERROR(
 				KVS_VECTOR_LOG_MODULE,
-				"vector set failed while adding ann index record_index=%zu embedding_dim=%d ret=%d",
+				"vector set failed while adding current index record_index=%zu embedding_dim=%d ret=%d",
 				record_index,
 				free_slot->embedding_dim,
 				ret
@@ -1009,8 +1341,7 @@ int kvs_vector_set_batch_internal(
 		}
 
 		if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
-			ret = kvs_vector_ann_index_add(
-				&g_vector_state.ann_index,
+			ret = kvs_vector_index_add_current(
 				record_index,
 				free_slot->embedding,
 				free_slot->embedding_dim
@@ -1264,8 +1595,7 @@ int kvs_vector_set_batch_with_embeddings_internal(
 		}
 
 		if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
-			ret = kvs_vector_ann_index_add(
-				&g_vector_state.ann_index,
+			ret = kvs_vector_index_add_current(
 				record_index,
 				free_slot->embedding,
 				free_slot->embedding_dim
@@ -1437,17 +1767,10 @@ int kvs_vector_search(
 	size_t results_capacity,
 	size_t *results_count
 ) {
-	kvs_vector_flat_index_t *index;
-	kvs_vector_topk_heap_t heap;
 	float *query_embedding = NULL;
 	int query_dim = 0;
-	size_t i;
-	size_t limit;
 	int ret;
 	float effective_threshold;
-	int heap_initialized = 0;
-
-	memset(&heap, 0, sizeof(heap));
 
 	if (results && results_capacity > 0) {
 		kvs_vector_search_results_reset(results, results_capacity);
@@ -1475,11 +1798,6 @@ int kvs_vector_search(
 		topk = 1;
 	}
 
-	limit = (size_t)topk;
-	if (limit > results_capacity) {
-		limit = results_capacity;
-	}
-
 	effective_threshold = threshold;
 	if (effective_threshold <= 0.0f) {
 		effective_threshold = -1.0f;
@@ -1502,122 +1820,22 @@ int kvs_vector_search(
 		return ret;
 	}
 
-	/*
-	 * 正式 HNSW 路径。
-	 *
-	 * 如果当前配置为 hnsw，直接走多层 HNSW ANN。
-	 * threshold <= 0 表示不过滤。
-	 */
-	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
-		ret = kvs_vector_ann_index_search(
-			&g_vector_state.ann_index,
-			query_embedding,
-			query_dim,
-			scope,
-			scope_len,
-			topk,
-			effective_threshold,
-			results,
-			results_capacity,
-			results_count
-		);
-
-		kvs_free(query_embedding);
-		return ret;
-	}
-
-	/*
-	 * flat 精确路径。
-	 */
-	index = &g_vector_state.flat_index;
-
-	if (!index->vectors || !index->record_indices ||
-	    index->size == 0 || index->dimension == 0) {
-		kvs_free(query_embedding);
-		return KVS_VECTOR_OK;
-	}
-
-	if ((size_t)query_dim != index->dimension) {
-		KVS_LOG_ERROR(
-			KVS_VECTOR_LOG_MODULE,
-			"vector search dimension mismatch query_dim=%d index_dimension=%zu",
-			query_dim,
-			index->dimension
-		);
-		kvs_free(query_embedding);
-		return KVS_VECTOR_ERR_INVALID_ARG;
-	}
-
-	ret = kvs_vector_topk_heap_init(&heap, limit);
-	if (ret != KVS_VECTOR_OK) {
-		kvs_free(query_embedding);
-		return ret;
-	}
-	heap_initialized = 1;
-
-	for (i = 0; i < index->size; ++i) {
-		size_t record_index = index->record_indices[i];
-		float *indexed_vector;
-		kvs_vector_record_t *record;
-		float score;
-
-		if (record_index >= g_vector_state.store.capacity) {
-			continue;
-		}
-
-		record = &g_vector_state.store.records[record_index];
-
-		/*
-		 * 防止 free list 复用槽位后，旧 flat index entry 误命中新 record。
-		 */
-		if (index->record_ids && index->record_ids[i] != record->id) {
-			continue;
-		}
-
-		if (!kvs_vector_record_scope_match(record, scope, scope_len)) {
-			continue;
-		}
-
-		indexed_vector = index->vectors + (i * index->dimension);
-
-		score = kvs_vector_dot_product(
-			query_embedding,
-			indexed_vector,
-			index->dimension
-		);
-
-		if (score < effective_threshold) {
-			continue;
-		}
-
-		ret = kvs_vector_topk_heap_push(
-			&heap,
-			record_index,
-			score
-		);
-		if (ret != KVS_VECTOR_OK) {
-			kvs_vector_topk_heap_destroy(&heap);
-			kvs_free(query_embedding);
-			return ret;
-		}
-	}
-
-	ret = kvs_vector_topk_heap_export_desc(
-		&heap,
+	ret = kvs_vector_index_search_current(
+		query_embedding,
+		query_dim,
+		scope,
+		scope_len,
+		topk,
+		effective_threshold,
 		results,
 		results_capacity,
-		results_count,
-		&g_vector_state.store
+		results_count
 	);
 
-	if (heap_initialized) {
-		kvs_vector_topk_heap_destroy(&heap);
-	}
-
 	kvs_free(query_embedding);
-
 	return ret;
 }
+
 
 /*
  * 批量检索接口。
@@ -1706,35 +1924,27 @@ int kvs_vector_search_batch(
 		return KVS_VECTOR_ERR;
 	}
 
-	for (i = 0; i < query_count; ++i) {
-		const float *query_embedding;
-		kvs_vector_search_result_t *query_results;
-
-		query_embedding = batch_embeddings + (i * (size_t)embedding_dim);
-		query_results = results + (i * results_capacity_per_query);
-
-		ret = kvs_vector_search_with_embedding_internal(
-			query_embedding,
-			embedding_dim,
-			scope,
-			scope_len,
-			topk,
-			threshold,
-			query_results,
-			results_capacity_per_query,
-			&results_counts[i]
+	ret = kvs_vector_index_search_batch_current(
+		batch_embeddings,
+		query_count,
+		embedding_dim,
+		scope,
+		scope_len,
+		topk,
+		threshold,
+		results,
+		results_capacity_per_query,
+		results_counts
+	);
+	if (ret != KVS_VECTOR_OK) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"vector batch search failed count=%zu ret=%d",
+			query_count,
+			ret
 		);
-		if (ret != KVS_VECTOR_OK) {
-			KVS_LOG_ERROR(
-				KVS_VECTOR_LOG_MODULE,
-				"vector batch search failed index=%zu count=%zu ret=%d",
-				i,
-				query_count,
-				ret
-			);
-			kvs_free(batch_embeddings);
-			return ret;
-		}
+		kvs_free(batch_embeddings);
+		return ret;
 	}
 
 	kvs_free(batch_embeddings);
@@ -1811,99 +2021,17 @@ int kvs_vector_search_with_embedding_internal(
 		effective_threshold = -1.0f;
 	}
 
-	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
-		return kvs_vector_ann_index_search(
-			&g_vector_state.ann_index,
-			query_embedding,
-			query_dim,
-			scope,
-			scope_len,
-			topk,
-			threshold,
-			results,
-			results_capacity,
-			results_count
-		);
-	}
-
-	index = &g_vector_state.flat_index;
-
-	if (!index->vectors ||
-	    !index->record_indices ||
-	    index->size == 0 ||
-	    index->dimension == 0) {
-		return KVS_VECTOR_OK;
-	}
-
-	if ((size_t)query_dim != index->dimension) {
-		return KVS_VECTOR_ERR_INVALID_ARG;
-	}
-
-	ret = kvs_vector_topk_heap_init(&heap, limit);
-	if (ret != KVS_VECTOR_OK) {
-		return ret;
-	}
-	heap_initialized = 1;
-
-	for (i = 0; i < index->size; ++i) {
-		size_t record_index = index->record_indices[i];
-		float *indexed_vector;
-		kvs_vector_record_t *record;
-		float score;
-
-		if (record_index >= g_vector_state.store.capacity) {
-			continue;
-		}
-
-		record = &g_vector_state.store.records[record_index];
-
-		/*
-		 * 防止 VDEL 后 flat_index 里存在 stale entry。
-		 */
-		if (index->record_ids && index->record_ids[i] != record->id) {
-			continue;
-		}
-
-		if (!kvs_vector_record_scope_match(record, scope, scope_len)) {
-			continue;
-		}
-
-		indexed_vector = index->vectors + (i * index->dimension);
-
-		score = kvs_vector_dot_product(
-			query_embedding,
-			indexed_vector,
-			index->dimension
-		);
-
-		if (score < effective_threshold) {
-			continue;
-		}
-
-		ret = kvs_vector_topk_heap_push(
-			&heap,
-			record_index,
-			score
-		);
-		if (ret != KVS_VECTOR_OK) {
-			kvs_vector_topk_heap_destroy(&heap);
-			return ret;
-		}
-	}
-
-	ret = kvs_vector_topk_heap_export_desc(
-		&heap,
+	return kvs_vector_index_search_current(
+		query_embedding,
+		query_dim,
+		scope,
+		scope_len,
+		topk,
+		effective_threshold,
 		results,
 		results_capacity,
-		results_count,
-		&g_vector_state.store
+		results_count
 	);
-
-	if (heap_initialized) {
-		kvs_vector_topk_heap_destroy(&heap);
-	}
-
-	return ret;
 }
 
 //删除接口
@@ -2033,11 +2161,21 @@ int kvs_vector_index_rebuild(void) {
 		return ret;
 	}
 
+	ret = kvs_vector_index_bind_current();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
 	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
-		ret = kvs_vector_rebuild_ann_index_from_store();
+		ret = kvs_vector_index_rebuild_current();
 		if (ret != KVS_VECTOR_OK) {
 			return ret;
 		}
+	}
+
+	ret = kvs_vector_index_bind_current();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
 	}
 
 	KVS_LOG_INFO(

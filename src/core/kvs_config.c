@@ -56,9 +56,11 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", "hash");
 
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
+    snprintf(cfg->vector_metric, sizeof(cfg->vector_metric), "%s", "ip");
     cfg->vector_hnsw_m = 32;
     cfg->vector_hnsw_ef_construction = 256;
     cfg->vector_hnsw_ef_search = 256;
+    cfg->vector_scope_overfetch_factor = 4;
 }
 
 static int parse_bool(const char *v, int def) {
@@ -74,6 +76,26 @@ static kvs_aof_fsync_mode_t parse_aof_mode(const char *v, kvs_aof_fsync_mode_t d
     if (strcasecmp(v, "always") == 0) return KVS_AOF_FSYNC_ALWAYS;
     if (strcasecmp(v, "everysec") == 0) return KVS_AOF_FSYNC_EVERYSEC;
     return def;
+}
+
+static int parse_int_range(const char *v, int def, int min_value, int max_value) {
+    int parsed;
+
+    if (!v) {
+        return def;
+    }
+
+    parsed = atoi(v);
+
+    if (parsed < min_value) {
+        return min_value;
+    }
+
+    if (parsed > max_value) {
+        return max_value;
+    }
+
+    return parsed;
 }
 
 static kvs_mem_backend_t parse_mem_backend(const char *v, kvs_mem_backend_t def) {
@@ -159,6 +181,12 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             if (strcasecmp(val, "flat") == 0 || strcasecmp(val, "hnsw") == 0) {
                 snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", val);
             }
+        } else if (strcasecmp(key, "vector_metric") == 0) {
+            if (strcasecmp(val, "ip") == 0 ||
+                strcasecmp(val, "l2") == 0 ||
+                strcasecmp(val, "cosine") == 0) {
+                snprintf(cfg->vector_metric, sizeof(cfg->vector_metric), "%s", val);
+            }
         } else if (strcasecmp(key, "vector_hnsw_m") == 0) {
             int v = atoi(val);
             if (v >= 4) {
@@ -174,6 +202,13 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             if (v > 0) {
                 cfg->vector_hnsw_ef_search = v;
             }
+        } else if (strcasecmp(key, "vector_scope_overfetch_factor") == 0) {
+            cfg->vector_scope_overfetch_factor = parse_int_range(
+                val,
+                cfg->vector_scope_overfetch_factor,
+                1,
+                32
+            );
         }
     }
 
@@ -231,6 +266,15 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
             if (i + 1 < argc) {
                 snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", argv[++i]);
             }
+        } else if (strcmp(argv[i], "--vector_metric") == 0) {
+            if (i + 1 < argc) {
+                const char *v = argv[++i];
+                if (strcasecmp(v, "ip") == 0 ||
+                    strcasecmp(v, "l2") == 0 ||
+                    strcasecmp(v, "cosine") == 0) {
+                    snprintf(cfg->vector_metric, sizeof(cfg->vector_metric), "%s", v);
+                }
+            }
         } else if (strcmp(argv[i], "--vector_index_type") == 0) {
             if (i + 1 < argc) {
                 const char *v = argv[++i];
@@ -258,6 +302,15 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                 if (v > 0) {
                     cfg->vector_hnsw_ef_search = v;
                 }
+            }
+        } else if (strcmp(argv[i], "--vector_scope_overfetch_factor") == 0) {
+            if (i + 1 < argc) {
+                cfg->vector_scope_overfetch_factor = parse_int_range(
+                    argv[++i],
+                    cfg->vector_scope_overfetch_factor,
+                    1,
+                    32
+                );
             }
         }
     }

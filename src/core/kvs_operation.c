@@ -1816,8 +1816,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
         );
     }
 
-    off += resp_generate_array_start(response + off, 16);
-
+    off += resp_generate_array_start(response + off, 17);
     n = snprintf(item, sizeof(item), "total_records:%zu", info->total_records);
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
@@ -1867,6 +1866,14 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
         n = snprintf(item, sizeof(item), "index_type:%s",
         info->index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "metric:%s",
+        info->metric_type == KVS_VECTOR_METRIC_L2 ? "l2" :
+        (info->metric_type == KVS_VECTOR_METRIC_COSINE ? "cosine" : "ip"));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
