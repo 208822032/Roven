@@ -378,8 +378,15 @@ static void vector_resp_testcase(int fd) {
     testcase_contains(
         fd,
         "*1\r\n$5\r\nVINFO\r\n",
-        "dimension:384",
-        "VINFO-vector-dimension-384"
+        "dimension:64",
+        "VINFO-vector-dimension-64"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "metric:ip",
+        "VINFO-metric-ip"
     );
 
     testcase_contains(
@@ -636,7 +643,7 @@ static void vector_resp_testcase(int fd) {
     testcase_contains(
         fd,
         "*1\r\n$5\r\nVINFO\r\n",
-        "dimension:384",
+        "dimension:64",
         "VINFO-after-rebuild-before-search-dimension-384"
     );
 
@@ -657,7 +664,7 @@ static void vector_resp_testcase(int fd) {
     testcase_contains(
         fd,
         "*1\r\n$5\r\nVINFO\r\n",
-        "dimension:384",
+        "dimension:64",
         "VINFO-after-vset-dimension-384"
     );
 

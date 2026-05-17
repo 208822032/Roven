@@ -1,6 +1,7 @@
 
 
 //处理AOF重写功能
+#define KVS_VECTOR_INTERNAL
 #include "kvs_api.h"
 #include "kvs_aof_internal.h"
 #include "kvs_log.h"
@@ -191,6 +192,106 @@ static int write_ttl_command_if_needed(int fd, const char *key, int64_t expire_a
     char expire_buf[32];
     snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
     return write_command_parts(fd, "PEXPIREAT", key, expire_buf);
+}
+
+static int write_bulk_len(int fd, const char *data, size_t len) {
+    char header[64];
+    int n;
+
+    n = snprintf(header, sizeof(header), "$%zu\r\n", len);
+    if (n < 0 || (size_t)n >= sizeof(header)) return -1;
+    if (safe_write(fd, header, (size_t)n) == -1) return -1;
+
+    if (len > 0 && data) {
+        if (safe_write(fd, data, len) == -1) return -1;
+    }
+
+    if (safe_write(fd, "\r\n", 2) == -1) return -1;
+    return 0;
+}
+
+static int write_vbatchset_command(int fd, kvs_vector_record_t **records, size_t count) {
+    char header[64];
+    char count_buf[32];
+    size_t argc;
+    size_t i;
+    int n;
+    size_t count_len;
+
+    argc = 2 + count * 3;
+
+    n = snprintf(header, sizeof(header), "*%zu\r\n", argc);
+    if (n < 0 || (size_t)n >= sizeof(header)) return -1;
+    if (safe_write(fd, header, (size_t)n) == -1) return -1;
+
+    if (safe_write(fd, "$9\r\nVBATCHSET\r\n", 16) == -1) return -1;
+
+    count_len = (size_t)snprintf(count_buf, sizeof(count_buf), "%zu", count);
+    if (write_bulk_len(fd, count_buf, count_len) == -1) return -1;
+
+    for (i = 0; i < count; ++i) {
+        kvs_vector_record_t *rec = records[i];
+
+        if (write_bulk_len(fd, rec->question, rec->question_len) == -1) return -1;
+        if (write_bulk_len(fd, rec->answer, rec->answer_len) == -1) return -1;
+        if (write_bulk_len(fd, rec->scope, rec->scope_len) == -1) return -1;
+    }
+
+    return 0;
+}
+
+static int write_vector_data_to_tempfile(int fd) {
+    kvs_vector_store_t *store;
+    kvs_vector_record_t **batch;
+    size_t batch_capacity = 1000;
+    size_t batch_count = 0;
+    size_t total_commands = 0;
+    size_t i;
+
+    if (!g_vector_state.initialized) {
+        return 0;
+    }
+
+    store = &g_vector_state.store;
+
+    batch = (kvs_vector_record_t **)kvs_malloc(batch_capacity * sizeof(kvs_vector_record_t *));
+    if (!batch) {
+        KVS_LOG_ERROR("aof", "failed to allocate vector rewrite batch buffer");
+        return -1;
+    }
+
+    for (i = 0; i < store->capacity; ++i) {
+        kvs_vector_record_t *rec = &store->records[i];
+
+        if (rec->state != KVS_VECTOR_RECORD_ACTIVE || rec->deleted) {
+            continue;
+        }
+
+        batch[batch_count++] = rec;
+
+        if (batch_count >= batch_capacity) {
+            if (write_vbatchset_command(fd, batch, batch_count) == -1) {
+                kvs_free(batch);
+                return -1;
+            }
+            total_commands++;
+            batch_count = 0;
+        }
+    }
+
+    if (batch_count > 0) {
+        if (write_vbatchset_command(fd, batch, batch_count) == -1) {
+            kvs_free(batch);
+            return -1;
+        }
+        total_commands++;
+    }
+
+    kvs_free(batch);
+
+    KVS_LOG_INFO("aof", "AOF rewrite: wrote %zu VBATCHSET commands", total_commands);
+
+    return (int)total_commands;
 }
 
 typedef struct {
@@ -426,13 +527,21 @@ static int write_data_to_tempfile(int fd) {
 #endif
 
     //printf("Child process: Completed writing %d total commands from data snapshot\n", total_commands);
-    
+
+    {
+        int vector_commands = write_vector_data_to_tempfile(fd);
+        if (vector_commands < 0) {
+            return -1;
+        }
+        total_commands += vector_commands;
+    }
+
     // 最终同步到磁盘
     // if (fsync(fd) == -1) {
     //     perror("Final fsync failed in child process");
     //     return -1;
     // }
-    
+
     return total_commands;
 }
 

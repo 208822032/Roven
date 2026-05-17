@@ -565,7 +565,7 @@ const command_info command_table[] = {
     {"VGET",    handle_vget_command,    -1, 0, -1, KVS_CMD_LOCK_READ},
     {"VSEARCH", handle_vsearch_command, -1, 0, -1, KVS_CMD_LOCK_READ},
     {"VDEL",    handle_vdel_command,    -1, 1, -1, KVS_CMD_LOCK_WRITE},
-    {"VINDEX",  handle_vindex_command,  -1, 1, -1, KVS_CMD_LOCK_WRITE},
+    {"VINDEX",  handle_vindex_command,  -1, 0, -1, KVS_CMD_LOCK_WRITE},
     {"VINFO",   handle_vinfo_command,   -1, 0, -1, KVS_CMD_LOCK_READ},
 
     {NULL, NULL, 0, 0, -1, KVS_CMD_LOCK_NONE} // 结束标记

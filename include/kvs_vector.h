@@ -1055,4 +1055,28 @@ int kvs_vector_record_set_fields_with_embedding(
 	const float *embedding,
 	int embedding_dim
 );
+
+int kvs_vector_restore_record_with_embedding(
+	size_t record_index,
+	uint64_t record_id,
+	int state,
+	int deleted,
+	const char *question,
+	size_t question_len,
+	const char *answer,
+	size_t answer_len,
+	const char *scope,
+	size_t scope_len,
+	const char *normalized_question,
+	size_t normalized_question_len,
+	const float *embedding,
+	int embedding_dim,
+	int64_t created_at_ms,
+	int64_t updated_at_ms
+);
+
+int kvs_vector_reset_for_load(void);
+
+int kvs_vector_rebuild_after_load(void);
+
 #endif /* KVS_VECTOR_INTERNAL */

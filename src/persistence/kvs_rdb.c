@@ -1,3 +1,4 @@
+#define KVS_VECTOR_INTERNAL
 #include "kvstore.h"
 #include <stdio.h>
 #include <string.h>
@@ -5,6 +6,15 @@
 #include <stdint.h>
 #include "kvs_memory.h"
 #include "kvs_log.h"
+
+#define RDB_TYPE_ARRAY     0x01
+#define RDB_TYPE_RBTREE    0x02
+#define RDB_TYPE_HASH      0x03
+#define RDB_TYPE_SKIPTABLE 0x04
+#define RDB_TYPE_VECTOR    0x05
+#define RDB_TYPE_EOF       0xFF
+
+#define RDB_VECTOR_SECTION_VERSION 1
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -48,6 +58,307 @@ static int rdb_write_int64(FILE *fp, int64_t value) {
 
 static int rdb_read_int64(FILE *fp, int64_t *value) {
     return rdb_read_exact(fp, value, sizeof(*value));
+}
+
+static int rdb_write_u8(FILE *fp, uint8_t value) {
+    return rdb_write_exact(fp, &value, sizeof(value));
+}
+
+static int rdb_read_u8(FILE *fp, uint8_t *value) {
+    return rdb_read_exact(fp, value, sizeof(*value));
+}
+
+static int rdb_write_u32(FILE *fp, uint32_t value) {
+    return rdb_write_exact(fp, &value, sizeof(value));
+}
+
+static int rdb_read_u32(FILE *fp, uint32_t *value) {
+    return rdb_read_exact(fp, value, sizeof(*value));
+}
+
+static int rdb_write_u64(FILE *fp, uint64_t value) {
+    return rdb_write_exact(fp, &value, sizeof(value));
+}
+
+static int rdb_read_u64(FILE *fp, uint64_t *value) {
+    return rdb_read_exact(fp, value, sizeof(*value));
+}
+
+static int rdb_write_i32(FILE *fp, int32_t value) {
+    return rdb_write_exact(fp, &value, sizeof(value));
+}
+
+static int rdb_read_i32(FILE *fp, int32_t *value) {
+    return rdb_read_exact(fp, value, sizeof(*value));
+}
+
+static int rdb_write_i64(FILE *fp, int64_t value) {
+    return rdb_write_exact(fp, &value, sizeof(value));
+}
+
+static int rdb_read_i64(FILE *fp, int64_t *value) {
+    return rdb_read_exact(fp, value, sizeof(*value));
+}
+
+static int rdb_write_blob(FILE *fp, const void *data, uint32_t len) {
+    if (rdb_write_u32(fp, len) != RDB_OK) return RDB_ERR;
+    if (len > 0 && data) {
+        return rdb_write_exact(fp, data, len);
+    }
+    return RDB_OK;
+}
+
+static int rdb_read_blob(FILE *fp, char **out, uint32_t *out_len) {
+    uint32_t len;
+    char *buf = NULL;
+
+    if (rdb_read_u32(fp, &len) != RDB_OK) return RDB_ERR;
+
+    if (len > 0) {
+        buf = kvs_malloc((size_t)len + 1);
+        if (!buf) return RDB_ERR;
+        if (rdb_read_exact(fp, buf, len) != RDB_OK) {
+            kvs_free(buf);
+            return RDB_ERR;
+        }
+        buf[len] = '\0';
+    }
+
+    *out = buf;
+    *out_len = len;
+    return RDB_OK;
+}
+
+static int rdb_save_vector_section(FILE *fp) {
+    kvs_vector_store_t *store = &g_vector_state.store;
+    uint8_t type = RDB_TYPE_VECTOR;
+    uint8_t section_version = RDB_VECTOR_SECTION_VERSION;
+    uint64_t record_count = 0;
+    long count_pos;
+    size_t i;
+
+    if (!g_vector_state.initialized) {
+        return RDB_OK;
+    }
+
+    if (rdb_write_u8(fp, type) != RDB_OK) return RDB_ERR;
+    if (rdb_write_u8(fp, section_version) != RDB_OK) return RDB_ERR;
+
+    if (rdb_write_i32(fp, (int32_t)g_vector_state.metric_type) != RDB_OK) return RDB_ERR;
+    if (rdb_write_i32(fp, (int32_t)g_vector_state.index_type) != RDB_OK) return RDB_ERR;
+    if (rdb_write_u64(fp, store->next_id) != RDB_OK) return RDB_ERR;
+
+    count_pos = ftell(fp);
+    if (rdb_write_u64(fp, 0) != RDB_OK) return RDB_ERR;
+
+    for (i = 0; i < store->capacity; ++i) {
+        kvs_vector_record_t *record = &store->records[i];
+
+        if (record->state == KVS_VECTOR_RECORD_EMPTY) {
+            continue;
+        }
+
+        if (rdb_write_u64(fp, (uint64_t)i) != RDB_OK) return RDB_ERR;
+        if (rdb_write_u8(fp, (uint8_t)record->state) != RDB_OK) return RDB_ERR;
+        if (rdb_write_u8(fp, (uint8_t)record->deleted) != RDB_OK) return RDB_ERR;
+        if (rdb_write_u64(fp, record->id) != RDB_OK) return RDB_ERR;
+
+        if (rdb_write_blob(fp, record->question, (uint32_t)record->question_len) != RDB_OK) return RDB_ERR;
+        if (rdb_write_blob(fp, record->answer, (uint32_t)record->answer_len) != RDB_OK) return RDB_ERR;
+        if (rdb_write_blob(fp, record->scope, (uint32_t)record->scope_len) != RDB_OK) return RDB_ERR;
+        if (rdb_write_blob(fp, record->normalized_question, (uint32_t)record->normalized_question_len) != RDB_OK) return RDB_ERR;
+
+        if (rdb_write_i32(fp, (int32_t)record->embedding_dim) != RDB_OK) return RDB_ERR;
+        if (record->embedding && record->embedding_dim > 0) {
+            size_t embedding_bytes = (size_t)record->embedding_dim * sizeof(float);
+            if (rdb_write_exact(fp, record->embedding, embedding_bytes) != RDB_OK) return RDB_ERR;
+        }
+
+        if (rdb_write_i64(fp, record->created_at_ms) != RDB_OK) return RDB_ERR;
+        if (rdb_write_i64(fp, record->updated_at_ms) != RDB_OK) return RDB_ERR;
+
+        record_count++;
+    }
+
+    {
+        long current_pos = ftell(fp);
+        fseek(fp, count_pos, SEEK_SET);
+        rdb_write_u64(fp, record_count);
+        fseek(fp, current_pos, SEEK_SET);
+    }
+
+    KVS_LOG_INFO("persistence", "RDB vector section saved: records=%llu active=%zu deleted=%zu",
+                 (unsigned long long)record_count,
+                 store->active_records,
+                 store->deleted_records);
+
+    return RDB_OK;
+}
+
+static int rdb_load_vector_section(FILE *fp) {
+    uint8_t section_version;
+    int32_t metric_type_from_rdb;
+    int32_t index_type_from_rdb;
+    uint64_t next_id;
+    uint64_t record_count;
+    uint64_t i;
+    char *question = NULL;
+    char *answer = NULL;
+    char *scope = NULL;
+    char *normalized_question = NULL;
+    float *embedding = NULL;
+    int ret;
+
+    if (rdb_read_u8(fp, &section_version) != RDB_OK) {
+        KVS_LOG_ERROR("persistence", "RDB vector load failed: unable to read section version");
+        return RDB_ERR;
+    }
+
+    if (section_version != RDB_VECTOR_SECTION_VERSION) {
+        KVS_LOG_ERROR("persistence", "RDB vector load failed: unsupported section version %u", section_version);
+        return RDB_ERR;
+    }
+
+    if (rdb_read_i32(fp, &metric_type_from_rdb) != RDB_OK) {
+        KVS_LOG_ERROR("persistence", "RDB vector load failed: unable to read metric_type");
+        return RDB_ERR;
+    }
+
+    if (rdb_read_i32(fp, &index_type_from_rdb) != RDB_OK) {
+        KVS_LOG_ERROR("persistence", "RDB vector load failed: unable to read index_type");
+        return RDB_ERR;
+    }
+
+    if (rdb_read_u64(fp, &next_id) != RDB_OK) {
+        KVS_LOG_ERROR("persistence", "RDB vector load failed: unable to read next_id");
+        return RDB_ERR;
+    }
+
+    if (rdb_read_u64(fp, &record_count) != RDB_OK) {
+        KVS_LOG_ERROR("persistence", "RDB vector load failed: unable to read record_count");
+        return RDB_ERR;
+    }
+
+    KVS_LOG_INFO("persistence", "RDB vector section: record_count=%llu next_id=%llu metric=%d index=%d",
+                 (unsigned long long)record_count,
+                 (unsigned long long)next_id,
+                 metric_type_from_rdb,
+                 index_type_from_rdb);
+
+    (void)metric_type_from_rdb;
+    (void)index_type_from_rdb;
+
+    ret = kvs_vector_reset_for_load();
+    if (ret != KVS_VECTOR_OK) {
+        KVS_LOG_ERROR("persistence", "RDB vector load failed: kvs_vector_reset_for_load ret=%d", ret);
+        return RDB_ERR;
+    }
+
+    for (i = 0; i < record_count; ++i) {
+        uint64_t record_index;
+        uint8_t state_u8;
+        uint8_t deleted_u8;
+        uint64_t record_id;
+        uint32_t question_len = 0;
+        uint32_t answer_len = 0;
+        uint32_t scope_len = 0;
+        uint32_t normalized_question_len = 0;
+        int32_t embedding_dim;
+        int64_t created_at_ms;
+        int64_t updated_at_ms;
+
+        question = NULL;
+        answer = NULL;
+        scope = NULL;
+        normalized_question = NULL;
+        embedding = NULL;
+
+        if (rdb_read_u64(fp, &record_index) != RDB_OK) goto load_error;
+        if (rdb_read_u8(fp, &state_u8) != RDB_OK) goto load_error;
+        if (rdb_read_u8(fp, &deleted_u8) != RDB_OK) goto load_error;
+        if (rdb_read_u64(fp, &record_id) != RDB_OK) goto load_error;
+
+        if (rdb_read_blob(fp, &question, &question_len) != RDB_OK) goto load_error;
+        if (rdb_read_blob(fp, &answer, &answer_len) != RDB_OK) goto load_error;
+        if (rdb_read_blob(fp, &scope, &scope_len) != RDB_OK) goto load_error;
+        if (rdb_read_blob(fp, &normalized_question, &normalized_question_len) != RDB_OK) goto load_error;
+
+        if (rdb_read_i32(fp, &embedding_dim) != RDB_OK) goto load_error;
+        if (embedding_dim > 0) {
+            size_t embedding_bytes = (size_t)embedding_dim * sizeof(float);
+            embedding = (float *)kvs_malloc(embedding_bytes);
+            if (!embedding) goto load_error;
+            if (rdb_read_exact(fp, embedding, embedding_bytes) != RDB_OK) {
+                kvs_free(embedding);
+                goto load_error;
+            }
+        }
+
+        if (rdb_read_i64(fp, &created_at_ms) != RDB_OK) {
+            if (embedding) kvs_free(embedding);
+            goto load_error;
+        }
+        if (rdb_read_i64(fp, &updated_at_ms) != RDB_OK) {
+            if (embedding) kvs_free(embedding);
+            goto load_error;
+        }
+
+        ret = kvs_vector_restore_record_with_embedding(
+            (size_t)record_index,
+            record_id,
+            (int)state_u8,
+            (int)deleted_u8,
+            question, (size_t)question_len,
+            answer, (size_t)answer_len,
+            scope, (size_t)scope_len,
+            normalized_question, (size_t)normalized_question_len,
+            embedding, (int)embedding_dim,
+            created_at_ms,
+            updated_at_ms
+        );
+
+        if (question) kvs_free(question);
+        if (answer) kvs_free(answer);
+        if (scope) kvs_free(scope);
+        if (normalized_question) kvs_free(normalized_question);
+        if (embedding) kvs_free(embedding);
+
+        if (ret != KVS_VECTOR_OK) {
+            KVS_LOG_ERROR("persistence", "RDB vector load failed: restore record %llu ret=%d",
+                         (unsigned long long)i, ret);
+            return RDB_ERR;
+        }
+    }
+
+    if (g_vector_state.store.next_id < next_id) {
+        g_vector_state.store.next_id = next_id;
+    }
+
+    /*
+     * metric_type/index_type are preserved from kvs_vector_init().
+     * RDB values are read for diagnostic compatibility only.
+     */
+
+    ret = kvs_vector_rebuild_after_load();
+    if (ret != KVS_VECTOR_OK) {
+        KVS_LOG_ERROR("persistence", "RDB vector load failed: rebuild_after_load ret=%d", ret);
+        return RDB_ERR;
+    }
+
+    KVS_LOG_INFO("persistence", "RDB vector section loaded: records=%llu active=%zu deleted=%zu",
+                 (unsigned long long)record_count,
+                 g_vector_state.store.active_records,
+                 g_vector_state.store.deleted_records);
+
+    return RDB_OK;
+
+load_error:
+    KVS_LOG_ERROR("persistence", "RDB vector load failed at record %llu", (unsigned long long)i);
+    if (question) kvs_free(question);
+    if (answer) kvs_free(answer);
+    if (scope) kvs_free(scope);
+    if (normalized_question) kvs_free(normalized_question);
+    return RDB_ERR;
 }
 
 static void rdb_apply_expire_array(const char *key, int64_t expire_at_ms) {
@@ -146,6 +457,8 @@ int kvs_rdb_save(const char *filename){
 #if ENABLE_SKIPTABLE
     rdb_save_skiptable(fp, now_ms);
 #endif
+
+    if (rdb_save_vector_section(fp) != RDB_OK) goto write_error;
 
     //写入结束标识
     {
@@ -301,6 +614,13 @@ int kvs_rdb_load(const char *filename){
                 }
                 break; 
            #endif
+
+           case 0x05:
+                if (rdb_load_vector_section(fp) != RDB_OK) {
+                    fclose(fp);
+                    return RDB_ERR;
+                }
+                break;
 
            default:
              KVS_LOG_ERROR("persistence", "Unknown RDB data type: %d", type);

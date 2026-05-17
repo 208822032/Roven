@@ -932,6 +932,197 @@ void kvs_vector_destroy(void) {
 	memset(&g_vector_state, 0, sizeof(g_vector_state));
 }
 
+int kvs_vector_reset_for_load(void) {
+	int ret;
+	size_t dimension = KVS_VECTOR_DEFAULT_DIMENSION;
+
+	if (!g_vector_state.initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	kvs_vector_ann_index_destroy(&g_vector_state.ann_index);
+	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
+	kvs_vector_id_map_destroy(&g_vector_state.id_map);
+	kvs_vector_store_destroy(&g_vector_state.store);
+
+	ret = kvs_vector_store_init(&g_vector_state.store);
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	ret = kvs_vector_store_reserve(&g_vector_state.store, KVS_VECTOR_INITIAL_RECORD_CAPACITY);
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	ret = kvs_vector_id_map_init(&g_vector_state.id_map);
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	ret = kvs_vector_id_map_reserve(&g_vector_state.id_map, KVS_VECTOR_INITIAL_ID_MAP_CAPACITY);
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	ret = kvs_vector_flat_index_init(&g_vector_state.flat_index, dimension);
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	ret = kvs_vector_ann_index_init(
+		&g_vector_state.ann_index,
+		dimension,
+		kvs_vector_hnsw_param_or_default(g_cfg.vector_hnsw_m, KVS_VECTOR_HNSW_M),
+		kvs_vector_hnsw_param_or_default(g_cfg.vector_hnsw_ef_construction, KVS_VECTOR_HNSW_EF_CONSTRUCTION),
+		kvs_vector_hnsw_param_or_default(g_cfg.vector_hnsw_ef_search, KVS_VECTOR_HNSW_EF_SEARCH)
+	);
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	return kvs_vector_index_bind_current();
+}
+
+int kvs_vector_restore_record_with_embedding(
+	size_t record_index,
+	uint64_t record_id,
+	int state,
+	int deleted,
+	const char *question,
+	size_t question_len,
+	const char *answer,
+	size_t answer_len,
+	const char *scope,
+	size_t scope_len,
+	const char *normalized_question,
+	size_t normalized_question_len,
+	const float *embedding,
+	int embedding_dim,
+	int64_t created_at_ms,
+	int64_t updated_at_ms
+) {
+	kvs_vector_store_t *store = &g_vector_state.store;
+	kvs_vector_record_t *record;
+	char *question_copy = NULL;
+	char *answer_copy = NULL;
+	char *scope_copy = NULL;
+	char *normalized_copy = NULL;
+	float *embedding_copy = NULL;
+	size_t copied_len = 0;
+	size_t embedding_bytes;
+	int ret;
+
+	if (!question || question_len == 0 || !answer) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	if (record_index + 1 > store->capacity) {
+		ret = kvs_vector_store_ensure_capacity(store, record_index + 1);
+		if (ret != KVS_VECTOR_OK) return ret;
+	}
+
+	record = &store->records[record_index];
+	kvs_vector_record_destroy(record);
+
+	question_copy = kvs_vector_dup_string(question, question_len, &copied_len);
+	if (!question_copy) return KVS_VECTOR_ERR;
+
+	answer_copy = kvs_vector_dup_string(answer, answer_len, &copied_len);
+	if (!answer_copy) {
+		kvs_free(question_copy);
+		return KVS_VECTOR_ERR;
+	}
+
+	if (normalized_question && normalized_question_len > 0) {
+		normalized_copy = kvs_vector_dup_string(normalized_question, normalized_question_len, &copied_len);
+	} else {
+		normalized_copy = kvs_vector_dup_string(question, question_len, &copied_len);
+	}
+	if (!normalized_copy) {
+		kvs_free(question_copy);
+		kvs_free(answer_copy);
+		return KVS_VECTOR_ERR;
+	}
+
+	if (scope && scope_len > 0) {
+		scope_copy = kvs_vector_dup_string(scope, scope_len, &copied_len);
+		if (!scope_copy) {
+			kvs_free(question_copy);
+			kvs_free(answer_copy);
+			kvs_free(normalized_copy);
+			return KVS_VECTOR_ERR;
+		}
+	}
+
+	if (embedding && embedding_dim > 0) {
+		embedding_bytes = (size_t)embedding_dim * sizeof(float);
+		embedding_copy = (float *)kvs_malloc(embedding_bytes);
+		if (!embedding_copy) {
+			kvs_free(question_copy);
+			kvs_free(answer_copy);
+			kvs_free(normalized_copy);
+			if (scope_copy) kvs_free(scope_copy);
+			return KVS_VECTOR_ERR;
+		}
+		memcpy(embedding_copy, embedding, embedding_bytes);
+	}
+
+	record->question = question_copy;
+	record->question_len = question_len;
+	record->answer = answer_copy;
+	record->answer_len = answer_len;
+	record->normalized_question = normalized_copy;
+	record->normalized_question_len = normalized_question_len > 0 ? normalized_question_len : question_len;
+	record->scope = scope_copy;
+	record->scope_len = (scope && scope_len > 0) ? scope_len : 0;
+	record->embedding = embedding_copy;
+	record->embedding_dim = embedding_dim;
+	record->question_hash = kvs_vector_hash_key(question, question_len);
+
+	record->id = record_id;
+	record->state = state;
+	record->deleted = deleted;
+	record->created_at_ms = created_at_ms;
+	record->updated_at_ms = updated_at_ms;
+
+	if (store->next_slot <= record_index) {
+		store->next_slot = record_index + 1;
+	}
+
+	if (store->next_id <= record_id) {
+		store->next_id = record_id + 1;
+	}
+
+	if (state == KVS_VECTOR_RECORD_ACTIVE && !deleted) {
+		store->active_records++;
+		kvs_vector_id_map_put(
+			&g_vector_state.id_map,
+			record->question,
+			record->question_len,
+			record->scope,
+			record->scope_len,
+			record_index
+		);
+	} else if (state == KVS_VECTOR_RECORD_DELETED || deleted) {
+		store->deleted_records++;
+		kvs_vector_store_free_list_push(store, record_index);
+	}
+
+	store->total_records = store->active_records + store->deleted_records;
+
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_rebuild_after_load(void) {
+	int ret;
+
+	if (!g_vector_state.initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	ret = kvs_vector_id_map_rebuild_from_store();
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	ret = kvs_vector_rebuild_flat_index_from_store();
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+		ret = kvs_vector_rebuild_ann_index_from_store();
+		if (ret != KVS_VECTOR_OK) return ret;
+	}
+
+	return kvs_vector_index_bind_current();
+}
+
 //写入接口
 int kvs_vector_set(const char* question, size_t question_len,
                     const char* answer, size_t answer_len,

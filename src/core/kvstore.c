@@ -1,3 +1,4 @@
+#define KVS_VECTOR_INTERNAL
 #include "kvstore.h"
 #include "distributed.h"
 #include "resp_protocol.h"
@@ -360,6 +361,10 @@ int main(int argc, char *argv[]) {
 			return 1;
 		}
 		aof_load(g_cfg.aof_filename);
+	}
+
+	if (kvs_vector_rebuild_after_load() != KVS_VECTOR_OK) {
+		KVS_LOG_ERROR("vector", "vector rebuild after load failed");
 	}
 
 	#if 1
