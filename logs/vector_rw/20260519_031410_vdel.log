@@ -1,0 +1,16 @@
+mode=throughput
+op=vdel
+requests=100000
+clients=100
+pipeline=16
+success=100000
+failed=0
+errors=0
+elapsed_ms=686
+qps=145781.10
+avg_ms=1.97
+p50_ms=1.92
+p95_ms=3.51
+p99_ms=4.57
+min_ms=0.02
+max_ms=6.81

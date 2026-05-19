@@ -61,6 +61,7 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     cfg->vector_hnsw_ef_construction = 256;
     cfg->vector_hnsw_ef_search = 256;
     cfg->vector_scope_overfetch_factor = 4;
+    snprintf(cfg->vector_distance_backend, sizeof(cfg->vector_distance_backend), "%s", "auto");
 }
 
 static int parse_bool(const char *v, int def) {
@@ -178,7 +179,10 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
         }else if (strcasecmp(key, "embedding_provider") == 0) {
             snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", val);
         } else if (strcasecmp(key, "vector_index_type") == 0) {
-            if (strcasecmp(val, "flat") == 0 || strcasecmp(val, "hnsw") == 0) {
+            if (strcasecmp(val, "flat") == 0 ||
+                strcasecmp(val, "hnsw") == 0 ||
+                strcasecmp(val, "ivf_flat") == 0 ||
+                strcasecmp(val, "sq8_flat") == 0) {
                 snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", val);
             }
         } else if (strcasecmp(key, "vector_metric") == 0) {
@@ -201,6 +205,12 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             int v = atoi(val);
             if (v > 0) {
                 cfg->vector_hnsw_ef_search = v;
+            }
+        } else if (strcasecmp(key, "vector_distance_backend") == 0) {
+            if (strcasecmp(val, "auto") == 0 ||
+                strcasecmp(val, "fallback") == 0 ||
+                strcasecmp(val, "avx2") == 0) {
+                snprintf(cfg->vector_distance_backend, sizeof(cfg->vector_distance_backend), "%s", val);
             }
         } else if (strcasecmp(key, "vector_scope_overfetch_factor") == 0) {
             cfg->vector_scope_overfetch_factor = parse_int_range(
@@ -278,7 +288,10 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
         } else if (strcmp(argv[i], "--vector_index_type") == 0) {
             if (i + 1 < argc) {
                 const char *v = argv[++i];
-                if (strcasecmp(v, "flat") == 0 || strcasecmp(v, "hnsw") == 0) {
+                if (strcasecmp(v, "flat") == 0 ||
+                    strcasecmp(v, "hnsw") == 0 ||
+                    strcasecmp(v, "ivf_flat") == 0 ||
+                    strcasecmp(v, "sq8_flat") == 0) {
                     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", v);
                 }
             }
@@ -303,6 +316,15 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                     cfg->vector_hnsw_ef_search = v;
                 }
             }
+        } else if (strcmp(argv[i], "--vector_distance_backend") == 0) {
+            if (i + 1 < argc) {
+                const char *v = argv[++i];
+                if (strcasecmp(v, "auto") == 0 ||
+                    strcasecmp(v, "fallback") == 0 ||
+                    strcasecmp(v, "avx2") == 0) {
+                    snprintf(cfg->vector_distance_backend, sizeof(cfg->vector_distance_backend), "%s", v);
+                }
+            }
         } else if (strcmp(argv[i], "--vector_scope_overfetch_factor") == 0) {
             if (i + 1 < argc) {
                 cfg->vector_scope_overfetch_factor = parse_int_range(
@@ -311,9 +333,10 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                     1,
                     32
                 );
-            }
-        }
+            }        }
     }
+
+
 
     // 根据最终 role/port 填充 sync_port（仅当未显式指定）
     if (cfg->sync_port == 0) {

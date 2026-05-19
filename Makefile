@@ -60,7 +60,9 @@ BASE_SRCS = \
 	$(SRC_UTILS)/tx_batcher.c \
 	$(SRC_VECTOR)/kvs_vector.c \
 	$(SRC_VECTOR)/kvs_vector_index.c \
-	$(SRC_VECTOR)/kvs_vector_embedding.c
+	$(SRC_VECTOR)/kvs_vector_embedding.c \
+	$(SRC_VECTOR)/kvs_vector_distance.c \
+	$(SRC_VECTOR)/kvs_vector_distance_avx2.c
 	
 
 SRCS = $(BASE_SRCS) \
@@ -68,6 +70,15 @@ SRCS = $(BASE_SRCS) \
 
 EXTRA_CFLAGS ?=
 OPT_CFLAGS ?= -O2
+
+# AVX2 flags: only applied to the dedicated AVX2 source file.
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+  AVX2_CFLAGS := -mavx2
+else
+  AVX2_CFLAGS :=
+endif
+
 CFLAGS = -I ./NtyCo/core/ -I ./include -I ./src -I $(JEMALLOC_INCLUDE) -DSYNC_MODE=$(SYNC_MODE) -g $(OPT_CFLAGS) $(EXTRA_CFLAGS)
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -lm $(EXTRA_LIBS)  $(JEMALLOC_LIB)
 
@@ -90,10 +101,7 @@ TEST_VECTOR := $(TEST_DIR)/vector_testcase
 TEST_TTL_LOOKUP_SPLIT := $(TEST_DIR)/ttl_lookup_split_bench
 TEST_SKIPTABLE_TARGETED := $(TEST_DIR)/skiptable_targeted_bench
 TEST_VECTOR_IMPORT_BENCH := $(TEST_DIR)/vector_import_bench
-TEST_VECTOR_STORE_BENCH := $(TEST_DIR)/vector_store_bench
-TEST_VECTOR_STORE_BENCH_O := $(TEST_DIR)/vector_store_bench.o
-TEST_VECTOR_SEARCH_BENCH := $(TEST_DIR)/vector_search_bench
-TEST_VECTOR_SEARCH_BENCH_O := $(TEST_DIR)/vector_search_bench.o
+TEST_VECTOR_BENCHMARK := $(TEST_DIR)/vector_benchmark
 
 TEST_BINARIES = \
 	$(TEST_CASE) \
@@ -108,8 +116,7 @@ TEST_BINARIES = \
 	$(TEST_AI_CHAT_SCHEMA) \
 	$(TEST_VECTOR) \
 	$(TEST_VECTOR_IMPORT_BENCH) \
-	$(TEST_VECTOR_STORE_BENCH) \
-	$(TEST_VECTOR_SEARCH_BENCH)
+	$(TEST_VECTOR_BENCHMARK)
 
 CLANG ?= clang
 # 尝试查找 bpftool，如果找不到则默认为 bpftool
@@ -214,44 +221,9 @@ $(TEST_VECTOR): $(TEST_DIR)/vector_testcase.c
 $(TEST_VECTOR_IMPORT_BENCH): $(TEST_DIR)/vector_import_bench.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-VECTOR_STORE_BENCH_OBJS := \
-	$(SRC_CORE)/kvs_config.o \
-	$(SRC_CORE)/kvs_globals.o \
-	$(SRC_STORAGE)/kvs_mempool.o \
-	$(SRC_STORAGE)/jemalloc_wrapper.o \
-	$(SRC_STORAGE)/kvs_array.o \
-	$(SRC_STORAGE)/kvs_rbtree.o \
-	$(SRC_STORAGE)/kvs_hash.o \
-	$(SRC_STORAGE)/kvs_skiptable.o \
-	$(SRC_UTILS)/msg_queue.o \
-	$(KVS_LOG_OBJS) \
-	$(SRC_VECTOR)/kvs_vector.o \
-	$(SRC_VECTOR)/kvs_vector_index.o \
-	$(SRC_VECTOR)/kvs_vector_embedding.o
+$(TEST_VECTOR_BENCHMARK): $(TEST_DIR)/vector_benchmark.c
+	$(CC) $(CFLAGS) -o $@ $< -lm
 
-$(TEST_VECTOR_STORE_BENCH_O): $(TEST_DIR)/vector_store_bench.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(TEST_VECTOR_STORE_BENCH): $(TEST_VECTOR_STORE_BENCH_O) $(VECTOR_STORE_BENCH_OBJS)
-	$(CC) -o $@ \
-		$(TEST_VECTOR_STORE_BENCH_O) \
-		$(VECTOR_STORE_BENCH_OBJS) \
-		$(LDFLAGS) \
-		-lpthread \
-		-ldl
-
-VECTOR_SEARCH_BENCH_OBJS := $(VECTOR_STORE_BENCH_OBJS)
-
-$(TEST_VECTOR_SEARCH_BENCH_O): $(TEST_DIR)/vector_search_bench.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(TEST_VECTOR_SEARCH_BENCH): $(TEST_VECTOR_SEARCH_BENCH_O) $(VECTOR_SEARCH_BENCH_OBJS)
-	$(CC) -o $@ \
-		$(TEST_VECTOR_SEARCH_BENCH_O) \
-		$(VECTOR_SEARCH_BENCH_OBJS) \
-		$(LDFLAGS) \
-		-lpthread \
-		-ldl
 
 # 生成 vmlinux.h
 $(VMLINUX_H):
@@ -284,6 +256,11 @@ $(EBPF_SYNCD_BIN): \
 	$(CC) -O2 -g $^ -o $@ \
 		-lbpf -lelf -lz -lpthread $(JEMALLOC_LIB) -ldl -I ./include
 
+# AVX2 distance kernel compiled with SIMD support.
+# Must precede the generic %.o pattern rule so it takes priority.
+src/vector/kvs_vector_distance_avx2.o: src/vector/kvs_vector_distance_avx2.c
+	$(CC) $(CFLAGS) $(AVX2_CFLAGS) -c $< -o $@
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -299,6 +276,4 @@ clean:
 	rm -f $(TEST_SKIPTABLE_TARGETED)
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H)
-	rm -f $(TEST_VECTOR_STORE_BENCH_O)
-	rm -f $(TEST_VECTOR_SEARCH_BENCH_O)
 .PHONY: all clean

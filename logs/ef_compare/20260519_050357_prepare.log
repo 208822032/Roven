@@ -1,0 +1,22 @@
+prepare: 1000/1000 success=1000 failed=0
+prepare_count=1000
+prepare_success=1000
+prepare_failed=0
+prepare_elapsed_ms=615
+prepare_qps=1626.23
+mode=latency
+op=vset
+requests=1
+clients=1
+pipeline=1
+success=1
+failed=0
+errors=0
+elapsed_ms=0
+qps=14285.71
+avg_ms=0.07
+p50_ms=0.07
+p95_ms=0.07
+p99_ms=0.07
+min_ms=0.07
+max_ms=0.07

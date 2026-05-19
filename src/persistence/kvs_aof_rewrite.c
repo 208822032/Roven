@@ -210,30 +210,21 @@ static int write_bulk_len(int fd, const char *data, size_t len) {
     return 0;
 }
 
-static int write_vbatchset_command(int fd, kvs_vector_record_t **records, size_t count) {
-    char header[64];
-    char count_buf[32];
-    size_t argc;
-    size_t i;
+static int write_vset_command(int fd, kvs_vector_record_t *rec) {
+    char header[32];
     int n;
-    size_t count_len;
-
-    argc = 2 + count * 3;
+    int scope_argc = (rec->scope_len > 0) ? 1 : 0;
+    size_t argc = (size_t)(2 + scope_argc);
 
     n = snprintf(header, sizeof(header), "*%zu\r\n", argc);
     if (n < 0 || (size_t)n >= sizeof(header)) return -1;
     if (safe_write(fd, header, (size_t)n) == -1) return -1;
 
-    if (safe_write(fd, "$9\r\nVBATCHSET\r\n", 16) == -1) return -1;
+    if (safe_write(fd, "$4\r\nVSET\r\n", 10) == -1) return -1;
+    if (write_bulk_len(fd, rec->question, rec->question_len) == -1) return -1;
+    if (write_bulk_len(fd, rec->answer, rec->answer_len) == -1) return -1;
 
-    count_len = (size_t)snprintf(count_buf, sizeof(count_buf), "%zu", count);
-    if (write_bulk_len(fd, count_buf, count_len) == -1) return -1;
-
-    for (i = 0; i < count; ++i) {
-        kvs_vector_record_t *rec = records[i];
-
-        if (write_bulk_len(fd, rec->question, rec->question_len) == -1) return -1;
-        if (write_bulk_len(fd, rec->answer, rec->answer_len) == -1) return -1;
+    if (rec->scope_len > 0) {
         if (write_bulk_len(fd, rec->scope, rec->scope_len) == -1) return -1;
     }
 
@@ -242,9 +233,6 @@ static int write_vbatchset_command(int fd, kvs_vector_record_t **records, size_t
 
 static int write_vector_data_to_tempfile(int fd) {
     kvs_vector_store_t *store;
-    kvs_vector_record_t **batch;
-    size_t batch_capacity = 1000;
-    size_t batch_count = 0;
     size_t total_commands = 0;
     size_t i;
 
@@ -254,12 +242,6 @@ static int write_vector_data_to_tempfile(int fd) {
 
     store = &g_vector_state.store;
 
-    batch = (kvs_vector_record_t **)kvs_malloc(batch_capacity * sizeof(kvs_vector_record_t *));
-    if (!batch) {
-        KVS_LOG_ERROR("aof", "failed to allocate vector rewrite batch buffer");
-        return -1;
-    }
-
     for (i = 0; i < store->capacity; ++i) {
         kvs_vector_record_t *rec = &store->records[i];
 
@@ -267,29 +249,13 @@ static int write_vector_data_to_tempfile(int fd) {
             continue;
         }
 
-        batch[batch_count++] = rec;
-
-        if (batch_count >= batch_capacity) {
-            if (write_vbatchset_command(fd, batch, batch_count) == -1) {
-                kvs_free(batch);
-                return -1;
-            }
-            total_commands++;
-            batch_count = 0;
-        }
-    }
-
-    if (batch_count > 0) {
-        if (write_vbatchset_command(fd, batch, batch_count) == -1) {
-            kvs_free(batch);
+        if (write_vset_command(fd, rec) == -1) {
             return -1;
         }
         total_commands++;
     }
 
-    kvs_free(batch);
-
-    KVS_LOG_INFO("aof", "AOF rewrite: wrote %zu VBATCHSET commands", total_commands);
+    KVS_LOG_INFO("aof", "AOF rewrite: wrote %zu VSET commands", total_commands);
 
     return (int)total_commands;
 }

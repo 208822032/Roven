@@ -1,0 +1,16 @@
+mode=throughput
+op=vget
+requests=100000
+clients=100
+pipeline=16
+success=100000
+failed=0
+errors=0
+elapsed_ms=607
+qps=164761.47
+avg_ms=1.82
+p50_ms=1.68
+p95_ms=3.68
+p99_ms=5.32
+min_ms=0.01
+max_ms=9.39

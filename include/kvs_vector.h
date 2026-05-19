@@ -33,6 +33,7 @@ typedef enum kvs_vector_status_e {
 typedef enum kvs_vector_index_type_e {
 	KVS_VECTOR_INDEX_TYPE_FLAT = 0,
 	KVS_VECTOR_INDEX_TYPE_HNSW = 1,
+	KVS_VECTOR_INDEX_TYPE_SQ8_FLAT = 3,
 } kvs_vector_index_type_t;
 
 /*
@@ -93,6 +94,7 @@ typedef struct kvs_vector_info_s {
 	/*
 	 * 0 = flat
 	 * 1 = hnsw
+	 * 3 = sq8_flat
 	 */
 	int index_type;
 	int metric_type;
@@ -105,6 +107,22 @@ typedef struct kvs_vector_info_s {
 	size_t ann_ef_search;
 	int ann_max_level;
 	int ann_ready;
+
+	/* SQ8 Flat fields */
+	size_t sq8_size;
+	size_t sq8_dimension;
+	size_t sq8_code_bytes;
+	size_t sq8_scale_bytes;
+	size_t sq8_memory_bytes;
+	int sq8_ready;
+	int sq8_needs_rebuild;
+
+	/* runtime stats */
+	int last_rebuild_status;
+	int64_t last_rebuild_ms;
+	size_t vector_memory_bytes;
+	size_t index_memory_bytes;
+	size_t total_vector_memory_bytes;
 } kvs_vector_info_t;
 
 /********** 向量模块公开接口 **********/
@@ -120,18 +138,6 @@ int kvs_vector_set(
 	size_t answer_len,
 	const char *scope,
 	size_t scope_len
-);
-
-int kvs_vector_set_batch_async(
-	const char **questions,
-	const size_t *question_lens,
-	const char **answers,
-	const size_t *answer_lens,
-	const char **scopes,
-	const size_t *scope_lens,
-	size_t count,
-	size_t *success_count,
-	size_t *failed_count
 );
 
 int kvs_vector_get(
@@ -152,29 +158,6 @@ int kvs_vector_search(
 	kvs_vector_search_result_t *results,
 	size_t results_capacity,
 	size_t *results_count
-);
-
-/*
- * 批量 VSEARCH 入口。
- *
- * 语义：
- * 1. 一次批量生成 query embeddings；
- * 2. 每个 query embedding 仍复用现有 HNSW / flat 搜索路径；
- * 3. results 按 query 顺序连续存放：
- *      results[i * results_capacity_per_query + j]
- * 4. results_counts[i] 表示第 i 个 query 实际返回数量。
- */
-int kvs_vector_search_batch(
-	const char **queries,
-	const size_t *query_lens,
-	size_t query_count,
-	const char *scope,
-	size_t scope_len,
-	int topk,
-	float threshold,
-	kvs_vector_search_result_t *results,
-	size_t results_capacity_per_query,
-	size_t *results_counts
 );
 
 int kvs_vector_del(
@@ -221,19 +204,6 @@ void kvs_vector_search_results_reset(
 #define KVS_VECTOR_INITIAL_RECORD_CAPACITY 16
 #define KVS_VECTOR_INITIAL_ID_MAP_CAPACITY 32
 #define KVS_VECTOR_DEFAULT_DIMENSION 64
-
-#define KVS_VECTOR_ASYNC_QUEUE_CAPACITY 1024
-#define KVS_VECTOR_ASYNC_WORKER_COUNT 1
-
-/*
- * 内部批量 embedding 默认批大小。
- *
- * 用于 VBATCHSET / VSEARCH BATCH 内部批量 embedding 生成。
- * 批量导入、AOF/RDB 批量恢复、模型重算都可以复用。
- */
-#define KVS_VECTOR_EMBEDDING_BATCH_SIZE 64
-
-#define KVS_VECTOR_EMBEDDING_MAX_INFLIGHT 4
 
 extern kvs_config_t g_cfg;
 
@@ -337,6 +307,22 @@ typedef struct kvs_vector_flat_index_s {
 	int needs_rebuild;
 } kvs_vector_flat_index_t;
 
+/********** SQ8 Flat index **********/
+
+typedef struct kvs_vector_sq8_flat_index_s {
+    int8_t *codes;
+    float *scales;
+    size_t *record_indices;
+    uint64_t *record_ids;
+
+    size_t size;
+    size_t capacity;
+    size_t dimension;
+
+    int ready;
+    int needs_rebuild;
+} kvs_vector_sq8_flat_index_t;
+
 /********** ANN / HNSW index **********/
 
 #define KVS_VECTOR_HNSW_M 32
@@ -399,13 +385,6 @@ typedef struct kvs_vector_index_search_params_s {
     float threshold;
 } kvs_vector_index_search_params_t;
 
-typedef struct kvs_vector_index_batch_params_s {
-    const char *scope;
-    size_t scope_len;
-    int topk;
-    float threshold;
-} kvs_vector_index_batch_params_t;
-
 struct kvs_vector_index_s;
 
 typedef struct kvs_vector_index_ops_s {
@@ -424,17 +403,6 @@ typedef struct kvs_vector_index_ops_s {
         kvs_vector_search_result_t *results,
         size_t results_capacity,
         size_t *results_count
-    );
-
-    int (*search_batch)(
-        struct kvs_vector_index_s *index,
-        const float *query_embeddings,
-        size_t query_count,
-        int query_dim,
-        const kvs_vector_index_batch_params_t *params,
-        kvs_vector_search_result_t *results,
-        size_t results_capacity_per_query,
-        size_t *results_counts
     );
 
     int (*rebuild)(struct kvs_vector_index_s *index);
@@ -477,53 +445,7 @@ typedef struct kvs_vector_query_ctx_s {
 	float threshold;
 } kvs_vector_query_ctx_t;
 
-typedef struct kvs_vector_batch_set_payload_s {
-	const char **questions;
-	const size_t *question_lens;
-
-	const char **answers;
-	const size_t *answer_lens;
-
-	const char **scopes;
-	const size_t *scope_lens;
-
-	size_t count;
-} kvs_vector_batch_set_payload_t;
-
 /********** global state **********/
-
-typedef enum kvs_vector_async_task_type_e {
-	KVS_VECTOR_ASYNC_TASK_NONE = 0,
-	KVS_VECTOR_ASYNC_TASK_STOP = 1,
-	KVS_VECTOR_ASYNC_TASK_BATCH_SET = 2,
-} kvs_vector_async_task_type_t;
-
-typedef struct kvs_vector_async_task_s {
-	kvs_vector_async_task_type_t type;
-
-	int result;
-	size_t success_count;
-	size_t failed_count;
-
-	pthread_mutex_t mu;
-	pthread_cond_t cond;
-	int done;
-
-	void *payload;
-} kvs_vector_async_task_t;
-
-typedef struct kvs_vector_async_dispatcher_s {
-	msg_queue_t queue;
-
-	pthread_t *workers;
-	size_t worker_count;
-
-	pthread_mutex_t mu;
-	pthread_cond_t cond;
-
-	int initialized;
-	int stopping;
-} kvs_vector_async_dispatcher_t;
 
 typedef struct kvs_vector_state_s {
 	int initialized;
@@ -535,12 +457,15 @@ typedef struct kvs_vector_state_s {
 
 	kvs_vector_flat_index_t flat_index;
 	kvs_vector_ann_index_t ann_index;
+	kvs_vector_sq8_flat_index_t sq8_flat_index;
 
 	kvs_vector_index_t current_index;
 
-	kvs_vector_embedding_provider_t embedding_provider;
+	int last_rebuild_status;
+	int64_t last_rebuild_ms;
+	int64_t last_rebuild_at_ms;
 
-	kvs_vector_async_dispatcher_t async_dispatcher;
+	kvs_vector_embedding_provider_t embedding_provider;
 } kvs_vector_state_t;
 
 extern kvs_vector_state_t g_vector_state;
@@ -559,38 +484,6 @@ int kvs_vector_embedding_generate(
 	const char *text,
 	size_t text_len,
 	float **out_embedding,
-	int *out_dim
-);
-
-/*
- * 批量生成 embedding。
- *
- * 返回连续 float 数组：
- *
- *   embeddings[i * out_dim + j]
- *
- * 调用方使用 kvs_free 释放 out_embeddings。
- */
-int kvs_vector_embedding_generate_batch(
-	const char **texts,
-	const size_t *text_lens,
-	size_t text_count,
-	float **out_embeddings,
-	int *out_dim
-);
-
-/*
- * Experimental API:
- * Retained for benchmarking only. Not used by default path.
- * Default path uses kvs_vector_embedding_generate_batch().
- */
-int kvs_vector_embedding_generate_batch_parallel(
-	const char **texts,
-	const size_t *text_lens,
-	size_t text_count,
-	size_t batch_size,
-	size_t max_inflight,
-	float **out_embeddings,
 	int *out_dim
 );
 
@@ -819,19 +712,6 @@ int kvs_vector_index_search_current(
 	size_t *results_count
 );
 
-int kvs_vector_index_search_batch_current(
-	const float *query_embeddings,
-	size_t query_count,
-	int query_dim,
-	const char *scope,
-	size_t scope_len,
-	int topk,
-	float threshold,
-	kvs_vector_search_result_t *results,
-	size_t results_capacity_per_query,
-	size_t *results_counts
-);
-
 int kvs_vector_index_rebuild_current(void);
 
 int kvs_vector_flat_index_search(
@@ -848,35 +728,7 @@ int kvs_vector_flat_index_search(
 	size_t *results_count
 );
 
-int kvs_vector_flat_index_search_batch(
-	kvs_vector_flat_index_t *index,
-	const float *query_embeddings,
-	size_t query_count,
-	int query_dim,
-	const char *scope,
-	size_t scope_len,
-	int topk,
-	float threshold,
-	kvs_vector_metric_type_t metric,
-	kvs_vector_search_result_t *results,
-	size_t results_capacity_per_query,
-	size_t *results_counts
-);
-
-int kvs_vector_ann_index_search_batch(
-	kvs_vector_ann_index_t *index,
-	const float *query_embeddings,
-	size_t query_count,
-	int query_dim,
-	const char *scope,
-	size_t scope_len,
-	int topk,
-	float threshold,
-	kvs_vector_metric_type_t metric,
-	kvs_vector_search_result_t *results,
-	size_t results_capacity_per_query,
-	size_t *results_counts
-);
+int kvs_vector_rebuild_ann_index_from_store(void);
 
 /********** ANN / HNSW-lite index **********/
 
@@ -920,6 +772,55 @@ int kvs_vector_ann_index_search(
 
 int kvs_vector_rebuild_ann_index_from_store(void);
 
+/********** Stage 8: memory estimation **********/
+
+size_t kvs_vector_estimate_record_memory_bytes(void);
+size_t kvs_vector_estimate_flat_memory_bytes(void);
+size_t kvs_vector_estimate_hnsw_memory_bytes(void);
+size_t kvs_vector_estimate_sq8_flat_memory_bytes(void);
+size_t kvs_vector_estimate_current_index_memory_bytes(void);
+
+/********** SQ8 Flat index **********/
+
+int kvs_vector_sq8_flat_index_init(
+    kvs_vector_sq8_flat_index_t *index,
+    size_t dimension
+);
+
+void kvs_vector_sq8_flat_index_destroy(
+    kvs_vector_sq8_flat_index_t *index
+);
+
+int kvs_vector_sq8_flat_index_add(
+    kvs_vector_sq8_flat_index_t *index,
+    size_t record_index,
+    const float *embedding,
+    int embedding_dim
+);
+
+int kvs_vector_sq8_flat_index_rebuild(
+    kvs_vector_sq8_flat_index_t *index
+);
+
+int kvs_vector_sq8_flat_index_search(
+    kvs_vector_sq8_flat_index_t *index,
+    const float *query_embedding,
+    int query_dim,
+    const char *scope,
+    size_t scope_len,
+    int topk,
+    float threshold,
+    kvs_vector_metric_type_t metric,
+    kvs_vector_search_result_t *results,
+    size_t results_capacity,
+    size_t *results_count
+);
+
+int kvs_vector_sq8_flat_index_info(
+    const kvs_vector_sq8_flat_index_t *index,
+    kvs_vector_info_t *info
+);
+
 int kvs_vector_set_index_type_internal(kvs_vector_index_type_t index_type);
 
 int kvs_vector_ann_index_set_params_internal(
@@ -951,97 +852,6 @@ int kvs_vector_topk_heap_export_desc(
 	size_t results_capacity,
 	size_t *results_count,
 	const kvs_vector_store_t *store
-);
-
-int kvs_vector_async_dispatcher_init(
-	kvs_vector_async_dispatcher_t *dispatcher,
-	size_t queue_capacity,
-	size_t worker_count
-);
-
-void kvs_vector_async_dispatcher_destroy(
-	kvs_vector_async_dispatcher_t *dispatcher
-);
-
-int kvs_vector_async_submit_and_wait(
-	kvs_vector_async_dispatcher_t *dispatcher,
-	kvs_vector_async_task_t *task
-);
-
-void kvs_vector_async_task_init(
-	kvs_vector_async_task_t *task,
-	kvs_vector_async_task_type_t type,
-	void *payload
-);
-
-void kvs_vector_async_task_destroy(
-	kvs_vector_async_task_t *task
-);
-
-
-
-int kvs_vector_set_batch_internal(
-	const char **questions,
-	const size_t *question_lens,
-	const char **answers,
-	const size_t *answer_lens,
-	const char **scopes,
-	const size_t *scope_lens,
-	size_t count,
-	size_t *success_count,
-	size_t *failed_count
-);
-
-/*
- * 纯存储层批量写入接口。
- *
- * 与 kvs_vector_set_batch_internal() 的区别：
- * 1. 不生成 embedding；
- * 2. 直接使用调用方传入的连续 embeddings；
- * 3. 用于内部压测存储层 record / id_map / flat_index 写入性能。
- *
- * embeddings 布局：
- *
- *   embeddings[i * embedding_dim + j]
- *
- * 注意：
- * 该函数仍然会复制每条 embedding 到 record 内部，
- * 并同步追加到 flat_index。
- */
-int kvs_vector_set_batch_with_embeddings_internal(
-	const char **questions,
-	const size_t *question_lens,
-	const char **answers,
-	const size_t *answer_lens,
-	const char **scopes,
-	const size_t *scope_lens,
-	const float *embeddings,
-	int embedding_dim,
-	size_t count,
-	size_t *success_count,
-	size_t *failed_count
-);
-
-/*
- * 纯搜索层压测接口。
- *
- * 与 kvs_vector_search() 的区别：
- * 1. 不调用 embedding provider；
- * 2. 直接使用调用方传入的 query_embedding；
- * 3. 用于压测 flat scan + dot product + topK 的纯搜索性能。
- *
- * query_embedding 维度必须等于 flat_index.dimension。
- */
-int kvs_vector_search_with_embedding_internal(
-	const float *query_embedding,
-	int query_dim,
-	const char *scope,
-	size_t scope_len,
-	int topk,
-	float threshold,
-	kvs_vector_search_result_t *results,
-	size_t results_capacity,
-	size_t *results_count
 );
 
 int kvs_vector_record_set_fields_with_embedding(

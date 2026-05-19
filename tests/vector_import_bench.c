@@ -411,75 +411,6 @@ static int send_vset(
 	return read_resp(fd, raw);
 }
 
-static int send_vbatchset(
-	int fd,
-	char questions[][BENCH_KEY_SIZE],
-	char answers[][BENCH_VALUE_SIZE],
-	size_t batch_count,
-	const char *scope,
-	resp_raw_t *raw
-) {
-	const char **parts;
-	size_t *lens;
-	char count_buf[64];
-	size_t part_count;
-	size_t i;
-	size_t p = 0;
-	int ret;
-
-	if (!questions || !answers || batch_count == 0 || !raw) {
-		return -1;
-	}
-
-	part_count = 2 + batch_count * 3;
-
-	parts = (const char **)malloc(sizeof(char *) * part_count);
-	lens = (size_t *)malloc(sizeof(size_t) * part_count);
-	if (!parts || !lens) {
-		if (parts) {
-			free(parts);
-		}
-		if (lens) {
-			free(lens);
-		}
-		return -1;
-	}
-
-	snprintf(count_buf, sizeof(count_buf), "%zu", batch_count);
-
-	parts[p] = "VBATCHSET";
-	lens[p] = strlen(parts[p]);
-	p++;
-
-	parts[p] = count_buf;
-	lens[p] = strlen(count_buf);
-	p++;
-
-	for (i = 0; i < batch_count; ++i) {
-		parts[p] = questions[i];
-		lens[p] = strlen(questions[i]);
-		p++;
-
-		parts[p] = answers[i];
-		lens[p] = strlen(answers[i]);
-		p++;
-
-		parts[p] = scope ? scope : "";
-		lens[p] = strlen(parts[p]);
-		p++;
-	}
-
-	ret = send_resp_command(fd, parts, lens, part_count);
-	if (ret == 0) {
-		ret = read_resp(fd, raw);
-	}
-
-	free(parts);
-	free(lens);
-
-	return ret;
-}
-
 static int send_vget(
 	int fd,
 	const char *question,
@@ -554,87 +485,6 @@ static int send_vsearch(
 	return read_resp(fd, raw);
 }
 
-static int send_vsearch_batch(
-	int fd,
-	char queries[][BENCH_KEY_SIZE],
-	size_t batch_count,
-	const char *scope,
-	int topk,
-	resp_raw_t *raw
-) {
-	const char **parts;
-	size_t *lens;
-	char count_buf[64];
-	char topk_buf[32];
-	size_t part_count;
-	size_t i;
-	size_t p = 0;
-	int ret;
-
-	if (!queries || batch_count == 0 || !raw) {
-		return -1;
-	}
-
-	/*
-	 * VSEARCH BATCH count topk scope query1 query2 ... queryN
-	 */
-	part_count = 5 + batch_count;
-
-	parts = (const char **)malloc(sizeof(char *) * part_count);
-	lens = (size_t *)malloc(sizeof(size_t) * part_count);
-	if (!parts || !lens) {
-		if (parts) {
-			free(parts);
-		}
-		if (lens) {
-			free(lens);
-		}
-		return -1;
-	}
-
-	snprintf(count_buf, sizeof(count_buf), "%zu", batch_count);
-	snprintf(topk_buf, sizeof(topk_buf), "%d", topk);
-
-	parts[p] = "VSEARCH";
-	lens[p] = strlen(parts[p]);
-	p++;
-
-	parts[p] = "BATCH";
-	lens[p] = strlen(parts[p]);
-	p++;
-
-	parts[p] = count_buf;
-	lens[p] = strlen(count_buf);
-	p++;
-
-	parts[p] = topk_buf;
-	lens[p] = strlen(topk_buf);
-	p++;
-
-	/*
-	 * scope 必传；空 scope 传空 bulk string。
-	 */
-	parts[p] = scope ? scope : "";
-	lens[p] = strlen(parts[p]);
-	p++;
-
-	for (i = 0; i < batch_count; ++i) {
-		parts[p] = queries[i];
-		lens[p] = strlen(queries[i]);
-		p++;
-	}
-
-	ret = send_resp_command(fd, parts, lens, part_count);
-	if (ret == 0) {
-		ret = read_resp(fd, raw);
-	}
-
-	free(parts);
-	free(lens);
-
-	return ret;
-}
-
 static int send_vinfo(int fd, resp_raw_t *raw) {
 	const char *parts[1];
 	size_t lens[1];
@@ -678,7 +528,6 @@ int main(int argc, char **argv) {
 	size_t failed = 0;
 	size_t request_count = 0;
 	size_t vset_request_count = 0;
-	size_t vbatchset_request_count = 0;
 	size_t progress_step;
 	size_t batch_size = 1;
 	size_t get_count = 0;
@@ -837,21 +686,7 @@ int main(int argc, char **argv) {
 			}
 
 			request_count++;
-			vbatchset_request_count++;
 
-			if (send_vbatchset(
-					fd,
-					batch_questions,
-					batch_answers,
-					current_batch,
-					scope,
-					&raw) != 0) {
-				failed += current_batch;
-				fprintf(stderr, "VBATCHSET failed at %zu: socket/read error\n", i);
-				free(batch_questions);
-				free(batch_answers);
-				break;
-			}
 
 			if (resp_is_ok(&raw)) {
 				success += current_batch;
@@ -900,7 +735,6 @@ int main(int argc, char **argv) {
 	printf("batch_size=%zu\n", batch_size);
 	printf("request_count=%zu\n", request_count);
 	printf("vset_request_count=%zu\n", vset_request_count);
-	printf("vbatchset_request_count=%zu\n", vbatchset_request_count);
 	printf("avg_records_per_request=%.2f\n", avg_records_per_request);
 
 	if (success > 0) {
@@ -1049,18 +883,6 @@ int main(int argc, char **argv) {
 				}
 
 				search_request_count++;
-				if (send_vsearch_batch(
-						fd,
-						batch_queries,
-						current_batch,
-						scope,
-						topk,
-						&raw) != 0) {
-					search_failed += current_batch;
-					free(batch_queries);
-					i += current_batch;
-					continue;
-				}
 
 				/*
 				* 批量 VSEARCH 正常返回二维 RESP array:
@@ -1105,7 +927,6 @@ int main(int argc, char **argv) {
 			printf("topk=%d\n", topk);
 		}
 	}
-
 
 	printf("========== VINFO ==========\n");
 	if (send_vinfo(fd, &raw) == 0) {

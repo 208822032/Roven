@@ -108,6 +108,8 @@ typedef struct kvs_config {
 	// vector_index_type:
 	//   flat: 精确 flat scan
 	//   hnsw: 多层 HNSW ANN
+	//   (ivf_flat removed)
+	//   sq8_flat: scalar-quantized flat scan prototype
 	char vector_index_type[16];
 
 	/*
@@ -141,6 +143,31 @@ typedef struct kvs_config {
 	 * 1 means disabled.
 	 */
 	int vector_scope_overfetch_factor;
+
+	/*
+	 * vector_distance_backend:
+	 *   auto     : use AVX2 when supported, otherwise fallback
+	 *   fallback : force scalar C implementation
+	 *   avx2     : prefer AVX2, fallback when CPU does not support it
+	 *
+	 * Default: auto
+	 */
+	char vector_distance_backend[16];
+
+	/*
+	 * IVF Flat parameters.
+	 *
+	 *   number of centroid buckets.
+	 *
+	 *   number of buckets to scan during search.
+	 *
+	 *   max k-means iterations during VINDEX TRAIN.
+	 *
+	 * Defaults:
+	 *   nlist = 64
+	 *   nprobe = 4
+	 *   max_iterations = 20
+	 */
 } kvs_config_t;
 
 // 默认配置初始化
@@ -163,6 +190,7 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path);
 //  --log_file <path>
 //  --embedding_provider <hash>
 //  --vector_metric <ip|l2|cosine>
+	//  --vector_distance_backend <auto|fallback|avx2>
 //  --vector_scope_overfetch_factor <1-32>
 void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const char **config_path_out);
 

@@ -1,0 +1,16 @@
+mode=throughput
+op=vsearch
+requests=100000
+clients=50
+pipeline=4
+success=100000
+failed=0
+errors=0
+elapsed_ms=88240
+qps=1133.27
+avg_ms=176.39
+p50_ms=171.41
+p95_ms=235.20
+p99_ms=271.58
+min_ms=3.19
+max_ms=345.66

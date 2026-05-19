@@ -1,0 +1,16 @@
+mode=latency
+op=vsearch
+requests=10000
+clients=1
+pipeline=1
+success=10000
+failed=0
+errors=0
+elapsed_ms=10556
+qps=947.36
+avg_ms=1.05
+p50_ms=1.00
+p95_ms=1.52
+p99_ms=2.01
+min_ms=0.51
+max_ms=11.16

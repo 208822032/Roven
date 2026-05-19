@@ -1,0 +1,31 @@
+prepare: 10000/100000 success=10000 failed=0
+prepare: 20000/100000 success=20000 failed=0
+prepare: 30000/100000 success=30000 failed=0
+prepare: 40000/100000 success=40000 failed=0
+prepare: 50000/100000 success=50000 failed=0
+prepare: 60000/100000 success=60000 failed=0
+prepare: 70000/100000 success=70000 failed=0
+prepare: 80000/100000 success=80000 failed=0
+prepare: 90000/100000 success=90000 failed=0
+prepare: 100000/100000 success=100000 failed=0
+prepare_count=100000
+prepare_success=100000
+prepare_failed=0
+prepare_elapsed_ms=199245
+prepare_qps=501.90
+mode=latency
+op=vset
+requests=100000
+clients=1
+pipeline=1
+success=100000
+failed=0
+errors=0
+elapsed_ms=10228
+qps=9777.00
+avg_ms=0.10
+p50_ms=0.09
+p95_ms=0.17
+p99_ms=0.30
+min_ms=0.01
+max_ms=17.54

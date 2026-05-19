@@ -1,0 +1,16 @@
+mode=latency
+op=vget
+requests=1000
+clients=1
+pipeline=1
+success=1000
+failed=0
+errors=0
+elapsed_ms=76
+qps=13123.53
+avg_ms=0.08
+p50_ms=0.07
+p95_ms=0.12
+p99_ms=0.17
+min_ms=0.02
+max_ms=0.27

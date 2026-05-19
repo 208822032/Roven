@@ -362,7 +362,30 @@ static void testcase_ignore_response(int fd, const char *msg, const char *name) 
  * 7. VSEARCH 当前仍然 NOT IMPLEMENTED。
  */
 static void vector_resp_testcase(int fd) {
+    int is_ivf = 0;
+    int is_sq8 = 0;
+
     printf("========== vector testcase begin ==========\n");
+
+    /*
+     * Probe index type first.
+     * IVF Flat index_ready is 0 before TRAIN; skip that assertion on IVF.
+     * SQ8 Flat does not need TRAIN; its VSEARCH should work immediately.
+     */
+    {
+        char resp[MAX_RESP_LEN];
+        memset(resp, 0, sizeof(resp));
+        if (send_all(fd, "*1\r\n$5\r\nVINFO\r\n", 15) >= 0) {
+            if (recv_full_resp(fd, resp, sizeof(resp)) >= 0) {
+                if (strstr(resp, "index_type:ivf_flat") != NULL) {
+                    is_ivf = 1;
+                }
+                if (strstr(resp, "index_type:sq8_flat") != NULL) {
+                    is_sq8 = 1;
+                }
+            }
+        }
+    }
 
     /*
      * VINFO 返回数组即可，这里只检查包含 capacity 字段。
@@ -392,8 +415,45 @@ static void vector_resp_testcase(int fd) {
     testcase_contains(
         fd,
         "*1\r\n$5\r\nVINFO\r\n",
-        "index_ready:1",
-        "VINFO-index-ready"
+        "distance_backend:",
+        "VINFO-distance-backend"
+    );
+
+    if (!is_ivf && !is_sq8) {
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "index_ready:1",
+            "VINFO-index-ready"
+        );
+    }
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "last_rebuild_status:",
+        "VINFO-last-rebuild-status"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "vector_memory_bytes:",
+        "VINFO-vector-memory-bytes"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "index_memory_bytes:",
+        "VINFO-index-memory-bytes"
+    );
+
+    testcase_contains(
+        fd,
+        "*1\r\n$5\r\nVINFO\r\n",
+        "total_vector_memory_bytes:",
+        "VINFO-total-vector-memory-bytes"
     );
 
     /*
@@ -568,12 +628,14 @@ static void vector_resp_testcase(int fd) {
         "VINDEX-REBUILD"
     );
 
-    testcase_contains(
-        fd,
-        "*1\r\n$5\r\nVINFO\r\n",
-        "needs_rebuild:0",
-        "VINFO-needs-rebuild-cleared"
-    );
+    if (!is_ivf) {
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "needs_rebuild:0",
+            "VINFO-needs-rebuild-cleared"
+        );
+    }
 
     testcase_contains(
         fd,
@@ -668,12 +730,14 @@ static void vector_resp_testcase(int fd) {
         "VINFO-after-vset-dimension-384"
     );
 
-    testcase_contains(
-        fd,
-        "*1\r\n$5\r\nVINFO\r\n",
-        "index_ready:1",
-        "VINFO-after-vset-index-ready"
-    );
+    if (!is_ivf) {
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "index_ready:1",
+            "VINFO-after-vset-index-ready"
+        );
+    }
 
     testcase_contains(
         fd,
@@ -703,40 +767,42 @@ static void vector_resp_testcase(int fd) {
         "VINFO-after-vset-total-records-2"
     );
 
-    testcase_contains(
-        fd,
-        "*2\r\n$7\r\nVSEARCH\r\n$10\r\nsearch_key\r\n",
-        "question:search_key",
-        "VSEARCH-basic-contains-question"
-    );
+    if (!is_ivf) {
+        testcase_contains(
+            fd,
+            "*2\r\n$7\r\nVSEARCH\r\n$10\r\nsearch_key\r\n",
+            "question:search_key",
+            "VSEARCH-basic-contains-question"
+        );
 
-    testcase_contains(
-        fd,
-        "*2\r\n$7\r\nVSEARCH\r\n$10\r\nsearch_key\r\n",
-        "answer:search_answer",
-        "VSEARCH-basic-contains-answer"
-    );
+        testcase_contains(
+            fd,
+            "*2\r\n$7\r\nVSEARCH\r\n$10\r\nsearch_key\r\n",
+            "answer:search_answer",
+            "VSEARCH-basic-contains-answer"
+        );
 
-    /*
-    * 新协议增强：
-    * VSEARCH query topk
-    *
-    * 这里第三个参数 1 应该被解析成 topk，而不是 scope。
-    * 返回数组头应该是 *1。
-    */
-    testcase_contains(
-        fd,
-        "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
-        "*1\r\n",
-        "VSEARCH-query-topk-array-size"
-    );
+        /*
+        * 新协议增强：
+        * VSEARCH query topk
+        *
+        * 这里第三个参数 1 应该被解析成 topk，而不是 scope。
+        * 返回数组头应该是 *1。
+        */
+        testcase_contains(
+            fd,
+            "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
+            "*1\r\n",
+            "VSEARCH-query-topk-array-size"
+        );
 
-    testcase_contains(
-        fd,
-        "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
-        "score:",
-        "VSEARCH-query-topk-score"
-    );
+        testcase_contains(
+            fd,
+            "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
+            "score:",
+            "VSEARCH-query-topk-score"
+        );
+    }
 
     /*
     * scope 检索：
@@ -756,48 +822,50 @@ static void vector_resp_testcase(int fd) {
         "VSET-scoped-query-vscope2"
     );
 
-    testcase_contains(
-        fd,
-        "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
-        "answer:scoped_answer1",
-        "VSEARCH-scope-vscope1-contains-answer1"
-    );
+    if (!is_ivf) {
+        testcase_contains(
+            fd,
+            "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
+            "answer:scoped_answer1",
+            "VSEARCH-scope-vscope1-contains-answer1"
+        );
 
-    testcase_not_contains(
-        fd,
-        "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
-        "answer:scoped_answer2",
-        "VSEARCH-scope-vscope1-not-answer2"
-    );
+        testcase_not_contains(
+            fd,
+            "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
+            "answer:scoped_answer2",
+            "VSEARCH-scope-vscope1-not-answer2"
+        );
 
-    testcase_contains(
-        fd,
-        "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope2\r\n$1\r\n1\r\n",
-        "answer:scoped_answer2",
-        "VSEARCH-scope-vscope2-contains-answer2"
-    );
+        testcase_contains(
+            fd,
+            "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope2\r\n$1\r\n1\r\n",
+            "answer:scoped_answer2",
+            "VSEARCH-scope-vscope2-contains-answer2"
+        );
 
-    /*
-    * threshold 过滤：
-    * exact match 分数是 1.0，所以 threshold=0.9 应该保留。
-    */
-    testcase_contains(
-        fd,
-        "*5\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n$3\r\n0.9\r\n",
-        "answer:scoped_answer1",
-        "VSEARCH-threshold-keep-exact"
-    );
+        /*
+        * threshold 过滤：
+        * exact match 分数是 1.0，所以 threshold=0.9 应该保留。
+        */
+        testcase_contains(
+            fd,
+            "*5\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n$3\r\n0.9\r\n",
+            "answer:scoped_answer1",
+            "VSEARCH-threshold-keep-exact"
+        );
 
-    /*
-    * threshold 过高：
-    * 当前最高分是 1.0，threshold=1.1 应该返回空数组。
-    */
-    testcase_raw(
-        fd,
-        "*5\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n$3\r\n1.1\r\n",
-        "*0\r\n",
-        "VSEARCH-threshold-filter-all"
-    );
+        /*
+        * threshold 过高：
+        * 当前最高分是 1.0，threshold=1.1 应该返回空数组。
+        */
+        testcase_raw(
+            fd,
+            "*5\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n$3\r\n1.1\r\n",
+            "*0\r\n",
+            "VSEARCH-threshold-filter-all"
+        );
+    }
 
     /*
     * 删除后，VSEARCH 不应该再返回 deleted record。
@@ -844,23 +912,25 @@ static void vector_resp_testcase(int fd) {
         "VINFO-after-scoped-delete-logical-index-size-3"
     );
 
-    testcase_raw(
-        fd,
-        "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
-        "*0\r\n",
-        "VSEARCH-after-delete-empty"
-    );
+    if (!is_ivf) {
+        testcase_raw(
+            fd,
+            "*4\r\n$7\r\nVSEARCH\r\n$12\r\nscoped_query\r\n$7\r\nvscope1\r\n$1\r\n1\r\n",
+            "*0\r\n",
+            "VSEARCH-after-delete-empty"
+        );
 
-    /*
-    * 空结果：
-    * 完全不存在的 query 应该返回空数组。
-    */
-    testcase_raw(
-        fd,
-        "*2\r\n$7\r\nVSEARCH\r\n$18\r\nnot_existing_query\r\n",
-        "*0\r\n",
-        "VSEARCH-not-existing-empty"
-    );
+        /*
+        * 空结果：
+        * 完全不存在的 query 应该返回空数组。
+        */
+        testcase_raw(
+            fd,
+            "*2\r\n$7\r\nVSEARCH\r\n$18\r\nnot_existing_query\r\n",
+            "*0\r\n",
+            "VSEARCH-not-existing-empty"
+        );
+    }
 
         /*
      * 第 14 步：id_map + free list 稳定性测试。
@@ -964,12 +1034,14 @@ static void vector_resp_testcase(int fd) {
         "VGET-free-list-fresh_key"
     );
 
-    testcase_not_contains(
-        fd,
-        "*2\r\n$7\r\nVSEARCH\r\n$9\r\nreuse_key\r\n",
-        "answer:fresh_answer",
-        "VSEARCH-stale-flat-index-not-fresh-answer"
-    );
+    if (!is_ivf) {
+        testcase_not_contains(
+            fd,
+            "*2\r\n$7\r\nVSEARCH\r\n$9\r\nreuse_key\r\n",
+            "answer:fresh_answer",
+            "VSEARCH-stale-flat-index-not-fresh-answer"
+        );
+    }
 
     testcase_contains(
         fd,
@@ -1006,12 +1078,14 @@ static void vector_resp_testcase(int fd) {
         "VGET-after-rebuild-deleted-scope_a1"
     );
 
-    testcase_contains(
-        fd,
-        "*2\r\n$7\r\nVSEARCH\r\n$9\r\nfresh_key\r\n",
-        "answer:fresh_answer",
-        "VSEARCH-after-rebuild-fresh_key"
-    );
+    if (!is_ivf) {
+        testcase_contains(
+            fd,
+            "*2\r\n$7\r\nVSEARCH\r\n$9\r\nfresh_key\r\n",
+            "answer:fresh_answer",
+            "VSEARCH-after-rebuild-fresh_key"
+        );
+    }
 
     /*
      * 清理第 14 步新增数据，避免影响后续重复运行。
@@ -1084,33 +1158,35 @@ static void vector_resp_testcase(int fd) {
         "VSET-topk-key3"
     );
 
-    testcase_contains(
-        fd,
-        "*3\r\n$7\r\nVSEARCH\r\n$9\r\ntopk_key1\r\n$1\r\n1\r\n",
-        "*1\r\n",
-        "VSEARCH-topk-heap-top1-array-size"
-    );
+    if (!is_ivf) {
+        testcase_contains(
+            fd,
+            "*3\r\n$7\r\nVSEARCH\r\n$9\r\ntopk_key1\r\n$1\r\n1\r\n",
+            "*1\r\n",
+            "VSEARCH-topk-heap-top1-array-size"
+        );
 
-    testcase_contains(
-        fd,
-        "*3\r\n$7\r\nVSEARCH\r\n$9\r\ntopk_key1\r\n$1\r\n1\r\n",
-        "question:topk_key1",
-        "VSEARCH-topk-heap-top1-exact"
-    );
+        testcase_contains(
+            fd,
+            "*3\r\n$7\r\nVSEARCH\r\n$9\r\ntopk_key1\r\n$1\r\n1\r\n",
+            "question:topk_key1",
+            "VSEARCH-topk-heap-top1-exact"
+        );
 
-    testcase_contains(
-        fd,
-        "*3\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$1\r\n2\r\n",
-        "*2\r\n",
-        "VSEARCH-topk-heap-top2-array-size"
-    );
+        testcase_contains(
+            fd,
+            "*3\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$1\r\n2\r\n",
+            "*2\r\n",
+            "VSEARCH-topk-heap-top2-array-size"
+        );
 
-    testcase_contains(
-        fd,
-        "*3\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$1\r\n2\r\n",
-        "score:",
-        "VSEARCH-topk-heap-top2-score"
-    );
+        testcase_contains(
+            fd,
+            "*3\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$1\r\n2\r\n",
+            "score:",
+            "VSEARCH-topk-heap-top2-score"
+        );
+    }
 
     testcase_ignore_response(
         fd,
@@ -1136,6 +1212,95 @@ static void vector_resp_testcase(int fd) {
         "+OK\r\n",
         "VINDEX-clean-after-topk-tests"
     );
+
+    /*
+     * IVF Flat tests: only run if server is configured with ivf_flat.
+     */
+    if (is_ivf) {
+        /* VINFO shows ivf_trained:0 before training */
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "ivf_trained:0",
+            "VINFO-ivf-not-trained-yet"
+        );
+
+        /* VINFO shows ivf_ready:0 before training */
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "ivf_ready:0",
+            "VINFO-ivf-not-ready-yet"
+        );
+
+        /* VSEARCH returns error before training */
+        testcase_contains(
+            fd,
+            "*2\r\n$7\r\nVSEARCH\r\n$4\r\ntest\r\n",
+            "not trained",
+            "VSEARCH-ivf-not-trained"
+        );
+
+        /* VINDEX TRAIN */
+        testcase_raw(
+            fd,
+            "*2\r\n$6\r\nVINDEX\r\n$5\r\nTRAIN\r\n",
+            "+OK\r\n",
+            "VINDEX-TRAIN"
+        );
+
+        /* VINFO shows ivf_trained:1 after training */
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "ivf_trained:1",
+            "VINFO-ivf-trained-after-train"
+        );
+
+        /* VINFO shows ivf_ready:1 after training */
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "ivf_ready:1",
+            "VINFO-ivf-ready-after-train"
+        );
+
+        printf("========== IVF flat testcase done ==========\n");
+    } else {
+        printf("========== skipping IVF flat tests (server not ivf_flat) ==========\n");
+    }
+
+    /*
+     * SQ8 Flat tests.
+     * SQ8 does not need TRAIN; VSEARCH works immediately after VSET.
+     */
+    if (is_sq8) {
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "sq8_size:",
+            "VINFO-sq8-size-field"
+        );
+
+        testcase_contains(
+            fd,
+            "*1\r\n$5\r\nVINFO\r\n",
+            "sq8_memory_bytes:",
+            "VINFO-sq8-memory-bytes-field"
+        );
+
+        /* VSEARCH works without TRAIN for sq8_flat */
+        testcase_contains(
+            fd,
+            "*2\r\n$7\r\nVSEARCH\r\n$4\r\ntest\r\n",
+            "score:",
+            "VSEARCH-sq8-works-without-train"
+        );
+
+        printf("========== SQ8 flat testcase done ==========\n");
+    } else {
+        printf("========== skipping SQ8 flat tests (server not sq8_flat) ==========\n");
+    }
 
     printf("========== vector testcase pass ==========\n");
 }
