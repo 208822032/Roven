@@ -2025,36 +2025,73 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 			return handle_vector_status_response(status, response);
 		}
 
-		off += resp_generate_array_start(response + off, (int)results_count);
+					off += resp_generate_array_start(response + off, (int)results_count);
 
-		for (i = 0; i < results_count; ++i) {
-			char item[1024];
+			for (i = 0; i < results_count; ++i) {
+				char *item = NULL;
+				int item_cap;
 
-			n = snprintf(
-				item,
-				sizeof(item),
-				"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
-				results[i].score,
-				(int)results[i].scope_len,
-				results[i].scope ? results[i].scope : "",
-				(int)results[i].question_len,
-				results[i].question ? results[i].question : "",
-				(int)results[i].answer_len,
-				results[i].answer ? results[i].answer : ""
-			);
-
-			if (n < 0 || n >= (int)sizeof(item)) {
-				kvs_free(results);
-				return resp_generate_simple_string_n(
-					response,
-					'-',
-					"ERR response too large",
-					sizeof("ERR response too large") - 1
+				item_cap = snprintf(
+					NULL, 0,
+					"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+					results[i].score,
+					(int)results[i].scope_len,
+					results[i].scope ? results[i].scope : "",
+					(int)results[i].question_len,
+					results[i].question ? results[i].question : "",
+					(int)results[i].answer_len,
+					results[i].answer ? results[i].answer : ""
 				);
+
+				if (item_cap < 0) {
+					kvs_free(results);
+					return resp_generate_simple_string_n(
+						response,
+						'-',
+						"ERR response too large",
+						sizeof("ERR response too large") - 1
+					);
+				}
+
+				item_cap += 1; /* NUL terminator */
+				item = (char *)kvs_malloc((size_t)item_cap);
+				if (!item) {
+					kvs_free(results);
+					return resp_generate_simple_string_n(
+						response,
+						'-',
+						"ERR out of memory",
+						sizeof("ERR out of memory") - 1
+					);
+				}
+
+				n = snprintf(
+					item, (size_t)item_cap,
+					"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+					results[i].score,
+					(int)results[i].scope_len,
+					results[i].scope ? results[i].scope : "",
+					(int)results[i].question_len,
+					results[i].question ? results[i].question : "",
+					(int)results[i].answer_len,
+					results[i].answer ? results[i].answer : ""
+				);
+
+				if (n < 0 || n >= item_cap) {
+					kvs_free(item);
+					kvs_free(results);
+					return resp_generate_simple_string_n(
+						response,
+						'-',
+						"ERR response too large",
+						sizeof("ERR response too large") - 1
+					);
+				}
+
+				off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+				kvs_free(item);
 			}
 
-			off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
-		}
 
 		kvs_free(results);
 		return off;
