@@ -25,11 +25,11 @@ static int64_t ttl_now_ms(void) {
     return (int64_t)tv.tv_sec * 1000 + (int64_t)tv.tv_usec / 1000;
 }
 
-static void ttl_scan_sync_delete_key(const char *key) {
+static void ttl_scan_sync_delete_key(const char *key, size_t key_len) {
     if (!key) return;
     if (global_dist_config.role != ROLE_MASTER) return;
     if (g_cfg.sync_mode != KVS_SYNC_TCP) return;
-    master_sync_command("DEL", key, NULL);
+    master_sync_command("DEL", key, key_len, NULL, 0);
 }
 
 static int ttl_scan_delete_key(const char *key) {
@@ -92,7 +92,7 @@ static void ttl_scan_flush_expired(ttl_scan_cursor_t *cursor) {
     for (int i = 0; i < cursor->expired_count; ++i) {
         char *key = cursor->expired_keys[i];
         if (ttl_scan_delete_key(key)) {
-            ttl_scan_sync_delete_key(key);
+            ttl_scan_sync_delete_key(key, strlen(key));
         }
         ttl_scan_free_key(key);
     }
@@ -118,7 +118,7 @@ static void ttl_scan_array(kvs_array_t *inst, ttl_scan_cursor_t *cursor) {
         }
 
         char *expired_key = item->key;
-        ttl_scan_sync_delete_key(expired_key);
+        ttl_scan_sync_delete_key(expired_key, strlen(expired_key));
         if (kvs_array_del_at(inst, i) == 0) {
             continue;
         }
@@ -141,7 +141,7 @@ static void ttl_scan_hash(kvs_hash_t *inst, ttl_scan_cursor_t *cursor) {
         if (slot->used != 1 || !slot->key) continue;
         visited++;
         if (!kv_is_expired(slot->expire_at_ms, cursor->now_ms)) continue;
-        ttl_scan_record_expired(cursor, slot->key);
+        ttl_scan_record_expired_len(cursor, slot->key, slot->key_len);
     }
     cursor->budget -= visited;
 }
@@ -180,7 +180,7 @@ static void ttl_scan_skiptable(kvs_skiptable_t *table, ttl_scan_cursor_t *cursor
         Node *next = current->forward[0];
         visited++;
         if (current->key && kv_is_expired(current->expire_at_ms, cursor->now_ms)) {
-            ttl_scan_record_expired(cursor, current->key);
+            ttl_scan_record_expired_len(cursor, current->key, current->key_len);
         }
         current = next;
     }

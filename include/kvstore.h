@@ -96,7 +96,7 @@ static const int write_commands[] = {
 
 
 //typedef int (*msg_handler)(char *msg, int length, char *response);
-typedef int (*msg_handler)(char **tokens, int count, char *response);
+typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *response);
 //添加连接状态 使用每个连接的专属解析器进行解析
 //typedef int (*msg_handler)(struct conn *c, char *msg, int length, char *response);
 
@@ -131,7 +131,21 @@ char* kvs_array_get(kvs_array_t *inst, char *key);
 int kvs_array_del(kvs_array_t *inst, char *key);
 int kvs_array_mod(kvs_array_t *inst, char *key, char *value);
 int kvs_array_exist(kvs_array_t *inst, char *key);
-//int kvs_array_sort(kvs_array_t *inst, char *response, int max_len);
+//
+int kvs_array_set_len(kvs_array_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_array_get_len(kvs_array_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_array_del_len(kvs_array_t *inst, const char *key, size_t key_len);
+int kvs_array_mod_len(kvs_array_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_array_exist_len(kvs_array_t *inst, const char *key, size_t key_len);
+
+int kvs_array_sort(kvs_array_t *inst, char *response, int max_len);
+
+int kvs_array_set_len(kvs_array_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_array_get_len(kvs_array_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_array_del_len(kvs_array_t *inst, const char *key, size_t key_len);
+int kvs_array_mod_len(kvs_array_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_array_exist_len(kvs_array_t *inst, const char *key, size_t key_len);
+
 int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int max_len);
 int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *response, int max_len);
 
@@ -176,7 +190,21 @@ char* kvs_rbtree_get(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_del(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value);
 int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key);
-//int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len);
+//
+int kvs_rbtree_set_len(kvs_rbtree_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_rbtree_get_len(kvs_rbtree_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_rbtree_del_len(kvs_rbtree_t *inst, const char *key, size_t key_len);
+int kvs_rbtree_mod_len(kvs_rbtree_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_rbtree_exist_len(kvs_rbtree_t *inst, const char *key, size_t key_len);
+
+int kvs_rbtree_sort(kvs_rbtree_t *inst, char *response, int max_len);
+
+int kvs_rbtree_set_len(kvs_rbtree_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_rbtree_get_len(kvs_rbtree_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_rbtree_del_len(kvs_rbtree_t *inst, const char *key, size_t key_len);
+int kvs_rbtree_mod_len(kvs_rbtree_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_rbtree_exist_len(kvs_rbtree_t *inst, const char *key, size_t key_len);
+
 int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, int max_len);
 int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, int limit, char *response, int max_len);
 void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node, 
@@ -228,7 +256,21 @@ char * kvs_hash_get(kvs_hash_t *hash, char *key);
 int kvs_hash_mod(kvs_hash_t *hash, char *key, char *value);
 int kvs_hash_del(kvs_hash_t *hash, char *key);
 int kvs_hash_exist(kvs_hash_t *hash, char *key);
-//int kvs_hash_sort(kvs_hash_t *inst, char *response, int max_len);
+//
+int kvs_hash_set_len(kvs_hash_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_hash_get_len(kvs_hash_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_hash_del_len(kvs_hash_t *inst, const char *key, size_t key_len);
+int kvs_hash_mod_len(kvs_hash_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_hash_exist_len(kvs_hash_t *inst, const char *key, size_t key_len);
+
+int kvs_hash_sort(kvs_hash_t *inst, char *response, int max_len);
+
+int kvs_hash_set_len(kvs_hash_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_hash_get_len(kvs_hash_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_hash_del_len(kvs_hash_t *inst, const char *key, size_t key_len);
+int kvs_hash_mod_len(kvs_hash_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_hash_exist_len(kvs_hash_t *inst, const char *key, size_t key_len);
+
 int kvs_hash_sort(kvs_hash_t *inst, int order, int limit, char *response, int max_len);
 int kvs_hash_range(kvs_hash_t *inst, char *start_key, char *end_key, char *response, int max_len);
 
@@ -267,7 +309,21 @@ char * kvs_skiptable_get(kvs_skiptable_t *table, char *key);
 int kvs_skiptable_mod(kvs_skiptable_t *table, char *key, char *value);
 int kvs_skiptable_del(kvs_skiptable_t *table, char *key);
 int kvs_skiptable_exist(kvs_skiptable_t *table, char *key);
-//int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len);
+//
+int kvs_skiptable_set_len(kvs_skiptable_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_skiptable_get_len(kvs_skiptable_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_skiptable_del_len(kvs_skiptable_t *inst, const char *key, size_t key_len);
+int kvs_skiptable_mod_len(kvs_skiptable_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_skiptable_exist_len(kvs_skiptable_t *inst, const char *key, size_t key_len);
+
+int kvs_skiptable_sort(kvs_skiptable_t *table, char *response, int max_len);
+
+int kvs_skiptable_set_len(kvs_skiptable_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_skiptable_get_len(kvs_skiptable_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_skiptable_del_len(kvs_skiptable_t *inst, const char *key, size_t key_len);
+int kvs_skiptable_mod_len(kvs_skiptable_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_skiptable_exist_len(kvs_skiptable_t *inst, const char *key, size_t key_len);
+
 int kvs_skiptable_sort(kvs_skiptable_t *table, int order, int limit, char *response, int max_len);
 int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key, int limit, char *response, int max_len);
 
@@ -419,7 +475,7 @@ int init_kvengine(void);
 void dest_kvengine(void);
 
 
-int kvs_filter_protocol(char **tokens, int count, char *response);
+int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *response);
 //分布式
 
 
@@ -510,9 +566,9 @@ enum {
 int get_command_index(const char *name);
 const command_info *lookup_command(const char *name);
 int check_arity(const command_info *cmd, int argc);
-int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx);
-int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms);
-int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms);
+int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens, command_context_t *ctx);
+int ttl_get_any_key_expire_at_ms(const char *key, size_t key_len, int64_t *expire_at_ms);
+int ttl_set_any_key_expire_at_ms(const char *key, size_t key_len, int64_t expire_at_ms);
 
 // 声明所有命令处理函数
 int handle_set(command_context_t *ctx, char *response);
@@ -589,7 +645,7 @@ typedef struct {
 } aof_state_t;
 
 int aof_init(const char *filename, int fsync_mode);
-void aof_append(int argc, char **argv);
+void aof_append(int argc, char **argv, size_t *arg_lens);
 void aof_fsync(int force);
 void aof_rewrite(void);
 int aof_load(const char *filename);

@@ -38,7 +38,7 @@ int recv_cb(int fd);
 int send_cb(int fd);
 
 #if ENABLE_KVSTORE
-typedef int (*msg_handler)(char **tokens, int count, char *response);
+typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *response);
 
 static msg_handler kvs_handler;
 #endif
@@ -256,6 +256,7 @@ static int reactor_session_handler(resp_parser_t* parser,
 
         resp_len = kvs_handler(parser->tokens,
                             parser->arg_index,
+                            parser->token_lens,
                     response_buf);
 
         set_sync_context(old_ctx);

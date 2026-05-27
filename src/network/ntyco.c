@@ -21,7 +21,7 @@
 
 extern int g_shutdown_flag;  
 
-typedef int (*msg_handler)(char **tokens, int count, char *response);
+typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *response);
 static msg_handler kvs_handler = NULL;
 
 // 每个连接的上下文
@@ -134,6 +134,7 @@ static int ntyco_session_handler(resp_parser_t *parser,
 
     int resp_len = kvs_handler(parser->tokens,
                                parser->arg_index,
+                               parser->token_lens,
                                response_buf);
 
     set_sync_context(old_ctx);

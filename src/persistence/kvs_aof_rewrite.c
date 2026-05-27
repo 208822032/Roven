@@ -334,6 +334,8 @@ static int write_data_to_tempfile(int fd) {
     struct array_item_snapshot {
         char *key;
         char *value;
+        uint32_t key_len;
+        uint32_t value_len;
         int64_t expire_at_ms;
     } *array_snapshot = NULL;
     
@@ -353,6 +355,8 @@ static int write_data_to_tempfile(int fd) {
                     if (key_ptr && value_ptr && !kv_is_expired(expire_at_ms, now_ms)) {
                         array_snapshot[valid_count].key = key_ptr;
                         array_snapshot[valid_count].value = value_ptr;
+                        array_snapshot[valid_count].key_len = global_array.table[i].key_len;
+                        array_snapshot[valid_count].value_len = global_array.table[i].value_len;
                         array_snapshot[valid_count].expire_at_ms = expire_at_ms;
                         valid_count++;
                     }
@@ -374,7 +378,9 @@ static int write_data_to_tempfile(int fd) {
             break;
         }
 
-        if(write_command_parts(fd, "SET", array_snapshot[i].key, array_snapshot[i].value) == -1){
+        if(write_command_parts_len(fd, "SET", 3,
+                                    array_snapshot[i].key, array_snapshot[i].key_len,
+                                    array_snapshot[i].value, array_snapshot[i].value_len) == -1){
             KVS_LOG_ERROR_ERRNO("aof", "failed to write array data to temp file");
             if(array_snapshot) kvs_free(array_snapshot);
             return -1;

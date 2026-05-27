@@ -19,6 +19,16 @@ unsigned int kvs_hash_key_hash(const char *key) {
     return hash;
 }
 
+/* Binary-safe hash: computes over explicit length */
+unsigned int kvs_hash_key_hash_len(const char *key, size_t key_len) {
+    if (!key) return 0;
+    unsigned int hash = 0;
+    for (size_t i = 0; i < key_len; i++) {
+        hash ^= ((hash << 5) + (unsigned char)(key[i]) + (hash >> 2));
+    }
+    return hash;
+}
+
 static inline int kvs_hash_min_int(int a, int b) {
     return a < b ? a : b;
 }
@@ -192,6 +202,14 @@ int kvs_hash_lookup_index(kvs_hash_t *hash, const char *key, int *idx_out) {
 
     unsigned int key_hash = kvs_hash_key_hash(key);
     return kvs_hash_lookup_index_impl(hash, key, key_hash, key_len, idx_out);
+}
+
+int kvs_hash_lookup_index_len(kvs_hash_t *hash, const char *key, size_t key_len, int *idx_out) {
+    if (!hash || !key || !idx_out) return -1;
+    if (key_len == 0) return -1;
+
+    unsigned int key_hash = kvs_hash_key_hash_len(key, key_len);
+    return kvs_hash_lookup_index_impl(hash, key, key_hash, (int)key_len, idx_out);
 }
 
 static int kvs_hash_rebuild_same_capacity(kvs_hash_t *hash) {
@@ -591,4 +609,75 @@ int kvs_hash_range(kvs_hash_t *inst, char *start_key, char *end_key,
 
     kvs_free(arr);
     return len;
+}
+
+/* === Binary-safe _len API implementations === */
+
+int kvs_hash_set_len(kvs_hash_t *hash, const char *key, size_t key_len, const char *value, size_t value_len) {
+    if (!hash || !hash->nodes || !key || !value) return -1;
+    if (key_len <= 0) return -2;
+
+    int cap = hash->max_slots;
+    unsigned int h = kvs_hash_key_hash_len(key, key_len);
+    int idx = (int)(h % (unsigned int)cap);
+    int first_tombstone = -1;
+
+    for (int step = 0; step < cap; ++step) {
+        hashnode_t *slot = &hash->nodes[idx];
+        if (slot->used == 0) {
+            if (first_tombstone != -1) { slot = &hash->nodes[first_tombstone]; idx = first_tombstone; }
+            if (kvs_hash_store_new_entry(slot, (char*)key, (char*)value, h,
+                                         (unsigned short)key_len, (unsigned int)value_len,
+                                         first_tombstone != -1) != 0) return -2;
+            if (first_tombstone == -1) hash->count++;
+            return 0;
+        }
+        if (slot->used == 2 && first_tombstone == -1) first_tombstone = idx;
+        if (slot->used == 1 && (int)slot->key_len == (int)key_len &&
+            slot->key && memcmp(slot->key, key, key_len) == 0) {
+            char *new_val = kvs_malloc(value_len + 1);
+            if (!new_val) return -2;
+            memcpy(new_val, value, value_len + 1);
+            if (slot->value) kvs_free(slot->value);
+            slot->value = new_val;
+            slot->value_len = (unsigned int)value_len;
+            return 1;
+        }
+        idx = (idx + 1) % cap;
+    }
+    return -1;
+}
+
+char* kvs_hash_get_len(kvs_hash_t *hash, const char *key, size_t key_len, size_t *value_len_out) {
+    if (!hash || !hash->nodes || !key) { if (value_len_out) *value_len_out = 0; return NULL; }
+    int idx = -1;
+    if (kvs_hash_lookup_index_len(hash, key, key_len, &idx) != 0) { if (value_len_out) *value_len_out = 0; return NULL; }
+    if (value_len_out) *value_len_out = hash->nodes[idx].value_len;
+    return hash->nodes[idx].value;
+}
+
+int kvs_hash_del_len(kvs_hash_t *hash, const char *key, size_t key_len) {
+    if (!hash || !hash->nodes || !key) return -1;
+    int idx = -1;
+    if (kvs_hash_lookup_index_len(hash, key, key_len, &idx) != 0) return 0;
+    return kvs_hash_delete_at_internal(hash, idx);
+}
+
+int kvs_hash_mod_len(kvs_hash_t *hash, const char *key, size_t key_len, const char *value, size_t value_len) {
+    if (!hash || !hash->nodes || !key || !value) return -1;
+    int idx = -1;
+    if (kvs_hash_lookup_index_len(hash, key, key_len, &idx) != 0) return 1;
+    char *new_val = kvs_malloc(value_len + 1);
+    if (!new_val) return -2;
+    memcpy(new_val, value, value_len + 1);
+    if (hash->nodes[idx].value) kvs_free(hash->nodes[idx].value);
+    hash->nodes[idx].value = new_val;
+    hash->nodes[idx].value_len = (unsigned int)value_len;
+    return 0;
+}
+
+int kvs_hash_exist_len(kvs_hash_t *hash, const char *key, size_t key_len) {
+    if (!hash || !hash->nodes || !key) return 0;
+    int idx = -1;
+    return (kvs_hash_lookup_index_len(hash, key, key_len, &idx) == 0) ? 1 : 0;
 }

@@ -29,6 +29,15 @@ static unsigned int skiptable_key_hash_with_len(const char *key, size_t *key_len
     return hash;
 }
 
+static unsigned int skiptable_key_hash_len(const char *key, size_t key_len) {
+    if (!key) return 0;
+    unsigned int hash = 0;
+    for (size_t i = 0; i < key_len; i++) {
+        hash ^= ((hash << 5) + (unsigned char)key[i] + (hash >> 2));
+    }
+    return hash;
+}
+
 static size_t skiptable_key_len(const char *key) {
     size_t key_len = 0;
 
@@ -270,6 +279,36 @@ Node* create_node(int level, const char* key, const char* value) {
     }
     memcpy(node->key, key, klen + 1);
     memcpy(node->value, value, vlen + 1);
+    return node;
+}
+
+static Node* create_node_len(int level,
+                              const char* key, size_t key_len,
+                              const char* value, size_t value_len) {
+    size_t node_size = sizeof(Node) + (level + 1) * sizeof(Node*);
+    Node* node = kvs_malloc(node_size);
+    if (!node) return NULL;
+
+    node->level = level;
+    node->expire_at_ms = KV_TTL_NO_EXPIRE;
+    node->key_hash = skiptable_key_hash_len(key, key_len);
+    node->key_len = (uint32_t)key_len;
+    node->value_len = (uint32_t)value_len;
+
+    for (int i = 0; i <= level; i++) node->forward[i] = NULL;
+
+    node->key = kvs_malloc(key_len + 1);
+    node->value = kvs_malloc(value_len + 1);
+    if (!node->key || !node->value) {
+        if (node->key) kvs_free(node->key);
+        if (node->value) kvs_free(node->value);
+        kvs_free(node);
+        return NULL;
+    }
+    memcpy(node->key, key, key_len);
+    node->key[key_len] = '\0';
+    memcpy(node->value, value, value_len);
+    node->value[value_len] = '\0';
     return node;
 }
 
@@ -564,4 +603,68 @@ int kvs_skiptable_range(kvs_skiptable_t *table, char *start_key, char *end_key,
     else response[max_len - 1] = '\0';
     
     return pos;
+}
+
+/* === Binary-safe _len API implementations === */
+
+int kvs_skiptable_set_len(kvs_skiptable_t *table, const char *key, size_t key_len, const char *value, size_t value_len) {
+    if (!table || !table->header || !key || !value) return -1;
+    Node* update[MAX_LEVEL + 1];
+    Node *current = skiptable_find_with_update_or_exact(table, key, key_len, update);
+    unsigned int key_hash = skiptable_key_hash_len(key, key_len);
+    if (current && skiptable_key_equals(current, key, key_len, key_hash)) {
+        if (skiptable_update_value_with_len(current, value, value_len) != 0) return -1;
+        current->expire_at_ms = KV_TTL_NO_EXPIRE;
+        return 1;
+    }
+    int new_level = random_level();
+    Node* new_node = create_node_len(new_level, key, key_len, value, value_len);
+    if (!new_node) return -1;
+    table->count++;
+    if (new_level > table->level) {
+        for (int i = table->level + 1; i <= new_level; i++) update[i] = table->header;
+        table->level = new_level;
+    }
+    for (int i = 0; i <= new_level; i++) {
+        new_node->forward[i] = update[i]->forward[i];
+        update[i]->forward[i] = new_node;
+    }
+    return 0;
+}
+
+char* kvs_skiptable_get_len(kvs_skiptable_t *table, const char *key, size_t key_len, size_t *value_len_out) {
+    if (!table || !table->header || !key) { if (value_len_out) *value_len_out = 0; return NULL; }
+    Node *node = skiptable_find_exact(table, key, key_len);
+    if (!node) { if (value_len_out) *value_len_out = 0; return NULL; }
+    if (value_len_out) *value_len_out = node->value_len;
+    return node->value;
+}
+
+int kvs_skiptable_del_len(kvs_skiptable_t *table, const char *key, size_t key_len) {
+    if (!table || !table->header || !key) return -1;
+    Node* update[MAX_LEVEL + 1];
+    Node *current = skiptable_find_with_update_or_exact(table, key, key_len, update);
+    unsigned int key_hash = skiptable_key_hash_len(key, key_len);
+    if (!current || !skiptable_key_equals(current, key, key_len, key_hash)) return 1;
+    for (int i = 0; i <= table->level; i++) {
+        if (update[i]->forward[i] != current) break;
+        update[i]->forward[i] = current->forward[i];
+    }
+    while (table->level > 0 && table->header->forward[table->level] == NULL) table->level--;
+    free_node(current);
+    table->count--;
+    return 0;
+}
+
+int kvs_skiptable_mod_len(kvs_skiptable_t *table, const char *key, size_t key_len, const char *value, size_t value_len) {
+    if (!table || !table->header || !key || !value) return -1;
+    Node *node = skiptable_find_exact(table, key, key_len);
+    if (!node) return 1;
+    return skiptable_update_value_with_len(node, value, value_len);
+}
+
+int kvs_skiptable_exist_len(kvs_skiptable_t *table, const char *key, size_t key_len) {
+    if (!table || !table->header || !key) return 0;
+    Node *node = skiptable_find_exact(table, key, key_len);
+    return node ? 1 : 0;
 }

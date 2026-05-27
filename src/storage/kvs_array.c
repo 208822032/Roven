@@ -28,6 +28,15 @@ static uint32_t kvs_array_hash_key(const char *key) {
     return hash;
 }
 
+static uint32_t kvs_array_hash_key_len(const char *key, size_t key_len) {
+    uint32_t hash = 0;
+    if (!key) return 0;
+    for (size_t i = 0; i < key_len; i++) {
+        hash ^= ((hash << 5) + (unsigned char)(key[i]) + (hash >> 2));
+    }
+    return hash;
+}
+
 static int kvs_array_next_pow2(int value) {
     unsigned int target = 1;
     if (value <= 1) return 1;
@@ -366,6 +375,19 @@ int kvs_array_lookup_index(kvs_array_t *inst, const char *key, int *out_idx) {
     int found_slot = -1;
     int insert_slot = -1;
     int locate_ret = kvs_array_index_locate(inst, key, key_len, key_hash, &found_slot, &insert_slot);
+    if (locate_ret < 0 || found_slot < 0) return 1;
+
+    *out_idx = inst->side_index[found_slot].dense_idx;
+    return 0;
+}
+
+int kvs_array_lookup_index_len(kvs_array_t *inst, const char *key, size_t key_len, int *out_idx) {
+    if (!inst || !key || !out_idx || !inst->side_index || inst->side_capacity <= 0) return 1;
+
+    uint32_t key_hash = kvs_array_hash_key_len(key, key_len);
+    int found_slot = -1;
+    int insert_slot = -1;
+    int locate_ret = kvs_array_index_locate(inst, key, (uint32_t)key_len, key_hash, &found_slot, &insert_slot);
     if (locate_ret < 0 || found_slot < 0) return 1;
 
     *out_idx = inst->side_index[found_slot].dense_idx;
@@ -889,3 +911,84 @@ int main(){
     return 0;
 }
 #endif
+
+/* === Binary-safe _len API implementations === */
+
+int kvs_array_set_len(kvs_array_t *inst, const char *key, size_t key_len, const char *value, size_t value_len) {
+    if (inst == NULL || key == NULL || value == NULL) return -1;
+    uint32_t kh = kvs_array_hash_key_len(key, key_len);
+
+    int idx = -1;
+    if (kvs_array_lookup_index_len(inst, key, key_len, &idx) == 0) {
+        char *kvalue = kvs_malloc((size_t)value_len + 1);
+        if (kvalue == NULL) return -2;
+        memcpy(kvalue, value, (size_t)value_len + 1);
+        if (inst->table[idx].value) kvs_free(inst->table[idx].value);
+        inst->table[idx].value = kvalue;
+        inst->table[idx].value_len = (uint32_t)value_len;
+        inst->table[idx].expire_at_ms = KV_TTL_NO_EXPIRE;
+        return 1;
+    }
+    if (inst->len >= inst->capacity) {
+        if (kvs_array_reserve(inst, inst->capacity + 1) != 0) return -1;
+    }
+    char *kcopy = kvs_malloc((size_t)key_len + 1);
+    if (kcopy == NULL) return -2;
+    memcpy(kcopy, key, (size_t)key_len + 1);
+    char *kvalue = kvs_malloc((size_t)value_len + 1);
+    if (kvalue == NULL) { kvs_free(kcopy); return -2; }
+    memcpy(kvalue, value, (size_t)value_len + 1);
+    inst->table[inst->len].key = kcopy;
+    inst->table[inst->len].value = kvalue;
+    inst->table[inst->len].key_len = (uint32_t)key_len;
+    inst->table[inst->len].value_len = (uint32_t)value_len;
+    inst->table[inst->len].key_hash = kh;
+    inst->table[inst->len].expire_at_ms = KV_TTL_NO_EXPIRE;
+
+    if (kvs_array_index_insert_or_update(inst, kcopy, (uint32_t)key_len, kh, inst->len) != 0) {
+        kvs_free(kcopy);
+        kvs_free(kvalue);
+        memset(&inst->table[inst->len], 0, sizeof(kvs_array_item_t));
+        return -2;
+    }
+
+    inst->len++;
+    inst->total = inst->len;
+    return 0;
+}
+
+char* kvs_array_get_len(kvs_array_t *inst, const char *key, size_t key_len, size_t *value_len_out) {
+    if (inst == NULL || key == NULL) { if (value_len_out) *value_len_out = 0; return NULL; }
+    int idx = -1;
+    if (kvs_array_lookup_index_len(inst, key, key_len, &idx) != 0) {
+        if (value_len_out) *value_len_out = 0; return NULL;
+    }
+    if (value_len_out) *value_len_out = inst->table[idx].value_len;
+    return inst->table[idx].value;
+}
+
+int kvs_array_del_len(kvs_array_t *inst, const char *key, size_t key_len) {
+    if (inst == NULL || key == NULL) return -1;
+    int idx = -1;
+    if (kvs_array_lookup_index_len(inst, key, key_len, &idx) != 0) return 1;
+    return kvs_array_del_at(inst, idx);
+}
+
+int kvs_array_mod_len(kvs_array_t *inst, const char *key, size_t key_len, const char *value, size_t value_len) {
+    if (inst == NULL || key == NULL || value == NULL) return -1;
+    int idx = -1;
+    if (kvs_array_lookup_index_len(inst, key, key_len, &idx) != 0) return 1;
+    char *kvalue = kvs_malloc((size_t)value_len + 1);
+    if (kvalue == NULL) return -2;
+    memcpy(kvalue, value, (size_t)value_len + 1);
+    if (inst->table[idx].value) kvs_free(inst->table[idx].value);
+    inst->table[idx].value = kvalue;
+    inst->table[idx].value_len = (uint32_t)value_len;
+    return 0;
+}
+
+int kvs_array_exist_len(kvs_array_t *inst, const char *key, size_t key_len) {
+    if (inst == NULL || key == NULL) return 0;
+    int idx = -1;
+    return (kvs_array_lookup_index_len(inst, key, key_len, &idx) == 0) ? 1 : 0;
+}

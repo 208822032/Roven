@@ -40,6 +40,14 @@ char* kvs_rbtree_get(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_del(kvs_rbtree_t *inst, char *key);
 int kvs_rbtree_mod(kvs_rbtree_t *inst, char *key, char *value);
 int kvs_rbtree_exist(kvs_rbtree_t *inst, char *key);
+
+/* Binary-safe _len API: key_len and value_len are explicit */
+int kvs_rbtree_set_len(kvs_rbtree_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_rbtree_get_len(kvs_rbtree_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_rbtree_del_len(kvs_rbtree_t *inst, const char *key, size_t key_len);
+int kvs_rbtree_mod_len(kvs_rbtree_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_rbtree_exist_len(kvs_rbtree_t *inst, const char *key, size_t key_len);
+
 int kvs_rbtree_sort(kvs_rbtree_t *inst, int order, int limit, char *response, int max_len);
 int kvs_rbtree_range(kvs_rbtree_t *inst, char *start_key, char *end_key, int limit, char *response, int max_len);
 void rbtree_traversal_with_callback(rbtree *T, rbtree_node *node,

@@ -58,6 +58,7 @@ typedef struct {
     int arg_count;   //已解析的参数个数
     int arg_index;   //当前解析的参数索引
     char **tokens;   //解析出来的tokens
+    size_t *token_lens; //与 tokens 一一对应的真实长度
     int array_len_allocated;
 
     int bulk_len;    //当前批量字符串长度

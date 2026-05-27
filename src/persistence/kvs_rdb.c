@@ -364,7 +364,7 @@ load_error:
 static void rdb_apply_expire_array(const char *key, int64_t expire_at_ms) {
 #if ENABLE_ARRAY
     for (int i = 0; i < global_array.len; ++i) {
-        if (global_array.table[i].key && strcmp(global_array.table[i].key, key) == 0) {
+        if (global_array.table[i].key && global_array.table[i].key_len > 0 && memcmp(global_array.table[i].key, key, global_array.table[i].key_len) == 0) {
             global_array.table[i].expire_at_ms = expire_at_ms;
             return;
         }
@@ -372,9 +372,9 @@ static void rdb_apply_expire_array(const char *key, int64_t expire_at_ms) {
 #endif
 }
 
-static void rdb_apply_expire_rbtree(const char *key, int64_t expire_at_ms) {
+static void rdb_apply_expire_rbtree(const char *key, size_t key_len, int64_t expire_at_ms) {
 #if ENABLE_RBTREE
-    rbtree_node *node = rbtree_search(&global_rbtree, (char *)key);
+    rbtree_node *node = kvs_rbtree_lookup_node(&global_rbtree, key, key_len);
     if (node && node != global_rbtree.nil) {
         node->expire_at_ms = expire_at_ms;
     }
@@ -396,7 +396,7 @@ static void rdb_apply_expire_skiptable(const char *key, int64_t expire_at_ms) {
     if (!global_skiptable.header) return;
     Node *current = global_skiptable.header->forward[0];
     while (current) {
-        if (current->key && strcmp(current->key, key) == 0) {
+        if (current->key && current->key_len > 0 && memcmp(current->key, key, current->key_len) == 0) {
             current->expire_at_ms = expire_at_ms;
             return;
         }
@@ -648,8 +648,8 @@ static void rdb_save_array(FILE *fp, int64_t now_ms){
         if (!global_array.table[i].key || !global_array.table[i].value) continue;
         if (kv_is_expired(global_array.table[i].expire_at_ms, now_ms)) continue;
 
-        uint32_t key_len   = (uint32_t)strlen(global_array.table[i].key);
-        uint32_t value_len = (uint32_t)strlen(global_array.table[i].value);
+        uint32_t key_len   = global_array.table[i].key_len;
+        uint32_t value_len = global_array.table[i].value_len;
 
         fwrite(&key_len, sizeof(key_len), 1, fp);
         fwrite(global_array.table[i].key, key_len, 1, fp);
@@ -863,7 +863,7 @@ static int rdb_load_rbtree(FILE *fp, uint8_t version, int64_t now_ms){
             return RDB_ERR;
         }
 
-        rdb_apply_expire_rbtree(key, expire_at_ms);
+        rdb_apply_expire_rbtree(key, key_len, expire_at_ms);
 
         kvs_free(key);
         kvs_free(value);

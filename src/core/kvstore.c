@@ -46,7 +46,7 @@ int get_sync_context() {
 }
 
 
-int kvs_filter_protocol(char **tokens, int count, char *response){
+int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *response){
 
 	if (tokens[0] == NULL || count == 0) {
         return resp_generate_simple_string_n(response, '-', "Invalid command", sizeof("Invalid command") - 1);
@@ -67,7 +67,8 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	
 	//解析命令参数
 	command_context_t ctx;
-	if(parse_command_argument(cmd_index, tokens, count, &ctx) < 0){
+	memset(&ctx, 0, sizeof(ctx));
+	if(parse_command_argument(cmd_index, tokens, count, token_lens, &ctx) < 0){
 		return resp_generate_simple_string_n(response, '-', "Invalid arguments", sizeof("Invalid arguments") - 1);
 	}
 
@@ -122,7 +123,7 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 	int need_persist_sync = 0;
 	if (ret >= 0 && cmd->write_command) {
 		if (strcmp(cmd->name, "EXPIRE") == 0 || strcmp(cmd->name, "PEXPIREAT") == 0) {
-			if (ttl_get_any_key_expire_at_ms(ctx.key, &expire_at_ms) > 0 && expire_at_ms >= 0) {
+			if (ttl_get_any_key_expire_at_ms(ctx.key, ctx.key_len, &expire_at_ms) > 0 && expire_at_ms >= 0) {
 				has_expire_at = 1;
 			} else {
 				need_del_sync = (ret > 0);
@@ -145,13 +146,13 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 						char expire_buf[32];
 						snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
 						char *aof_tokens[] = {"PEXPIREAT", ctx.key, expire_buf};
-						aof_append(3, aof_tokens);
+						aof_append(3, aof_tokens, NULL);
 					} else if (need_del_sync) {
 						char *aof_tokens[] = {"DEL", ctx.key};
-						aof_append(2, aof_tokens);
+						aof_append(2, aof_tokens, NULL);
 					}
 				} else {
-					aof_append(count, tokens);//正在加载AOF时不记录
+					aof_append(count, tokens, token_lens);//正在加载AOF时不记录
 				}
 			}
 		#endif
@@ -164,18 +165,18 @@ int kvs_filter_protocol(char **tokens, int count, char *response){
 						if (has_expire_at) {
 							char expire_buf[32];
 							snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
-							master_sync_command("PEXPIREAT", ctx.key, expire_buf);
+							master_sync_command("PEXPIREAT", ctx.key, ctx.key_len, expire_buf, strlen(expire_buf));
 						} else {
-							master_sync_command("DEL", ctx.key, NULL);
+							master_sync_command("DEL", ctx.key, ctx.key_len, NULL, 0);
 						}
 					}
 				} else if (strcmp(cmd->name, "PERSIST") == 0) {
 					if (need_persist_sync) {
-						master_sync_command("PERSIST", ctx.key, NULL);
+						master_sync_command("PERSIST", ctx.key, ctx.key_len, NULL, 0);
 					}
 				} else {
 					// 其他写命令保持原样广播
-					master_sync_command(tokens[0], tokens[1], (count > 2) ? tokens[2] : NULL);
+					master_sync_command(tokens[0], tokens[1], token_lens[1], (count > 2) ? tokens[2] : NULL, (count > 2) ? token_lens[2] : 0);
 				}
 			}
 		}
@@ -217,6 +218,18 @@ int init_kvengine(void) {
 
 void dest_kvengine(void) {
 
+	// 1. 先停止所有后台线程/使用者，确保不再访问全局数据结构
+	if (g_cfg.sync_mode == KVS_SYNC_TCP) {
+		distributed_shutdown();
+	}
+
+#if ENABLE_AOF
+	aof_free();
+#endif
+
+	// 2. 加写锁，确保销毁期间无命令线程并发访问数据结构
+	pthread_rwlock_wrlock(&g_kv_data_rwlock);
+
 #if ENABLE_ARRAY
 	kvs_array_destory(&global_array);
 #endif
@@ -226,23 +239,16 @@ void dest_kvengine(void) {
 #if ENABLE_HASH
 	kvs_hash_destory(&global_hash);
 #endif
-
 #if ENABLE_SKIPTABLE
 	kvs_skiptable_destroy(&global_skiptable);
 #endif
 
 	kvs_vector_destroy();
 
-	mem_destroy();  // 清理内存管理组件
-	
-	if(g_cfg.sync_mode == KVS_SYNC_TCP){
-	distributed_shutdown(); //关闭分布式系统
-	}
+	pthread_rwlock_unlock(&g_kv_data_rwlock);
 
-
-	#if ENABLE_AOF
-	aof_free();
-	#endif
+	// 3. 最后销毁内存池（确保 distributed_shutdown / aof_free 中的 kvs_free 先执行）
+	mem_destroy();
 
 }
 

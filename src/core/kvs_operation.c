@@ -72,11 +72,11 @@ static int ttl_skiptable_key_compare(const Node *node, const char *key, size_t k
     return 0;
 }
 
-static int ttl_lookup_array(kvs_array_t *inst, const char *key, ttl_target_ref_t *ref) {
+static int ttl_lookup_array(kvs_array_t *inst, const char *key, size_t key_len, ttl_target_ref_t *ref) {
     if (!inst || !key || !ref || !inst->table) return 0;
 
     int idx = -1;
-    if (kvs_array_lookup_index(inst, key, &idx) == 0 && idx >= 0 && idx < inst->len) {
+    if (kvs_array_lookup_index_len(inst, key, key_len, &idx) == 0 && idx >= 0 && idx < inst->len) {
         ref->kind = TTL_TARGET_ARRAY;
         ref->container = inst;
         ref->entry = &inst->table[idx];
@@ -100,11 +100,11 @@ static int ttl_lookup_rbtree(kvs_rbtree_t *inst, const char *key, size_t key_len
     return 0;
 }
 
-static int ttl_lookup_hash(kvs_hash_t *inst, const char *key, ttl_target_ref_t *ref) {
+static int ttl_lookup_hash(kvs_hash_t *inst, const char *key, size_t key_len, ttl_target_ref_t *ref) {
     if (!inst || !key || !ref || !inst->nodes || inst->max_slots <= 0) return 0;
 
     int idx = -1;
-    if (kvs_hash_lookup_index(inst, key, &idx) == 0 && idx >= 0 && idx < inst->max_slots) {
+    if (kvs_hash_lookup_index_len(inst, key, key_len, &idx) == 0 && idx >= 0 && idx < inst->max_slots) {
         ref->kind = TTL_TARGET_HASH;
         ref->container = inst;
         ref->entry = &inst->nodes[idx];
@@ -148,7 +148,7 @@ static int ttl_lookup_by_structure(int data_structure, const char *key, size_t k
     switch (data_structure) {
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            return ttl_lookup_array(kvs_get_global_array(), key, ref);
+            return ttl_lookup_array(kvs_get_global_array(), key, key_len, ref);
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
@@ -156,7 +156,7 @@ static int ttl_lookup_by_structure(int data_structure, const char *key, size_t k
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            return ttl_lookup_hash(kvs_get_global_hash(), key, ref);
+            return ttl_lookup_hash(kvs_get_global_hash(), key, key_len, ref);
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
@@ -169,13 +169,13 @@ static int ttl_lookup_by_structure(int data_structure, const char *key, size_t k
 
 static int ttl_lookup_any(const char *key, size_t key_len, ttl_target_ref_t *ref) {
 #if ENABLE_ARRAY
-    if (ttl_lookup_array(kvs_get_global_array(), key, ref)) return 1;
+    if (ttl_lookup_array(kvs_get_global_array(), key, key_len, ref)) return 1;
 #endif
 #if ENABLE_RBTREE
     if (ttl_lookup_rbtree(kvs_get_global_rbtree(), key, key_len, ref)) return 1;
 #endif
 #if ENABLE_HASH
-    if (ttl_lookup_hash(kvs_get_global_hash(), key, ref)) return 1;
+    if (ttl_lookup_hash(kvs_get_global_hash(), key, key_len, ref)) return 1;
 #endif
 #if ENABLE_SKIPTABLE
     if (ttl_lookup_skiptable(kvs_get_global_skiptable(), key, key_len, ref)) return 1;
@@ -183,23 +183,21 @@ static int ttl_lookup_any(const char *key, size_t key_len, ttl_target_ref_t *ref
     return 0;
 }
 
-static void ttl_sync_delete_if_needed(const char *key) {
+static void ttl_sync_delete_if_needed(const char *key, size_t key_len) {
     if (!key) return;
     if (global_dist_config.role != ROLE_MASTER) return;
     if (g_cfg.sync_mode != KVS_SYNC_TCP) return;
     if (get_sync_context() == 2) return;
-    master_sync_command("DEL", key, NULL);
+    master_sync_command("DEL", key, key_len, NULL, 0);
 }
 
-int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms) {
+int ttl_get_any_key_expire_at_ms(const char *key, size_t key_len, int64_t *expire_at_ms) {
     if (!key || !expire_at_ms) {
         return -1;
     }
 
     ttl_target_ref_t ref;
     memset(&ref, 0, sizeof(ref));
-
-    size_t key_len = strlen(key);
     if (!ttl_lookup_any(key, key_len, &ref)) {
         return 0;
     }
@@ -208,15 +206,13 @@ int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms) {
     return 1;
 }
 
-int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms) {
+int ttl_set_any_key_expire_at_ms(const char *key, size_t key_len, int64_t expire_at_ms) {
     if (!key) {
         return -1;
     }
 
     ttl_target_ref_t ref;
     memset(&ref, 0, sizeof(ref));
-
-    size_t key_len = strlen(key);
     if (!ttl_lookup_any(key, key_len, &ref)) {
         return 0;
     }
@@ -272,6 +268,23 @@ static void *ttl_target_get_value(const ttl_target_ref_t *ref) {
             return ((Node *)ref->entry)->value;
         default:
             return NULL;
+    }
+}
+
+static size_t ttl_target_get_value_len(const ttl_target_ref_t *ref) {
+    if (!ref) return 0;
+
+    switch (ref->kind) {
+        case TTL_TARGET_ARRAY:
+            return ((kvs_array_item_t *)ref->entry)->value_len;
+        case TTL_TARGET_RBTREE:
+            return ((rbtree_node *)ref->entry)->value_len;
+        case TTL_TARGET_HASH:
+            return ((hashnode_t *)ref->entry)->value_len;
+        case TTL_TARGET_SKIPTABLE:
+            return ((Node *)ref->entry)->value_len;
+        default:
+            return 0;
     }
 }
 
@@ -365,7 +378,7 @@ static int ttl_target_is_expired(const ttl_target_ref_t *ref, int64_t now_ms) {
     return kv_is_expired(expire_at_ms, now_ms) ? 1 : 0;
 }
 
-static int ttl_target_apply_expired_side_effects(const ttl_target_ref_t *ref, const char *key) {
+static int ttl_target_apply_expired_side_effects(const ttl_target_ref_t *ref, const char *key, size_t key_len) {
     if (!ref || !key) return -1;
 
     if (global_dist_config.role != ROLE_MASTER) {
@@ -376,7 +389,7 @@ static int ttl_target_apply_expired_side_effects(const ttl_target_ref_t *ref, co
         return -1;
     }
 
-    ttl_sync_delete_if_needed(key);
+    ttl_sync_delete_if_needed(key, key_len);
     return 0;
 }
 
@@ -404,7 +417,7 @@ static int ttl_expire_if_needed_by_structure(int data_structure, const char *key
         return 1;
     }
 
-    if (ttl_target_apply_expired_side_effects(&ref, key) != 0) {
+    if (ttl_target_apply_expired_side_effects(&ref, key, key_len) != 0) {
         return -1;
     }
 
@@ -426,7 +439,7 @@ static int ttl_apply_any_key_op(command_context_t *ctx, int op) {
     int64_t now_ms = kv_now_ms();
 
     if (ttl_target_is_expired(&ref, now_ms)) {
-        if (ttl_target_apply_expired_side_effects(&ref, ctx->key) != 0) {
+        if (ttl_target_apply_expired_side_effects(&ref, ctx->key, ctx->key_len) != 0) {
             return -1;
         }
         return (op == KVS_CMD_TTL) ? -2 : 0;
@@ -689,7 +702,7 @@ static int kvs_vcmd_is_rebuild(const char *s) {
 }
 
 //解析命令参数到上下文
-int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx){
+int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens, command_context_t *ctx){
     memset(ctx, 0, sizeof(command_context_t));
     ctx->limit = -1;
     ctx->lock_mode = KVS_LOCK_MODE_WRITE;
@@ -740,16 +753,17 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             if(count != 3 && count != 4) return -1;
 
             ctx->key = tokens[1];
-            ctx->key_len = kvs_vcmd_token_len(tokens[1]);
+            ctx->key_len = token_lens[1];
 
             ctx->query_text = tokens[1];
             ctx->query_text_len = ctx->key_len;
 
             ctx->value = tokens[2];
+            ctx->value_len = token_lens[2];
 
             if(count == 4){
                 ctx->scope = tokens[3];
-                ctx->scope_len = kvs_vcmd_token_len(tokens[3]);
+                ctx->scope_len = token_lens[3];
             }
 
             return 0;
@@ -760,14 +774,14 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             }
 
             ctx->key = tokens[1];
-            ctx->key_len = kvs_vcmd_token_len(tokens[1]);
+            ctx->key_len = token_lens[1];
 
             ctx->query_text = tokens[1];
             ctx->query_text_len = ctx->key_len;
 
             if (count == 3) {
                 ctx->scope = tokens[2];
-                ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+                ctx->scope_len = token_lens[2];
             }
 
             return 0;
@@ -799,7 +813,7 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             }
 
             ctx->key = tokens[1];
-            ctx->key_len = kvs_vcmd_token_len(tokens[1]);
+            ctx->key_len = token_lens[1];
 
             ctx->query_text = tokens[1];
             ctx->query_text_len = ctx->key_len;
@@ -809,7 +823,7 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
                     ctx->topk = parsed_topk;
                 } else {
                     ctx->scope = tokens[2];
-                    ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+                    ctx->scope_len = token_lens[2];
                 }
 
                 return 0;
@@ -817,7 +831,7 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
 
             if (count >= 4) {
                 ctx->scope = tokens[2];
-                ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+                ctx->scope_len = token_lens[2];
 
                 if (kvs_vcmd_parse_positive_int(tokens[3], &parsed_topk) != 0) {
                     return -1;
@@ -843,14 +857,14 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             }
 
             ctx->key = tokens[1];
-            ctx->key_len = kvs_vcmd_token_len(tokens[1]);
+            ctx->key_len = token_lens[1];
 
             ctx->query_text = tokens[1];
             ctx->query_text_len = ctx->key_len;
 
             if (count == 3) {
                 ctx->scope = tokens[2];
-                ctx->scope_len = kvs_vcmd_token_len(tokens[2]);
+                ctx->scope_len = token_lens[2];
             }
             return 0;
         }
@@ -865,7 +879,7 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
             }
 
             ctx->subcommand = tokens[1];
-            ctx->subcommand_len = kvs_vcmd_token_len(tokens[1]);
+            ctx->subcommand_len = token_lens[1];
 
             return 0;
         }
@@ -886,9 +900,12 @@ int parse_command_argument(int cmd, char **tokens, int count, command_context_t 
     //解析通用参数
     if (count > 1) {
         ctx->key = tokens[1];
-        ctx->key_len = strlen(tokens[1]);
+        ctx->key_len = token_lens[1];
     }
-    if (count > 2) ctx->value = tokens[2];
+    if (count > 2) {
+        ctx->value = tokens[2];
+        ctx->value_len = token_lens[2];
+    }
 
     //解析特定命令的参数
     switch(cmd){
@@ -1072,22 +1089,22 @@ int handle_set(command_context_t *ctx, char *response){
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_set(kvs_get_global_array(), ctx->key, ctx->value);
+            ret = kvs_array_set_len(kvs_get_global_array(), ctx->key, ctx->key_len, ctx->value, ctx->value_len);
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_set(kvs_get_global_rbtree(), ctx->key, ctx->value);
+            ret = kvs_rbtree_set_len(kvs_get_global_rbtree(), ctx->key, ctx->key_len, ctx->value, ctx->value_len);
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_set(kvs_get_global_hash(), ctx->key, ctx->value);
+            ret = kvs_hash_set_len(kvs_get_global_hash(), ctx->key, ctx->key_len, ctx->value, ctx->value_len);
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_set(kvs_get_global_skiptable(), ctx->key, ctx->value);
+            ret = kvs_skiptable_set_len(kvs_get_global_skiptable(), ctx->key, ctx->key_len, ctx->value, ctx->value_len);
             break;
 #endif
         default:
@@ -1128,12 +1145,11 @@ int handle_get(command_context_t *ctx, char *response){
     if (result == NULL) {
         return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
     } else {
-		// 防御性检查：单条 value 的 RESP 编码长度不能超过全局上限
-        size_t result_len = strlen(result);
+        size_t result_len = ttl_target_get_value_len(&ref);
         size_t est = resp_estimate_bulk_string_len_from_size(result_len);
-		if (est > KVS_MAX_RESPONSE_LENGTH) {
+        if (est > KVS_MAX_RESPONSE_LENGTH) {
             return resp_generate_simple_string_n(response, '-', "ERR value too large", sizeof("ERR value too large") - 1);
-		}
+        }
         return resp_generate_bulk_string_n(response, result, result_len);
     }
 }
@@ -1143,22 +1159,22 @@ int handle_del(command_context_t *ctx, char *response){
     switch (ctx->data_structure) {
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_del(kvs_get_global_array(), ctx->key);
+            ret = kvs_array_del_len(kvs_get_global_array(), ctx->key, ctx->key_len);
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_del(kvs_get_global_rbtree(), ctx->key);
+            ret = kvs_rbtree_del_len(kvs_get_global_rbtree(), ctx->key, ctx->key_len);
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_del(kvs_get_global_hash(), ctx->key);
+            ret = kvs_hash_del_len(kvs_get_global_hash(), ctx->key, ctx->key_len);
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_del(kvs_get_global_skiptable(), ctx->key);
+            ret = kvs_skiptable_del_len(kvs_get_global_skiptable(), ctx->key, ctx->key_len);
             break;
 #endif
         default:
@@ -1187,22 +1203,22 @@ int handle_mod(command_context_t *ctx, char *response){
     switch(ctx->data_structure){
 #if ENABLE_ARRAY
         case DATA_STRUCTURE_ARRAY:
-            ret = kvs_array_mod(kvs_get_global_array(), ctx->key, ctx->value);
+            ret = kvs_array_mod_len(kvs_get_global_array(), ctx->key, ctx->key_len, ctx->value, ctx->value_len);
             break;
 #endif
 #if ENABLE_RBTREE
         case DATA_STRUCTURE_RBTREE:
-            ret = kvs_rbtree_mod(kvs_get_global_rbtree(), ctx->key, ctx->value);
+            ret = kvs_rbtree_mod_len(kvs_get_global_rbtree(), ctx->key, ctx->key_len, ctx->value, ctx->value_len);
             break;
 #endif
 #if ENABLE_HASH
         case DATA_STRUCTURE_HASH:
-            ret = kvs_hash_mod(kvs_get_global_hash(), ctx->key, ctx->value);
+            ret = kvs_hash_mod_len(kvs_get_global_hash(), ctx->key, ctx->key_len, ctx->value, ctx->value_len);
             break;
 #endif
 #if ENABLE_SKIPTABLE
         case DATA_STRUCTURE_SKIPTABLE:
-            ret = kvs_skiptable_mod(kvs_get_global_skiptable(), ctx->key, ctx->value);
+            ret = kvs_skiptable_mod_len(kvs_get_global_skiptable(), ctx->key, ctx->key_len, ctx->value, ctx->value_len);
             break;
 #endif
         default:

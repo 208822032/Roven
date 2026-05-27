@@ -176,8 +176,8 @@ int aof_init(const char *filename, int fsync_mode){
         return 0;
 }
 
-//追加函数
-void aof_append(int argc, char **argv){
+//追加函数：arg_lens 为每条参数的二进制长度，NULL 时回退到 strlen 计算
+void aof_append(int argc, char **argv, size_t *arg_lens){
     if(!aof_state.fp) return;
     if(!aof_state.initialized) return;
     if(aof_state.loading) return; //正在加载AOF时不记录
@@ -192,7 +192,7 @@ void aof_append(int argc, char **argv){
             int len = snprintf(aof_state.buf + aof_state.buf_len, aof_state.buf_size - aof_state.buf_len, "*%d\r\n", argc);
             for(int i = 0;i < argc;i++){
                 len += snprintf(aof_state.buf + aof_state.buf_len + len, aof_state.buf_size - aof_state.buf_len - len, 
-                    "$%zu\r\n%s\r\n", strlen(argv[i]), argv[i]);
+                    "$%zu\r\n%s\r\n", (arg_lens ? arg_lens[i] : strlen(argv[i])), argv[i]);
             }
             aof_state.buf_len += len;
             aof_state.current_size += len;
@@ -219,7 +219,7 @@ void aof_append(int argc, char **argv){
     size_t estimated_len = 0;
     estimated_len += 32; // 粗略预留数组头和换行
     for (int i = 0; i < argc; i++) {
-        size_t arglen = strlen(argv[i]);
+        size_t arglen = (arg_lens ? arg_lens[i] : strlen(argv[i]));
         estimated_len += 32;      // "$%zu\r\n" 等元数据开销
         estimated_len += arglen;  // 实际数据
         estimated_len += 2;       // 末尾 "\r\n"
@@ -244,7 +244,7 @@ void aof_append(int argc, char **argv){
             return;
         }
         for (int i = 0; i < argc; i++) {
-            size_t arglen = strlen(argv[i]);
+            size_t arglen = (arg_lens ? arg_lens[i] : strlen(argv[i]));
             if (fprintf(fp, "$%zu\r\n", arglen) < 0) {
                 KVS_LOG_ERROR_ERRNO("persistence", "failed to write big AOF arg header");
                 pthread_mutex_unlock(&aof_state.mutex);
@@ -284,7 +284,7 @@ void aof_append(int argc, char **argv){
     for (int i = 0; i < argc; i++) {
         len += snprintf(aof_state.buf + aof_state.buf_len + len, 
                        aof_state.buf_size - aof_state.buf_len - len, 
-                       "$%zu\r\n%s\r\n", strlen(argv[i]), argv[i]);
+                       "$%zu\r\n%s\r\n", (arg_lens ? arg_lens[i] : strlen(argv[i])), argv[i]);
     }
     aof_state.buf_len += len;
     aof_state.current_size += len;
@@ -500,6 +500,7 @@ int aof_load(const char *filename){
 
                 int ret = kvs_filter_protocol(parser.tokens,
                         parser.arg_index,
+                        parser.token_lens,
                         response);
 
                 if (ret <= 0 || ret > (int)KVS_MAX_RESPONSE_LENGTH) {

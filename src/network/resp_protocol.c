@@ -181,15 +181,10 @@ int resp_peek_command(const char* buf, size_t len, size_t offset){
 
 //初始化解析器
 void resp_parser_init(resp_parser_t *parser){
-    // parser->state = RESP_PARSE_INIT;
-    // parser->array_len = 0;
-    // parser->bulk_len = 0;
-    // parser->arg_count = 0;
-    // parser->arg_index = 0;
-    // parser->tokens = NULL;
-
     memset(parser, 0, sizeof(resp_parser_t));
     parser->state = RESP_PARSE_INIT;
+    parser->tokens = NULL;
+    parser->token_lens = NULL;
 }
 
 // 重置解析器状态但不释放内存
@@ -210,6 +205,9 @@ void resp_parser_reset(resp_parser_t *parser) {
                 parser->tokens[i] = NULL;
             }
         }
+    }
+    if (parser->token_lens) {
+        memset(parser->token_lens, 0, (size_t)parser->array_len_allocated * sizeof(size_t));
     }
 }
 
@@ -285,13 +283,20 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
 
             // parsed += local_parsed;
 
-            // 分配 tokens
+            // 分配 tokens 和 token_lens
             if (parser->array_len > 0) {
                 if (!parser->tokens || parser->array_len_allocated < parser->array_len) {
                     if (parser->tokens) kvs_free(parser->tokens);
-                    parser->tokens = kvs_malloc(parser->array_len * sizeof(char *));
-                    if (!parser->tokens) return -1;
-                    memset(parser->tokens, 0, parser->array_len * sizeof(char *));
+                    if (parser->token_lens) kvs_free(parser->token_lens);
+                    parser->tokens = kvs_malloc((size_t)parser->array_len * sizeof(char *));
+                    parser->token_lens = kvs_malloc((size_t)parser->array_len * sizeof(size_t));
+                    if (!parser->tokens || !parser->token_lens) {
+                        if (parser->tokens) { kvs_free(parser->tokens); parser->tokens = NULL; }
+                        if (parser->token_lens) { kvs_free(parser->token_lens); parser->token_lens = NULL; }
+                        return -1;
+                    }
+                    memset(parser->tokens, 0, (size_t)parser->array_len * sizeof(char *));
+                    memset(parser->token_lens, 0, (size_t)parser->array_len * sizeof(size_t));
                     parser->array_len_allocated = parser->array_len;
                 }
             }
@@ -437,6 +442,7 @@ int resp_parser(resp_parser_t *parser, const char *buffer, size_t length) {
                     return -1;
                 }
                 parser->tokens[parser->arg_index] = p;
+                parser->token_lens[parser->arg_index] = (size_t)parser->bulk_len;
                }
             
             //先补齐body
@@ -528,6 +534,10 @@ void resp_parser_free(resp_parser_t *parser) {
         }
         kvs_free(parser->tokens);
         parser->tokens = NULL;
+    }
+    if (parser->token_lens) {
+        kvs_free(parser->token_lens);
+        parser->token_lens = NULL;
     }
     parser->array_len_allocated = 0;
     parser->arg_index = 0;

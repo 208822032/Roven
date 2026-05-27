@@ -18,7 +18,7 @@
 typedef struct aof_state_s aof_state_t; // 前置声明以隐藏内部字段
 
 int aof_init(const char *filename, int fsync_mode);
-void aof_append(int argc, char **argv);
+void aof_append(int argc, char **argv, size_t *arg_lens);
 void aof_fsync(int force);
 void aof_rewrite(void);
 int aof_load(const char *filename);

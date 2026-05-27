@@ -92,12 +92,12 @@ static void slave_append_aof_from_op(ms_op_t op, const char *key, const char *va
         argc = 3;
     }
 
-    extern void aof_append(int argc, char **argv);
-    aof_append(argc, argv);
+    extern void aof_append(int argc, char **argv, size_t *arg_lens);
+    aof_append(argc, argv, NULL);
 }
 #endif // ENABLE_AOF
 
-static int master_sync_key_expire_at(const char *key, int64_t expire_at_ms)
+static int master_sync_key_expire_at(const char *key, size_t key_len, int64_t expire_at_ms)
 {
     if (!key || expire_at_ms < 0) {
         return 0;
@@ -105,7 +105,7 @@ static int master_sync_key_expire_at(const char *key, int64_t expire_at_ms)
 
     char expire_buf[32];
     snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
-    master_sync_command("PEXPIREAT", key, expire_buf);
+    master_sync_command("PEXPIREAT", key, key_len, expire_buf, strlen(expire_buf));
     return 1;
 }
 
@@ -127,10 +127,10 @@ void* slave_sync_thread(void *arg){
         if (global_array.table[i].key && global_array.table[i].value &&
             !kv_is_expired(global_array.table[i].expire_at_ms, now_ms)) {
             master_sync_command("SET",
-                                global_array.table[i].key,
-                                global_array.table[i].value);
+                                global_array.table[i].key, global_array.table[i].key_len,
+                                global_array.table[i].value, global_array.table[i].value_len);
             if (global_array.table[i].expire_at_ms >= 0) {
-                master_sync_key_expire_at(global_array.table[i].key,
+                master_sync_key_expire_at(global_array.table[i].key, global_array.table[i].key_len,
                                           global_array.table[i].expire_at_ms);
             }
         }
@@ -143,9 +143,9 @@ void* slave_sync_thread(void *arg){
         if (node == global_rbtree.nil) return;
         send_rbtree_node(node->left);
         if (!kv_is_expired(node->expire_at_ms, now_ms)) {
-            master_sync_command("RSET", node->key, (char*)node->value);
+            master_sync_command("RSET", node->key, node->key_len, (char*)node->value, node->value_len);
             if (node->expire_at_ms >= 0) {
-                master_sync_key_expire_at(node->key, node->expire_at_ms);
+                master_sync_key_expire_at(node->key, node->key_len, node->expire_at_ms);
             }
         }
         send_rbtree_node(node->right);
@@ -157,9 +157,9 @@ void* slave_sync_thread(void *arg){
     for (int i = 0; i < global_hash.max_slots; i++) {
         hashnode_t *slot = &global_hash.nodes[i];
         if (slot->used == 1 && !kv_is_expired(slot->expire_at_ms, now_ms)) {
-            master_sync_command("HSET", slot->key, slot->value);
+            master_sync_command("HSET", slot->key, slot->key_len, slot->value, slot->value_len);
             if (slot->expire_at_ms >= 0) {
-                master_sync_key_expire_at(slot->key, slot->expire_at_ms);
+                master_sync_key_expire_at(slot->key, slot->key_len, slot->expire_at_ms);
             }
         }
     }
@@ -169,9 +169,9 @@ void* slave_sync_thread(void *arg){
     Node *current = global_skiptable.header->forward[0];
     while (current) {
         if (!kv_is_expired(current->expire_at_ms, now_ms)) {
-            master_sync_command("SSET", current->key, current->value);
+            master_sync_command("SSET", current->key, current->key_len, current->value, current->value_len);
             if (current->expire_at_ms >= 0) {
-                master_sync_key_expire_at(current->key, current->expire_at_ms);
+                master_sync_key_expire_at(current->key, current->key_len, current->expire_at_ms);
             }
         }
         current = current->forward[0];
@@ -231,8 +231,11 @@ void *master_sync_server(void *arg){
 
     KVS_LOG_INFO("dist", "master sync server listening on port %d", global_dist_config.sync_port);
 
-    while(1){
-        if((client_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0){
+    global_dist_config.master_listen_fd = server_fd;
+
+    while (!g_shutdown_flag) {
+        if ((client_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
+            if (g_shutdown_flag) break;
             KVS_LOG_ERROR_ERRNO("dist", "accept failed in master sync server");
             continue;
         }
@@ -271,6 +274,9 @@ void *master_sync_server(void *arg){
         pthread_mutex_unlock(&global_dist_config.slave_mutex);
     }
 
+    close(server_fd);
+    global_dist_config.master_listen_fd = -1;
+    KVS_LOG_INFO("dist", "master sync server stopped");
     return NULL;
 }
 
@@ -283,42 +289,46 @@ void* slave_connect_thread(void *arg) {
 
 void distributed_shutdown(void) {
     if (global_dist_config.role == ROLE_MASTER) {
-        // 1. 停止增量同步
-        // g_sync_running = 0;
-        // msg_queue_close(&g_sync_queue);
+        // 1. 唤醒并停止 master_sync_server 线程
+        if (global_dist_config.master_listen_fd >= 0) {
+            shutdown(global_dist_config.master_listen_fd, SHUT_RDWR);
+            close(global_dist_config.master_listen_fd);
+            global_dist_config.master_listen_fd = -1;
+        }
+        if (global_dist_config.master_thread_started) {
+            pthread_join(global_dist_config.master_thread, NULL);
+            global_dist_config.master_thread_started = 0;
+        }
 
         // 2. 等待所有 slave 同步线程退出
         pthread_mutex_lock(&global_dist_config.slave_mutex);
         int count = global_dist_config.slave_count;
-        // 先复制一份线程句柄，避免在 join 过程中修改数组
         pthread_t *threads = NULL;
         if (count > 0) {
             threads = kvs_malloc(sizeof(pthread_t) * count);
-            for (int i = 0; i < count; ++i) {
-                threads[i] = global_dist_config.slaves[i].thread;
+            if (threads) {
+                for (int i = 0; i < count; ++i) {
+                    threads[i] = global_dist_config.slaves[i].thread;
+                }
             }
         }
         pthread_mutex_unlock(&global_dist_config.slave_mutex);
 
         for (int i = 0; i < count; ++i) {
-            pthread_join(threads[i], NULL);
+            if (threads) pthread_join(threads[i], NULL);
         }
-        kvs_free(threads);
-
-        // // 3. 销毁消息队列
-        // msg_queue_destroy(&g_sync_queue);
+        if (threads) kvs_free(threads);
 
         sync_backend_shutdown();
 
-        // 4. 释放 slave 数组
+        // 3. 释放 slave 数组
         if (global_dist_config.slaves) {
             kvs_free(global_dist_config.slaves);
             global_dist_config.slaves = NULL;
+            global_dist_config.slave_count = 0;
         }
     } else if (global_dist_config.role == ROLE_SLAVE) {
-        // 目前 slave 只创建了一个连接线程和一个同步 socket，
-        // 连接线程里在 master 断开后会自己退出，这里暂时不需要额外处理。
-        // 如果以后在 SLAVE 增加更多后台线程，可在这里 join / 清理。
+        // slave 连接线程在 master 断开后自己退出
     }
 
     pthread_mutex_destroy(&global_dist_config.slave_mutex);
@@ -335,10 +345,12 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
     if(role == ROLE_MASTER){
         global_dist_config.max_slaves = 10;
         global_dist_config.slaves = kvs_malloc(global_dist_config.max_slaves * sizeof(slave_info_t));
+        global_dist_config.master_listen_fd = -1;
+        global_dist_config.master_thread_started = 0;
 
         //无论哪种模式 都启动同步服务器线程
-        pthread_t sync_thread;
-        pthread_create(&sync_thread, NULL, master_sync_server, NULL);
+        pthread_create(&global_dist_config.master_thread, NULL, master_sync_server, NULL);
+        global_dist_config.master_thread_started = 1;
 
         // 初始化 sync backend（当前实现为 TCP backend）
         if (sync_backend_init(sync_port) != 0) {
@@ -567,13 +579,13 @@ void slave_connect_master(){
                         KVS_LOG_ERROR("dist", "invalid PEXPIREAT payload for key=%s", key);
                         break;
                     }
-                    if (ttl_set_any_key_expire_at_ms(key, (int64_t)parsed_expire) < 0) {
+                    if (ttl_set_any_key_expire_at_ms(key, klen, (int64_t)parsed_expire) < 0) {
                         KVS_LOG_ERROR("dist", "apply PEXPIREAT failed for key=%s", key);
                     }
                     break;
                 }
                 case MS_OP_TTL_PERSIST:
-                    if (ttl_set_any_key_expire_at_ms(key, KV_TTL_NO_EXPIRE) < 0) {
+                    if (ttl_set_any_key_expire_at_ms(key, klen, KV_TTL_NO_EXPIRE) < 0) {
                         KVS_LOG_ERROR("dist", "apply PERSIST failed for key=%s", key);
                     }
                     break;
@@ -608,8 +620,10 @@ void slave_connect_master(){
 
 
 //主节点同步写操作到所有从节点
-void master_sync_command(const char *cmd, const char *key, const char *value){
-    
+void master_sync_command(const char *cmd,
+                          const char *key, size_t key_len,
+                          const char *value, size_t value_len){
+
     if(global_dist_config.role != ROLE_MASTER) return;
     if(!key || !cmd) return;
 
@@ -653,10 +667,7 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
         return;
     }
 
-    size_t key_len = strlen(key);
-    size_t val_len = value ? strlen(value) : 0;
-
-    size_t needed = (size_t)MS_HEADER_LEN + key_len + val_len;
+    size_t needed = (size_t)MS_HEADER_LEN + key_len + value_len;
     sync_msg_t *msg = (sync_msg_t *)kvs_malloc(sizeof(sync_msg_t) + needed);
     if (!msg) {
         KVS_LOG_ERROR("dist", "master_sync_command malloc failed, cmd=%s key=%s", cmd, key);
@@ -668,7 +679,7 @@ void master_sync_command(const char *cmd, const char *key, const char *value){
         needed,
         op,
         key, key_len,
-        value, val_len
+        value, value_len
     );
     if (len <= 0) {
         KVS_LOG_ERROR("dist", "master_sync_command encode error, cmd=%s key=%s", cmd, key);

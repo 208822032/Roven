@@ -56,6 +56,7 @@ void kvs_array_destory(kvs_array_t *inst);
 int kvs_array_reserve(kvs_array_t *inst, int new_cap);
 
 int kvs_array_lookup_index(kvs_array_t *inst, const char *key, int *out_idx);
+int kvs_array_lookup_index_len(kvs_array_t *inst, const char *key, size_t key_len, int *out_idx);
 int kvs_array_del_at(kvs_array_t *inst, int idx);
 
 int kvs_array_set(kvs_array_t *inst, char *key, char *value);
@@ -63,6 +64,14 @@ char* kvs_array_get(kvs_array_t *inst, char *key);
 int kvs_array_del(kvs_array_t *inst, char *key);
 int kvs_array_mod(kvs_array_t *inst, char *key, char *value);
 int kvs_array_exist(kvs_array_t *inst, char *key);
+
+/* Binary-safe _len API: key_len and value_len are explicit */
+int kvs_array_set_len(kvs_array_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+char* kvs_array_get_len(kvs_array_t *inst, const char *key, size_t key_len, size_t *value_len_out);
+int kvs_array_del_len(kvs_array_t *inst, const char *key, size_t key_len);
+int kvs_array_mod_len(kvs_array_t *inst, const char *key, size_t key_len, const char *value, size_t value_len);
+int kvs_array_exist_len(kvs_array_t *inst, const char *key, size_t key_len);
+
 int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int max_len);
 int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *response, int max_len);
 

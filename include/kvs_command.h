@@ -19,6 +19,7 @@ typedef struct {
 	char *key;
 	size_t key_len;
 	char *value;
+	size_t value_len;
 	char *start_key;
 	char *end_key;
 	int order;
@@ -54,7 +55,7 @@ extern const int write_commands[];
 int get_command_index(const char *name);
 const command_info *lookup_command(const char *name);
 int check_arity(const command_info *cmd, int argc);
-int parse_command_argument(int cmd, char **tokens, int count, command_context_t *ctx);
+int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens, command_context_t *ctx);
 
 // 命令处理函数
 int handle_set(command_context_t *ctx, char *response);
@@ -80,8 +81,8 @@ int handle_vdel_command(command_context_t *ctx, char *response);
 int handle_vindex_command(command_context_t *ctx, char *response);
 int handle_vinfo_command(command_context_t *ctx, char *response);
 
-int ttl_get_any_key_expire_at_ms(const char *key, int64_t *expire_at_ms);
-int ttl_set_any_key_expire_at_ms(const char *key, int64_t expire_at_ms);
+int ttl_get_any_key_expire_at_ms(const char *key, size_t key_len, int64_t *expire_at_ms);
+int ttl_set_any_key_expire_at_ms(const char *key, size_t key_len, int64_t expire_at_ms);
 
 extern const command_info command_table[];
 

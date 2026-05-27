@@ -416,7 +416,7 @@ rbtree_node *rbtree_delete(rbtree *T, rbtree_node *z) {
     kvs_free(y->value);
     kvs_free(y);
 
-	return y;
+	return NULL;  // 节点已释放，返回 NULL 避免调用者误用 freed 指针
 }
 
 rbtree_node *rbtree_search(rbtree *T, KEY_TYPE key) {
@@ -889,3 +889,82 @@ int main(){
     return 0;
 }
 #endif
+
+/* === Binary-safe _len API implementations === */
+
+int kvs_rbtree_set_len(kvs_rbtree_t *inst, const char *key, size_t key_len, const char *value, size_t value_len) {
+    if (!inst || !key || !value || inst->nil == NULL) return -1;
+
+    rbtree_node *exist_node = kvs_rbtree_lookup_node(inst, key, key_len);
+    if (exist_node && exist_node != inst->nil) {
+        // Update existing value in place
+        char *value_ptr = (char *)exist_node->value;
+        if (value_ptr && exist_node->value_len >= value_len) {
+            memcpy(value_ptr, value, value_len);
+            value_ptr[value_len] = '\0';
+        } else if (value_ptr) {
+            char *new_value = (char *)kvs_realloc(value_ptr, value_len + 1);
+            if (!new_value) return -2;
+            memcpy(new_value, value, value_len + 1);
+            exist_node->value = new_value;
+        } else {
+            char *new_value = rbtree_dup_cstr(value, value_len);
+            if (!new_value) return -2;
+            exist_node->value = new_value;
+        }
+        exist_node->value_len = (uint32_t)value_len;
+        exist_node->expire_at_ms = KV_TTL_NO_EXPIRE;
+        return 1;
+    }
+
+    rbtree_node *node = (rbtree_node*)kvs_malloc(sizeof(rbtree_node));
+    if (!node) return -2;
+    memset(node, 0, sizeof(*node));
+
+    node->key = rbtree_dup_cstr(key, key_len);
+    if (!node->key) { kvs_free(node); return -2; }
+    node->key_len = (uint32_t)key_len;
+
+    node->value = rbtree_dup_cstr(value, value_len);
+    if (!node->value) { kvs_free(node->key); kvs_free(node); return -2; }
+    node->value_len = (uint32_t)value_len;
+    node->expire_at_ms = KV_TTL_NO_EXPIRE;
+
+    rbtree_insert(inst, node);
+    return 0;
+}
+
+char* kvs_rbtree_get_len(kvs_rbtree_t *inst, const char *key, size_t key_len, size_t *value_len_out) {
+    if (!inst || !key) { if (value_len_out) *value_len_out = 0; return NULL; }
+    rbtree_node *node = kvs_rbtree_lookup_node(inst, key, key_len);
+    if (!node || node == inst->nil) { if (value_len_out) *value_len_out = 0; return NULL; }
+    if (value_len_out) *value_len_out = node->value_len;
+    return (char *)node->value;
+}
+
+int kvs_rbtree_del_len(kvs_rbtree_t *inst, const char *key, size_t key_len) {
+    if (!inst || !key || inst->nil == NULL) return -1;
+    rbtree_node *node = kvs_rbtree_lookup_node(inst, key, key_len);
+    if (!node || node == inst->nil) return 1;
+    rbtree_delete(inst, node);
+    return 0;
+}
+
+int kvs_rbtree_mod_len(kvs_rbtree_t *inst, const char *key, size_t key_len, const char *value, size_t value_len) {
+    if (!inst || !key || !value || inst->nil == NULL) return -1;
+    rbtree_node *node = kvs_rbtree_lookup_node(inst, key, key_len);
+    if (!node || node == inst->nil) return 1;
+    char *new_value = rbtree_dup_cstr(value, value_len);
+    if (!new_value) return -1;
+    kvs_free(node->value);
+    node->value = new_value;
+    node->value_len = (uint32_t)value_len;
+    return 0;
+}
+
+int kvs_rbtree_exist_len(kvs_rbtree_t *inst, const char *key, size_t key_len) {
+    if (!inst || !key || inst->nil == NULL) return 0;
+    rbtree_node *node = kvs_rbtree_lookup_node(inst, key, key_len);
+    return (node && node != inst->nil) ? 1 : 0;
+}
+
