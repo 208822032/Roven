@@ -1,5 +1,12 @@
 //内核程序 抓取发给master的数据 
 #include "vmlinux.h"
+/* kernel 5.4 UAPI lacks these; defined here for BPF compilation */
+#ifndef BPF_MAP_TYPE_RINGBUF
+#define BPF_MAP_TYPE_RINGBUF 27
+#endif
+#ifndef BPF_ANY
+#define BPF_ANY 0
+#endif
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
