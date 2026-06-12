@@ -39,6 +39,7 @@ SRC_NETWORK := src/network
 SRC_DIST    := src/distributed
 SRC_UTILS   := src/utils
 SRC_VECTOR  := src/vector
+SRC_EMBED   := src/embedding
 TEST_DIR    := tests
 KVS_LOG_OBJS := $(SRC_UTILS)/kvs_log.o $(SRC_UTILS)/kvs_log_writer.o
 
@@ -89,7 +90,8 @@ BASE_SRCS = \
 	$(SRC_VECTOR)/kvs_vector.c   $(SRC_VECTOR)/kvs_vector_index.c \
 	$(SRC_VECTOR)/kvs_vector_embedding.c                          \
 	$(SRC_VECTOR)/kvs_vector_distance.c                           \
-	$(SRC_VECTOR)/kvs_vector_distance_avx2.c
+	$(SRC_VECTOR)/kvs_vector_distance_avx2.c                      \
+	$(SRC_EMBED)/embedding_runtime.c
 
 SRCS = $(BASE_SRCS) $(SRC_DIST)/sync_backend_tcp.c
 OBJS = $(SRCS:.c=.o)

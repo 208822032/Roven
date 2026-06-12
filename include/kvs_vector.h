@@ -193,6 +193,7 @@ void kvs_vector_search_results_reset(
 #include "kvs_api.h"
 #include "kvs_config.h"
 
+#include "embedding_c_api.h"
 #include "kvs_log.h"
 
 #include <string.h>
@@ -211,12 +212,14 @@ extern kvs_config_t g_cfg;
 
 typedef enum kvs_vector_embedding_provider_type_e {
 	KVS_VECTOR_EMBEDDING_PROVIDER_HASH = 0,
+	KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C = 1,
 } kvs_vector_embedding_provider_type_t;
 
 typedef struct kvs_vector_embedding_provider_s {
 	kvs_vector_embedding_provider_type_t type;
 	const char *name;
 	size_t dimension;
+	EmbeddingHandle *runtime_handle;
 	int initialized;
 } kvs_vector_embedding_provider_t;
 

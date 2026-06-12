@@ -105,6 +105,10 @@ typedef struct kvs_config {
 	//   hash    : built-in deterministic test provider
 	//   local_c : reserved for a future in-process C ABI model provider
 	char embedding_provider[16];
+	char embedding_model_path[256];
+	int embedding_dim;
+	int embedding_num_threads;
+	int embedding_max_text_len;
 
 	// vector index 配置。正式语义缓存主路径固定为 HNSW；
 	// flat 仅作为 debug / 单元测试 baseline，sq8_flat 为实验性压缩索引。

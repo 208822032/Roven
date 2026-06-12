@@ -54,15 +54,34 @@ static int kvs_vector_embedding_l2_normalize_batch(
 	return KVS_VECTOR_OK;
 }
 
+static int kvs_vector_embedding_error_to_status(EmbeddingErrorCode code) {
+	switch (code) {
+		case EMBEDDING_OK:
+			return KVS_VECTOR_OK;
+		case EMBEDDING_ERR_INVALID_ARGUMENT:
+		case EMBEDDING_ERR_DIM_MISMATCH:
+		case EMBEDDING_ERR_TEXT_TOO_LONG:
+			return KVS_VECTOR_ERR_INVALID_ARG;
+		case EMBEDDING_ERR_NOT_INITIALIZED:
+			return KVS_VECTOR_ERR_NOT_INITIALIZED;
+		case EMBEDDING_ERR_OUT_OF_MEMORY:
+		case EMBEDDING_ERR_MODEL_LOAD_FAILED:
+		case EMBEDDING_ERR_INFERENCE_FAILED:
+		default:
+			return KVS_VECTOR_ERR;
+	}
+}
+
 /*
  * 初始化 embedding provider。
  *
- * 当前只支持 hash provider。
- * 如果配置了其他 provider，fallback 到 hash 并打印 warning。
+ * 当前支持 hash provider 和本地 C ABI runtime provider。
  */
 int kvs_vector_embedding_provider_init(
 	kvs_vector_embedding_provider_t *provider
 ) {
+	int use_local_c;
+
 	if (!provider) {
 		KVS_LOG_ERROR(KVS_VECTOR_LOG_MODULE, "embedding provider init failed: provider is null");
 		return KVS_VECTOR_ERR_INVALID_ARG;
@@ -70,12 +89,60 @@ int kvs_vector_embedding_provider_init(
 
 	memset(provider, 0, sizeof(*provider));
 
-	if (strcasecmp(g_cfg.embedding_provider, "hash") != 0) {
-		KVS_LOG_WARN(
+	use_local_c =
+		strcasecmp(g_cfg.embedding_provider, "local_c") == 0 ||
+		strcasecmp(g_cfg.embedding_provider, "c_api") == 0;
+
+	if (use_local_c) {
+		EmbeddingConfig config;
+		EmbeddingErrorCode err;
+		int dimension;
+
+		memset(&config, 0, sizeof(config));
+		config.model_path = g_cfg.embedding_model_path[0] != '\0' ?
+			g_cfg.embedding_model_path :
+			NULL;
+		config.embedding_dim = g_cfg.embedding_dim;
+		config.num_threads = g_cfg.embedding_num_threads;
+		config.max_text_len = g_cfg.embedding_max_text_len;
+		config.normalize = 0;
+
+		err = embedding_create(&config, &provider->runtime_handle);
+		if (err != EMBEDDING_OK) {
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"local_c embedding provider init failed err=%d",
+				(int)err
+			);
+			return kvs_vector_embedding_error_to_status(err);
+		}
+
+		dimension = embedding_dimension(provider->runtime_handle);
+		if (dimension <= 0) {
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"local_c embedding provider returned invalid dimension=%d",
+				dimension
+			);
+			embedding_destroy(provider->runtime_handle);
+			memset(provider, 0, sizeof(*provider));
+			return KVS_VECTOR_ERR_INVALID_ARG;
+		}
+
+		provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C;
+		provider->name = "local_c";
+		provider->dimension = (size_t)dimension;
+		provider->initialized = 1;
+
+		KVS_LOG_INFO(
 			KVS_VECTOR_LOG_MODULE,
-			"unsupported embedding_provider=%s, fallback to hash",
-			g_cfg.embedding_provider
+			"local_c embedding provider ready dimension=%zu max_text_len=%d threads=%d",
+			provider->dimension,
+			g_cfg.embedding_max_text_len,
+			g_cfg.embedding_num_threads
 		);
+
+		return KVS_VECTOR_OK;
 	}
 
 	provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_HASH;
@@ -108,6 +175,10 @@ void kvs_vector_embedding_provider_destroy(
 			KVS_VECTOR_LOG_MODULE,
 			"destroy hash embedding provider"
 		);
+	}
+
+	if (provider->runtime_handle) {
+		embedding_destroy(provider->runtime_handle);
 	}
 
 	memset(provider, 0, sizeof(*provider));
@@ -290,6 +361,59 @@ int kvs_vector_hash_embedding_generate_batch(
 	return KVS_VECTOR_OK;
 }
 
+static int kvs_vector_local_c_embedding_generate(
+	kvs_vector_embedding_provider_t *provider,
+	const char *text,
+	size_t text_len,
+	float **out_embedding,
+	int *out_dim
+) {
+	float *embedding;
+	size_t dim;
+	EmbeddingErrorCode err;
+
+	if (!provider || !provider->runtime_handle || !out_embedding || !out_dim) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	*out_embedding = NULL;
+	*out_dim = 0;
+
+	if (!text || text_len == 0 || provider->dimension == 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	dim = provider->dimension;
+	embedding = (float *)kvs_malloc(dim * sizeof(float));
+	if (!embedding) {
+		return KVS_VECTOR_ERR;
+	}
+
+	err = embedding_encode(
+		provider->runtime_handle,
+		text,
+		text_len,
+		embedding,
+		(int)dim
+	);
+	if (err != EMBEDDING_OK) {
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"local_c embedding encode failed err=%d message=%s text_len=%zu",
+			(int)err,
+			embedding_last_error(provider->runtime_handle),
+			text_len
+		);
+		kvs_free(embedding);
+		return kvs_vector_embedding_error_to_status(err);
+	}
+
+	*out_embedding = embedding;
+	*out_dim = (int)dim;
+
+	return KVS_VECTOR_OK;
+}
+
 /*
  * embedding 统一入口。
  */
@@ -315,12 +439,22 @@ int kvs_vector_embedding_generate(
 	*out_embedding = NULL;
 	*out_dim = 0;
 
-	ret = kvs_vector_hash_embedding_generate(
-		text,
-		text_len,
-		&embedding,
-		&dim
-	);
+	if (provider->type == KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C) {
+		ret = kvs_vector_local_c_embedding_generate(
+			provider,
+			text,
+			text_len,
+			&embedding,
+			&dim
+		);
+	} else {
+		ret = kvs_vector_hash_embedding_generate(
+			text,
+			text_len,
+			&embedding,
+			&dim
+		);
+	}
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
@@ -363,15 +497,56 @@ int kvs_vector_embedding_generate_batch(
 	*out_embeddings = NULL;
 	*out_dim = 0;
 
-	ret = kvs_vector_hash_embedding_generate_batch(
-		texts,
-		text_lens,
-		text_count,
-		&embeddings,
-		&dim
-	);
-	if (ret != KVS_VECTOR_OK) {
-		return ret;
+	if (provider->type == KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C) {
+		size_t provider_dim = provider->dimension;
+		size_t i;
+		size_t bytes;
+
+		if (provider_dim == 0 ||
+		    text_count > ((size_t)-1 / provider_dim / sizeof(float))) {
+			return KVS_VECTOR_ERR_INVALID_ARG;
+		}
+
+		bytes = text_count * provider_dim * sizeof(float);
+		embeddings = (float *)kvs_malloc(bytes);
+		if (!embeddings) {
+			return KVS_VECTOR_ERR;
+		}
+
+		for (i = 0; i < text_count; ++i) {
+			EmbeddingErrorCode err = embedding_encode(
+				provider->runtime_handle,
+				texts[i],
+				text_lens[i],
+				embeddings + (i * provider_dim),
+				(int)provider_dim
+			);
+			if (err != EMBEDDING_OK) {
+				KVS_LOG_ERROR(
+					KVS_VECTOR_LOG_MODULE,
+					"local_c embedding batch encode failed err=%d message=%s index=%zu text_len=%zu",
+					(int)err,
+					embedding_last_error(provider->runtime_handle),
+					i,
+					text_lens[i]
+				);
+				kvs_free(embeddings);
+				return kvs_vector_embedding_error_to_status(err);
+			}
+		}
+
+		dim = (int)provider_dim;
+	} else {
+		ret = kvs_vector_hash_embedding_generate_batch(
+			texts,
+			text_lens,
+			text_count,
+			&embeddings,
+			&dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
 	}
 
 	ret = kvs_vector_embedding_l2_normalize_batch(embeddings, text_count, dim);
