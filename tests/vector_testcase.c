@@ -783,24 +783,32 @@ static void vector_resp_testcase(int fd) {
         );
 
         /*
-        * 新协议增强：
-        * VSEARCH query topk
-        *
-        * 这里第三个参数 1 应该被解析成 topk，而不是 scope。
-        * 返回数组头应该是 *1。
+        * 语义缓存默认启用 vector_score_threshold，低相似度最近邻
+        * 不应被当成缓存命中返回。
+        */
+        testcase_raw(
+            fd,
+            "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
+            "*0\r\n",
+            "VSEARCH-default-threshold-filters-low-score"
+        );
+
+        /*
+        * 显式 threshold=0.0 时保留 topK nearest-neighbor 调试语义，
+        * 用于验证第三个参数 1 被解析成 topk，而不是 scope。
         */
         testcase_contains(
             fd,
-            "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
+            "*5\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$0\r\n\r\n$1\r\n1\r\n$3\r\n0.0\r\n",
             "*1\r\n",
-            "VSEARCH-query-topk-array-size"
+            "VSEARCH-explicit-zero-threshold-topk-array-size"
         );
 
         testcase_contains(
             fd,
-            "*3\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$1\r\n1\r\n",
+            "*5\r\n$7\r\nVSEARCH\r\n$6\r\nsearch\r\n$0\r\n\r\n$1\r\n1\r\n$3\r\n0.0\r\n",
             "score:",
-            "VSEARCH-query-topk-score"
+            "VSEARCH-explicit-zero-threshold-topk-score"
         );
     }
 
@@ -1175,14 +1183,14 @@ static void vector_resp_testcase(int fd) {
 
         testcase_contains(
             fd,
-            "*3\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$1\r\n2\r\n",
+            "*5\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$0\r\n\r\n$1\r\n2\r\n$3\r\n0.0\r\n",
             "*2\r\n",
             "VSEARCH-topk-heap-top2-array-size"
         );
 
         testcase_contains(
             fd,
-            "*3\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$1\r\n2\r\n",
+            "*5\r\n$7\r\nVSEARCH\r\n$4\r\ntopk\r\n$0\r\n\r\n$1\r\n2\r\n$3\r\n0.0\r\n",
             "score:",
             "VSEARCH-topk-heap-top2-score"
         );

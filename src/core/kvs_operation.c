@@ -712,6 +712,7 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
     ctx->subcommand_len = 0;
     ctx->topk = 1;
     ctx->threshold = 0.0f;
+    ctx->has_threshold = 0;
     ctx->query_text = NULL;
     ctx->query_text_len = 0;
 
@@ -846,6 +847,7 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
                 }
 
                 ctx->threshold = parsed_threshold;
+                ctx->has_threshold = 1;
             }
 
             return 0;
@@ -2024,7 +2026,7 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 			ctx->scope,
 			ctx->scope_len,
 			topk,
-			ctx->threshold,
+			ctx->has_threshold ? ctx->threshold : g_cfg.vector_score_threshold,
 			results,
 			results_capacity,
 			&results_count

@@ -51,15 +51,17 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     cfg->log_file[0] = '\0';
     snprintf(cfg->ebpf_conf, sizeof(cfg->ebpf_conf), "%s", "config/ebpf_sync.conf");
 
-    //初始化embedding相关配置
-    //默认使用本地hash 
+    // 初始化 embedding 相关配置。本阶段默认使用 hash provider 跑通链路；
+    // 后续 local_c provider 通过同一 C ABI adapter 接入真实模型。
     snprintf(cfg->embedding_provider, sizeof(cfg->embedding_provider), "%s", "hash");
 
+    // 语义缓存主路径固定为 L2-normalized embedding + HNSW + inner product。
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
     snprintf(cfg->vector_metric, sizeof(cfg->vector_metric), "%s", "ip");
     cfg->vector_hnsw_m = 32;
     cfg->vector_hnsw_ef_construction = 256;
     cfg->vector_hnsw_ef_search = 256;
+    cfg->vector_score_threshold = 0.85f;
     cfg->vector_scope_overfetch_factor = 4;
     snprintf(cfg->vector_distance_backend, sizeof(cfg->vector_distance_backend), "%s", "auto");
 }
@@ -206,6 +208,11 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             if (v > 0) {
                 cfg->vector_hnsw_ef_search = v;
             }
+        } else if (strcasecmp(key, "vector_score_threshold") == 0) {
+            float v = (float)atof(val);
+            if (v >= -1.0f && v <= 1.0f) {
+                cfg->vector_score_threshold = v;
+            }
         } else if (strcasecmp(key, "vector_distance_backend") == 0) {
             if (strcasecmp(val, "auto") == 0 ||
                 strcasecmp(val, "fallback") == 0 ||
@@ -314,6 +321,13 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                 int v = atoi(argv[++i]);
                 if (v > 0) {
                     cfg->vector_hnsw_ef_search = v;
+                }
+            }
+        } else if (strcmp(argv[i], "--vector_score_threshold") == 0) {
+            if (i + 1 < argc) {
+                float v = (float)atof(argv[++i]);
+                if (v >= -1.0f && v <= 1.0f) {
+                    cfg->vector_score_threshold = v;
                 }
             }
         } else if (strcmp(argv[i], "--vector_distance_backend") == 0) {

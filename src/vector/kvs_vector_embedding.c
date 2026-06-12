@@ -1,6 +1,59 @@
 #define KVS_VECTOR_INTERNAL
 #include "kvs_vector.h"
 
+#include <math.h>
+
+static int kvs_vector_embedding_l2_normalize(float *embedding, int dim) {
+	double norm_sq = 0.0;
+	double inv_norm;
+	int i;
+
+	if (!embedding || dim <= 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	for (i = 0; i < dim; ++i) {
+		double v = (double)embedding[i];
+		norm_sq += v * v;
+	}
+
+	if (norm_sq <= 0.0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	inv_norm = 1.0 / sqrt(norm_sq);
+	for (i = 0; i < dim; ++i) {
+		embedding[i] = (float)((double)embedding[i] * inv_norm);
+	}
+
+	return KVS_VECTOR_OK;
+}
+
+static int kvs_vector_embedding_l2_normalize_batch(
+	float *embeddings,
+	size_t text_count,
+	int dim
+) {
+	size_t i;
+	int ret;
+
+	if (!embeddings || text_count == 0 || dim <= 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	for (i = 0; i < text_count; ++i) {
+		ret = kvs_vector_embedding_l2_normalize(
+			embeddings + (i * (size_t)dim),
+			dim
+		);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
+	}
+
+	return KVS_VECTOR_OK;
+}
+
 /*
  * 初始化 embedding provider。
  *
@@ -27,6 +80,7 @@ int kvs_vector_embedding_provider_init(
 
 	provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_HASH;
 	provider->name = "hash";
+	provider->dimension = KVS_VECTOR_DEFAULT_DIMENSION;
 	provider->initialized = 1;
 
 	KVS_LOG_INFO(
@@ -75,7 +129,12 @@ const char *kvs_vector_embedding_provider_name(void) {
  * 获取当前 embedding provider 的有效维度。
  */
 size_t kvs_vector_embedding_provider_dimension(void) {
-	return KVS_VECTOR_DEFAULT_DIMENSION;
+	if (!g_vector_state.embedding_provider.initialized ||
+	    g_vector_state.embedding_provider.dimension == 0) {
+		return KVS_VECTOR_DEFAULT_DIMENSION;
+	}
+
+	return g_vector_state.embedding_provider.dimension;
 }
 
 /*
@@ -108,7 +167,7 @@ uint32_t kvs_vector_hash_bytes_seeded(
  * 策略：
  * 1. 固定 64 维；
  * 2. 按字符/字节 hash 分桶；
- * 3. 使用 L1 归一化。
+ * 3. 返回原始桶计数向量，由 embedding 统一入口执行 L2 normalize。
  */
 int kvs_vector_hash_embedding_generate(
 	const char *text,
@@ -118,8 +177,7 @@ int kvs_vector_hash_embedding_generate(
 ) {
 	float *embedding;
 	size_t i;
-	float norm = 0.0f;
-	size_t dim = KVS_VECTOR_DEFAULT_DIMENSION;
+	size_t dim = kvs_vector_embedding_provider_dimension();
 
 	if (!out_embedding || !out_dim) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
@@ -150,23 +208,6 @@ int kvs_vector_hash_embedding_generate(
 		embedding[bucket2] += 0.5f;
 	}
 
-	for (i = 0; i < dim; ++i) {
-		if (embedding[i] < 0.0f) {
-			norm -= embedding[i];
-		} else {
-			norm += embedding[i];
-		}
-	}
-
-	if (norm <= 0.0f) {
-		kvs_free(embedding);
-		return KVS_VECTOR_ERR_INVALID_ARG;
-	}
-
-	for (i = 0; i < dim; ++i) {
-		embedding[i] = embedding[i] / norm;
-	}
-
 	*out_embedding = embedding;
 	*out_dim = (int)dim;
 
@@ -187,7 +228,7 @@ int kvs_vector_hash_embedding_generate_batch(
 	int *out_dim
 ) {
 	float *batch_embeddings = NULL;
-	size_t dim = KVS_VECTOR_DEFAULT_DIMENSION;
+	size_t dim = kvs_vector_embedding_provider_dimension();
 	size_t i;
 	size_t bytes;
 
@@ -259,6 +300,9 @@ int kvs_vector_embedding_generate(
 	int *out_dim
 ) {
 	kvs_vector_embedding_provider_t *provider = &g_vector_state.embedding_provider;
+	float *embedding = NULL;
+	int dim = 0;
+	int ret;
 
 	if (!provider->initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
@@ -268,12 +312,29 @@ int kvs_vector_embedding_generate(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
-	return kvs_vector_hash_embedding_generate(
+	*out_embedding = NULL;
+	*out_dim = 0;
+
+	ret = kvs_vector_hash_embedding_generate(
 		text,
 		text_len,
-		out_embedding,
-		out_dim
+		&embedding,
+		&dim
 	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	ret = kvs_vector_embedding_l2_normalize(embedding, dim);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_free(embedding);
+		return ret;
+	}
+
+	*out_embedding = embedding;
+	*out_dim = dim;
+
+	return KVS_VECTOR_OK;
 }
 
 /*
@@ -287,6 +348,9 @@ int kvs_vector_embedding_generate_batch(
 	int *out_dim
 ) {
 	kvs_vector_embedding_provider_t *provider = &g_vector_state.embedding_provider;
+	float *embeddings = NULL;
+	int dim = 0;
+	int ret;
 
 	if (!provider->initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
@@ -296,13 +360,30 @@ int kvs_vector_embedding_generate_batch(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
-	return kvs_vector_hash_embedding_generate_batch(
+	*out_embeddings = NULL;
+	*out_dim = 0;
+
+	ret = kvs_vector_hash_embedding_generate_batch(
 		texts,
 		text_lens,
 		text_count,
-		out_embeddings,
-		out_dim
+		&embeddings,
+		&dim
 	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	ret = kvs_vector_embedding_l2_normalize_batch(embeddings, text_count, dim);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_free(embeddings);
+		return ret;
+	}
+
+	*out_embeddings = embeddings;
+	*out_dim = dim;
+
+	return KVS_VECTOR_OK;
 }
 
 /*

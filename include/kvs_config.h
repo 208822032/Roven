@@ -101,26 +101,28 @@ typedef struct kvs_config {
 	char log_file[256];
 	char ebpf_conf[256];          // eBPF 配置文件路径
 
-	// embedding_provider: 使用本地 hash embedding
+	// embedding_provider:
+	//   hash    : built-in deterministic test provider
+	//   local_c : reserved for a future in-process C ABI model provider
 	char embedding_provider[16];
 
-	// vector index 配置
+	// vector index 配置。正式语义缓存主路径固定为 HNSW；
+	// flat 仅作为 debug / 单元测试 baseline，sq8_flat 为实验性压缩索引。
 	// vector_index_type:
-	//   flat: 精确 flat scan
-	//   hnsw: 多层 HNSW ANN
-	//   (ivf_flat removed)
-	//   sq8_flat: scalar-quantized flat scan prototype
+	//   hnsw: semantic-cache main path
+	//   flat: debug / unit-test baseline
+	//   sq8_flat: experimental compressed flat scan
 	char vector_index_type[16];
 
 	/*
 	 * vector_metric:
-	 *   ip     : inner product, larger score is better
-	 *   l2     : converted to score = 1 / (1 + squared_l2), larger is better
-	 *   cosine : cosine similarity, larger score is better
+	 *   Official semantic-cache path uses L2-normalized embeddings + ip.
+	 *   The score is interpreted as cosine/IP similarity, larger is better.
+	 *
+	 *   l2 / cosine remain accepted for legacy/debug experiments, but are
+	 *   not the main project capability.
 	 *
 	 * Default: ip
-	 *
-	 * Keep ip as default to preserve the current dot-product behavior.
 	 */
 	char vector_metric[16];
 
@@ -128,6 +130,14 @@ typedef struct kvs_config {
 	int vector_hnsw_m;
 	int vector_hnsw_ef_construction;
 	int vector_hnsw_ef_search;
+
+	/*
+	 * Default semantic-cache hit threshold.
+	 *
+	 * Embeddings are L2-normalized and the main metric is inner product,
+	 * so this value is interpreted as cosine/IP similarity.
+	 */
+	float vector_score_threshold;
 
 	/*
 	 * Scope overfetch factor for HNSW scoped search.

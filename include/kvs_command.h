@@ -33,6 +33,7 @@ typedef struct {
 	size_t subcommand_len;
 	int topk;
 	float threshold;
+	int has_threshold;
 	char *query_text;
 	size_t query_text_len;
 } command_context_t;
@@ -85,4 +86,3 @@ int ttl_get_any_key_expire_at_ms(const char *key, size_t key_len, int64_t *expir
 int ttl_set_any_key_expire_at_ms(const char *key, size_t key_len, int64_t expire_at_ms);
 
 extern const command_info command_table[];
-

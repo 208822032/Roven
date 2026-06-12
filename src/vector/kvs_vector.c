@@ -125,6 +125,16 @@ static kvs_vector_index_type_t kvs_vector_index_type_from_config(void) {
 	return KVS_VECTOR_INDEX_TYPE_FLAT;
 }
 
+static size_t kvs_vector_provider_dimension_or_default(void) {
+	size_t dimension = kvs_vector_embedding_provider_dimension();
+
+	if (dimension == 0) {
+		return KVS_VECTOR_DEFAULT_DIMENSION;
+	}
+
+	return dimension;
+}
+
 static size_t kvs_vector_hnsw_param_or_default(int value, size_t def) {
 	if (value <= 0) {
 		return def;
@@ -665,6 +675,7 @@ size_t kvs_vector_estimate_current_index_memory_bytes(void) {
 //初始化全局状态
 int kvs_vector_init(void) {
 	int ret;
+	size_t dimension;
 
 	if (g_vector_state.initialized) {
 		KVS_LOG_DEBUG(KVS_VECTOR_LOG_MODULE, "vector module already initialized");
@@ -711,9 +722,15 @@ int kvs_vector_init(void) {
 		goto fail;
 	}
 
+	dimension = kvs_vector_provider_dimension_or_default();
+
+	/*
+	 * Flat remains available as a debug / unit-test baseline. The formal
+	 * semantic-cache path uses HNSW by default.
+	 */
 	ret = kvs_vector_flat_index_init(
 		&g_vector_state.flat_index,
-		KVS_VECTOR_DEFAULT_DIMENSION
+		dimension
 	);
 	if (ret != KVS_VECTOR_OK) {
 		goto fail;
@@ -724,7 +741,7 @@ int kvs_vector_init(void) {
 
 	ret = kvs_vector_ann_index_init(
 		&g_vector_state.ann_index,
-		g_vector_state.flat_index.dimension,
+		dimension,
 		kvs_vector_hnsw_param_or_default(
 			g_cfg.vector_hnsw_m,
 			KVS_VECTOR_HNSW_M
@@ -746,12 +763,24 @@ int kvs_vector_init(void) {
 		goto fail;
 	}
 
+	/*
+	 * SQ8 flat is kept as an experimental compressed index. A failure here
+	 * should not prevent the HNSW semantic-cache path from starting.
+	 */
 	ret = kvs_vector_sq8_flat_index_init(
 		&g_vector_state.sq8_flat_index,
-		g_vector_state.flat_index.dimension
+		dimension
 	);
-	if (ret != KVS_VECTOR_OK) {
+	if (ret != KVS_VECTOR_OK &&
+	    g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
 		goto fail;
+	} else if (ret != KVS_VECTOR_OK) {
+		KVS_LOG_WARN(
+			KVS_VECTOR_LOG_MODULE,
+			"experimental sq8_flat init failed ret=%d, continuing with HNSW path",
+			ret
+		);
+		memset(&g_vector_state.sq8_flat_index, 0, sizeof(g_vector_state.sq8_flat_index));
 	}
 
 	ret = kvs_vector_index_bind_current();
@@ -772,7 +801,8 @@ int kvs_vector_init(void) {
 		kvs_vector_distance_backend_name(),
 		g_vector_state.flat_index.dimension,
 		g_vector_state.store.capacity,
-		g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat",
+		g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" :
+			(g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" : "flat"),
 		kvs_vector_metric_name(g_vector_state.metric_type),
 		g_vector_state.ann_index.m,
 		g_vector_state.ann_index.ef_construction,
@@ -815,7 +845,7 @@ void kvs_vector_destroy(void) {
 
 int kvs_vector_reset_for_load(void) {
 	int ret;
-	size_t dimension = KVS_VECTOR_DEFAULT_DIMENSION;
+	size_t dimension = kvs_vector_provider_dimension_or_default();
 
 	if (!g_vector_state.initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
@@ -857,7 +887,12 @@ int kvs_vector_reset_for_load(void) {
 		&g_vector_state.sq8_flat_index,
 		dimension
 	);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK &&
+	    g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
+		return ret;
+	} else if (ret != KVS_VECTOR_OK) {
+		memset(&g_vector_state.sq8_flat_index, 0, sizeof(g_vector_state.sq8_flat_index));
+	}
 
 	return kvs_vector_index_bind_current();
 }
@@ -1129,8 +1164,8 @@ int kvs_vector_set(const char* question, size_t question_len,
 	}
 
 	/*
-	 * 第 9 步：VSET 成功后同步写入 flat index。
-	 * sq8_flat 模式下不写 flat_index float 副本，体现压缩语义。
+	 * Keep flat as a debug / unit-test baseline for HNSW recall checks.
+	 * The production semantic-cache path inserts into current_index below.
 	 */
 	if (g_vector_state.index_type != KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
 		ret = kvs_vector_flat_index_add(
@@ -1659,4 +1694,3 @@ void kvs_vector_search_results_reset(
 		kvs_vector_search_result_reset(&results[i]);
 	}
 }
-

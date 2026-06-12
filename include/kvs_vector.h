@@ -216,6 +216,7 @@ typedef enum kvs_vector_embedding_provider_type_e {
 typedef struct kvs_vector_embedding_provider_s {
 	kvs_vector_embedding_provider_type_t type;
 	const char *name;
+	size_t dimension;
 	int initialized;
 } kvs_vector_embedding_provider_t;
 
