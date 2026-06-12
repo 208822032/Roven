@@ -13,6 +13,7 @@ KVLite：一个从 KV 存储延伸到向量语义缓存的轻量系统。当前
 - RDB/AOF 持久化与重启恢复
 - TCP / eBPF 主从同步
 - 向量语义缓存（V 族命令 + HNSW 索引）
+- ONNX embedding 本地推理（可选构建）
 - AI Chat 历史问答本地召回
 
 ---
@@ -80,8 +81,9 @@ flowchart LR
     D --> S4[skiptable]
 
     D --> VEC[Vector Module<br/>VSET/VGET/VSEARCH/VDEL/VINFO]
-    VEC --> EMB[Embedding Provider]
-    VEC --> IDX[Vector Index<br/>flat / hnsw / sq8_flat]
+    VEC --> EMB[Embedding Provider<br/>hash / local_c]
+    EMB --> ONNX[Optional ONNX Runtime<br/>bge-small-zh-v1.5]
+    VEC --> IDX[Vector Index<br/>HNSW main path]
 
     D --> AOF[AOF / RDB Persistence]
     D --> SYNC[Replication<br/>TCP / eBPF]
@@ -124,8 +126,9 @@ flowchart TD
 
 ## 4. 快速启动
 
+### 4.1 普通构建
+
 ```bash
-# 编译
 git submodule init && git submodule update
 make
 
@@ -134,7 +137,13 @@ make
 
 # 或显式指定配置文件
 ./kvstore -c config/master.conf
+```
 
+普通构建不依赖 ONNX Runtime，不需要模型文件。默认 embedding provider 可使用 `hash` / mock runtime，用于验证 VSET / VSEARCH / HNSW 主链路。
+
+基础测试示例：
+
+```bash
 # 基础 KV 功能测试
 ./tests/testcase 127.0.0.1 9300 5
 
@@ -145,13 +154,15 @@ make
 BENCH_MODE=latency COUNT=100000 SEARCH_COUNT=10000 ./scripts/bench_vector_rw.sh
 ```
 
-ONNX embedding 版本：
+### 4.2 ONNX embedding 构建
 
 ```bash
 make setup-embedding
 make embedding
 ./kvstore -c config/kvstore-embedding.conf
 ```
+
+`make setup-embedding` 显式准备 ONNX Runtime 和 bge-small-zh-v1.5 模型文件；`make embedding` 编译带 ONNX embedding 的版本。用户不需要手写 `ENABLE_ONNX_EMBEDDING=1`、`ONNXRUNTIME_ROOT`、`LD_LIBRARY_PATH`，也不需要在启动命令中写 `embedding_model_path` / `embedding_dim`。
 
 ---
 
@@ -185,7 +196,7 @@ KVLite 的 V 族命令用于 AI Chat 的本地语义缓存。每条记录包含�
 | question | 用户问题（检索键） |
 | answer | 回答内容 |
 | scope | 隔离维度（user_id / session_id / tenant_id / project_id） |
-| embedding | 由 question 生成的 64 维浮点向量 |
+| embedding | 由 question 生成的 float32 向量，进入索引前统一 L2 normalize |
 
 ### 6.1 VSET — 写入向量记录
 
@@ -239,13 +250,40 @@ VINDEX REBUILD
 
 ---
 
+### 6.7 手工验证示例
+
+启动服务后，可以使用项目自带客户端验证：
+
+```bash
+./tests/kvstore_client 127.0.0.1 28080 -c "VSET 怎么重置密码 可以在登录页点击忘记密码 onnx_demo"
+./tests/kvstore_client 127.0.0.1 28080 -c "VGET 怎么重置密码 onnx_demo"
+./tests/kvstore_client 127.0.0.1 28080 -c "VSEARCH 忘记密码怎么办 onnx_demo 5 0.0"
+```
+
+预期结果：
+
+- `VSET` 返回 `OK`
+- `VGET` 返回原答案
+- `VSEARCH` 能召回“怎么重置密码”
+- `score` 取决于模型、tokenizer 和数据集，建议用语义脚本观察分布后再设阈值
+
+ONNX embedding 语义召回检查：
+
+```bash
+bash tests/semantic_onnx_test.sh 127.0.0.1 28080
+# 或
+make test-embedding
+```
+
+脚本会写入几组中文问答，用 `0.0 / 0.70 / 0.75 / 0.80 / 0.85` 多个 threshold 查询，并打印每次返回的 score，方便标定 `vector_score_threshold`。
+
 ## 7. 向量索引设计
 
 ### 7.1 Flat — 全量精确搜索
 
 遍历所有向量计算距离，返回精确 topK。无需训练，适合小数据量（< 10K）、调试和 baseline 对比。
 
-### 7.2 HNSW — 默认推荐
+### 7.2 HNSW — 正式主路径
 
 基于分层可导航小世界图的近似最近邻搜索（ANN）。无需训练，写入立即可搜索，适合在线写入和 AI Chat 语义检索。通过 `ef_search` 在精度与性能之间权衡。
 
@@ -253,13 +291,15 @@ VINDEX REBUILD
 
 ## 8. 相似度与 Embedding
 
-### 8.1 相似度类型
+### 8.1 主路径相似度
 
-| metric | 说明 |
-| --- | --- |
-| `ip` | 内积（默认推荐），score = dot(lhs, rhs) |
-| `l2` | 欧氏距离，score = 1 / (1 + squared_l2) |
-| `cosine` | 余弦相似度，score = dot / (\|\|lhs\|\| × \|\|rhs\|\|) |
+当前语义缓存主路径固定为：
+
+```text
+embedding provider -> L2 normalized vector -> HNSW -> inner product -> semantic cache hit
+```
+
+向量在 KVLite adapter 层统一 L2 normalize；HNSW 使用 inner product，归一化后 score 可按 cosine similarity 理解。`flat` 保留为 debug / 单元测试 baseline，`sq8_flat` 保留为实验性压缩索引能力，不作为默认主路径。
 
 ### 8.2 距离计算后端
 
@@ -271,11 +311,53 @@ VINDEX REBUILD
 
 ### 8.3 Embedding 状态
 
-当前 `embedding_provider=hash`，使用确定性哈希将文本映射为 64 维向量。
+普通构建默认可使用 `embedding_provider=hash`，通过确定性 hash / mock embedding 验证功能链路。
 
-**hash embedding 可以验证：**
+ONNX embedding 构建使用 `embedding_provider=local_c`，表示走 C ABI embedding runtime。当前第一版接入 bge-small-zh-v1.5 ONNX：
+
+- `vocab.txt` 最小 WordPiece tokenizer
+- ONNX Runtime `OrtRun`
+- 读取 `sentence_embedding` 输出
+- 模型输出维度为 `[1,512]`
+- KVLite adapter 继续统一 L2 normalize
+
+**hash / ONNX embedding 都可以验证：**
 - VSET 生成向量 → 索引存储 → VSEARCH 返回结果 → RDB/AOF 恢复 → VINDEX REBUILD 重建
 
+### 8.4 ONNX embedding 配置
+
+`config/kvstore-embedding.conf` 是 ONNX embedding 模式的启动配置，关键项如下：
+
+```ini
+embedding_provider = local_c
+embedding_model_path = models/bge-small-zh-v1.5/model.onnx
+embedding_dim = 512
+embedding_num_threads = 4
+embedding_max_text_len = 512
+
+vector_index_type = hnsw
+vector_metric = ip
+vector_score_threshold = 0.75
+```
+
+说明：
+
+- `embedding_provider=local_c` 表示走 C ABI embedding runtime
+- ONNX Runtime 是 `local_c` runtime 的一种编译实现
+- `embedding_dim` 必须和模型输出 `sentence_embedding` 维度一致
+- bge-small-zh-v1.5 ONNX 当前输出 `sentence_embedding [1,512]`
+- 向量由 KVLite adapter 层统一 L2 normalize
+- HNSW 使用 `ip`，归一化后 score 可以按 cosine similarity 理解
+
+### 8.5 为什么模型不提交到 git
+
+`third_party/onnxruntime/` 和 `models/` 已被 `.gitignore` 忽略。
+
+- ONNX Runtime 是平台相关二进制
+- `model.onnx` / `model.onnx_data` 文件较大
+- 不同用户可能使用不同平台、模型版本或镜像源
+- 仓库只保存代码、配置和下载脚本
+- 用户通过 `make setup-embedding` 显式下载依赖和模型
 
 ---
 
@@ -286,13 +368,24 @@ vector_index_type=hnsw
 vector_metric=ip
 vector_hnsw_m=32
 vector_hnsw_ef_construction=256
-vector_hnsw_ef_search=128
-vector_scope_overfetch_factor=1
+vector_hnsw_ef_search=256
+vector_scope_overfetch_factor=4
 distance_backend=auto
 embedding_provider=hash
 ```
 
-### ef_search 选择依据
+ONNX embedding 模式建议从 `vector_score_threshold=0.75` 起步，再根据 `tests/semantic_onnx_test.sh` 输出的 score 分布调整。中文短问句、业务数据集和 tokenizer 差异都会影响阈值。
+
+### 9.1 当前 ONNX embedding 限制
+
+- tokenizer 是最小 WordPiece 实现，不是 Hugging Face tokenizer 的完整复刻
+- 未实现 batch embedding
+- 未实现 pooling，因为当前 ONNX 模型已有 `sentence_embedding` 输出
+- 如果换成只输出 `last_hidden_state` 的模型，需要实现 CLS / mean pooling
+- 换模型后旧向量索引不可复用，需要重新写入数据或 `VINDEX REBUILD`
+- `vector_score_threshold` 需要按真实业务语料的 score 分布重新标定
+
+### 9.2 ef_search 选择依据
 
 测试条件：100K 向量、64 维、HNSW / IP / AVX2。
 
@@ -391,6 +484,7 @@ VDEL_CLIENTS=100 VDEL_PIPELINE=16 \
 | 脚本 | `scripts/bench_all.sh` | KV 对齐压测（KVStore vs Redis） |
 | 脚本 | `scripts/bench_vector_rw.sh` | 向量读写压测 |
 | 测试 | `tests/vector_testcase` | 向量 CRUD 功能测试 |
+| 测试 | `tests/semantic_onnx_test.sh` | ONNX embedding 中文语义召回与 score 分布检查 |
 | 测试 | `tests/vector_benchmark` | 向量压测工具 |
 | 数据 | `results/raw.csv` | KV 压测原始数据 |
 | 数据 | `results/vector_rw_raw.csv` | 向量压测原始数据 |

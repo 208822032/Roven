@@ -11,6 +11,8 @@
 #    kvstore         仅构建主服务二进制
 #    ebpf            仅构建 eBPF 内核对象 + 用户态守护进程
 #    tests           仅构建测试二进制
+#    test            构建默认测试二进制
+#    test-embedding  运行 ONNX embedding 语义召回检查（需服务已启动）
 #    setup           初始化：git submodules + bootstrap
 #    embedding       构建 ONNX embedding 版本
 #    setup-embedding 显式下载 ONNX Runtime 和 bge-small-zh-v1.5 模型
@@ -197,7 +199,8 @@ TARGET := kvstore
 	@echo '  (忽略隐式链接规则 $@)'
 
 .PHONY: all setup deps bootstrap doctor clean distclean
-.PHONY: main ebpf tests help embedding setup-embedding setup-onnx check-embedding-assets
+.PHONY: main ebpf tests test test-embedding help
+.PHONY: embedding setup-embedding setup-onnx check-embedding-assets
 
 # 默认：完整构建
 all: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_TARGETS)
@@ -216,6 +219,21 @@ main: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET)
 # 仅测试
 tests: $(NTYCO_LIB) $(TEST_BINARIES)
 
+test: tests
+	@echo ""
+	@echo "  ✓ 默认测试二进制已构建"
+	@echo "    示例: ./tests/vector_testcase 127.0.0.1 9300"
+
+test-embedding:
+	@echo "ONNX embedding semantic check"
+	@echo "Please start kvstore first:"
+	@echo "  ./kvstore -c config/kvstore-embedding.conf"
+	@echo ""
+	@echo "Then run:"
+	@echo "  bash tests/semantic_onnx_test.sh 127.0.0.1 28080"
+	@echo ""
+	@bash tests/semantic_onnx_test.sh 127.0.0.1 28080
+
 # 仅 eBPF
 ebpf: $(EBPF_TARGETS)
 
@@ -231,6 +249,8 @@ help:
 	@echo "  all         完整构建 (默认)"
 	@echo "  main        仅构建主服务 kvstore"
 	@echo "  tests       仅构建测试二进制"
+	@echo "  test        构建默认测试二进制"
+	@echo "  test-embedding  运行 ONNX embedding 语义召回检查（需服务已启动）"
 	@echo "  ebpf        仅构建 eBPF 对象"
 	@echo "  embedding   构建 ONNX embedding 版本"
 	@echo ""
@@ -529,5 +549,5 @@ distclean: clean
 FORCE:
 
 .PHONY: all setup deps bootstrap doctor clean distclean help \
-        main tests ebpf embedding setup-embedding setup-onnx \
+        main tests test test-embedding ebpf embedding setup-embedding setup-onnx \
         check-embedding-assets _init_submodules FORCE

@@ -32,12 +32,15 @@
 #define SEND_BUF_SIZE (8 * 1024)
 #define MAX_EVENTS    1024
 #define DEFAULT_TOPK  10
+#define DEFAULT_THRESHOLD "0.0"
 
 /* ── types ──────────────────────────────────────────────────────── */
 
 typedef enum { OP_VSET, OP_VGET, OP_VSEARCH, OP_VDEL } op_t;
 
 typedef enum { BENCH_MODE_LATENCY, BENCH_MODE_THROUGHPUT } bench_mode_t;
+
+typedef enum { TEXT_MODE_SYNTHETIC, TEXT_MODE_SEMANTIC } text_mode_t;
 
 typedef struct {
     bench_mode_t mode;
@@ -50,6 +53,8 @@ typedef struct {
     const char *scope;
     const char *prefix;
     int topk;
+    const char *threshold;
+    text_mode_t text_mode;
     int prepare_count;
 } config_t;
 
@@ -79,10 +84,11 @@ static int send_vset(int fd, const char *question, const char *answer,
                      const char *scope);
 static int send_vget(int fd, const char *question, const char *scope);
 static int send_vsearch(int fd, const char *query, const char *scope,
-                        int topk);
+                        int topk, const char *threshold);
 static int send_vdel(int fd, const char *key, const char *scope);
-static void make_question(char *buf, size_t cap, const char *prefix, int i);
-static void make_answer(char *buf, size_t cap, const char *prefix, int i);
+static void make_question(char *buf, size_t cap, const config_t *cfg, int i);
+static void make_answer(char *buf, size_t cap, const config_t *cfg, int i);
+static void make_query(char *buf, size_t cap, const config_t *cfg, int i);
 static int parse_resp_object(const char *buf, int len, int *consumed);
 static int classify_resp(const char *data, int len, op_t op);
 static int compare_longlong(const void *a, const void *b);
@@ -212,9 +218,9 @@ static int send_vget(int fd, const char *question, const char *scope) {
 }
 
 static int send_vsearch(int fd, const char *query, const char *scope,
-                        int topk) {
-    const char *parts[4];
-    size_t lens[4];
+                        int topk, const char *threshold) {
+    const char *parts[5];
+    size_t lens[5];
     char topk_buf[32];
     size_t count = 0;
 
@@ -226,6 +232,9 @@ static int send_vsearch(int fd, const char *query, const char *scope,
         parts[count] = scope; lens[count] = strlen(scope); count++;
     }
     parts[count] = topk_buf; lens[count] = strlen(topk_buf); count++;
+    if (threshold && threshold[0]) {
+        parts[count] = threshold; lens[count] = strlen(threshold); count++;
+    }
 
     return do_send_command(fd, parts, lens, count);
 }
@@ -245,12 +254,70 @@ static int send_vdel(int fd, const char *key, const char *scope) {
 
 /* ── key generation ─────────────────────────────────────────────── */
 
-static void make_question(char *buf, size_t cap, const char *prefix, int i) {
-    snprintf(buf, cap, "%s_question_%08d", prefix, i);
+static const char *semantic_questions[] = {
+    "怎么重置密码",
+    "如何修改手机号",
+    "如何开具发票",
+    "怎么查看订单",
+    "如何取消订单",
+    "会员怎么续费",
+    "如何联系客服",
+    "怎么修改收货地址",
+    "账号无法登录怎么办",
+    "如何申请退款"
+};
+
+static const char *semantic_queries[] = {
+    "忘记密码怎么办",
+    "怎么更换绑定手机",
+    "发票在哪里申请",
+    "订单在哪里看",
+    "不想买了怎么取消",
+    "会员到期如何续费",
+    "怎么联系人工客服",
+    "收货地址在哪里改",
+    "登录不上账号怎么办",
+    "退款怎么申请"
+};
+
+static const char *semantic_answers[] = {
+    "可以在登录页点击忘记密码",
+    "可以在账号安全页面更换绑定手机",
+    "可以在订单详情页申请发票",
+    "可以在订单中心查看订单",
+    "可以在订单详情页申请取消订单",
+    "可以在会员中心完成续费",
+    "可以在帮助中心联系在线客服",
+    "可以在地址管理页面修改收货地址",
+    "可以先重置密码或联系人工客服",
+    "可以在订单详情页提交退款申请"
+};
+
+static void make_question(char *buf, size_t cap, const config_t *cfg, int i) {
+    if (cfg->text_mode == TEXT_MODE_SEMANTIC) {
+        size_t n = sizeof(semantic_questions) / sizeof(semantic_questions[0]);
+        snprintf(buf, cap, "%s_%08d_%s", cfg->prefix, i, semantic_questions[i % (int)n]);
+        return;
+    }
+    snprintf(buf, cap, "%s_question_%08d", cfg->prefix, i);
 }
 
-static void make_answer(char *buf, size_t cap, const char *prefix, int i) {
-    snprintf(buf, cap, "%s_answer_%08d", prefix, i);
+static void make_answer(char *buf, size_t cap, const config_t *cfg, int i) {
+    if (cfg->text_mode == TEXT_MODE_SEMANTIC) {
+        size_t n = sizeof(semantic_answers) / sizeof(semantic_answers[0]);
+        snprintf(buf, cap, "%s_%08d_%s", cfg->prefix, i, semantic_answers[i % (int)n]);
+        return;
+    }
+    snprintf(buf, cap, "%s_answer_%08d", cfg->prefix, i);
+}
+
+static void make_query(char *buf, size_t cap, const config_t *cfg, int i) {
+    if (cfg->text_mode == TEXT_MODE_SEMANTIC) {
+        size_t n = sizeof(semantic_queries) / sizeof(semantic_queries[0]);
+        snprintf(buf, cap, "%s", semantic_queries[i % (int)n]);
+        return;
+    }
+    make_question(buf, cap, cfg, i);
 }
 
 /* ── RESP parser ────────────────────────────────────────────────── */
@@ -433,21 +500,24 @@ static void run_latency(const config_t *cfg) {
 
     for (int i = 0; i < cfg->n_requests; i++) {
         int idx = i % total_keys;
-        make_question(question, sizeof(question), cfg->prefix, idx);
+        if (cfg->op == OP_VSEARCH)
+            make_query(question, sizeof(question), cfg, idx);
+        else
+            make_question(question, sizeof(question), cfg, idx);
 
         long long t0 = now_us();
         int send_ret = 0;
 
         switch (cfg->op) {
         case OP_VSET:
-            make_answer(answer, sizeof(answer), cfg->prefix, i);
+            make_answer(answer, sizeof(answer), cfg, i);
             send_ret = send_vset(fd, question, answer, cfg->scope);
             break;
         case OP_VGET:
             send_ret = send_vget(fd, question, cfg->scope);
             break;
         case OP_VSEARCH:
-            send_ret = send_vsearch(fd, question, cfg->scope, cfg->topk);
+            send_ret = send_vsearch(fd, question, cfg->scope, cfg->topk, cfg->threshold);
             break;
         case OP_VDEL:
             send_ret = send_vdel(fd, question, cfg->scope);
@@ -534,21 +604,24 @@ static void mod_epoll(int epfd, client_t *c, int enable_out) {
 
 static int try_send_one(client_t *c, const config_t *cfg, int idx, int *total_sent) {
     char question[MAX_KEY_LEN], answer[MAX_VAL_LEN];
-    make_question(question, sizeof(question), cfg->prefix, idx);
+    if (cfg->op == OP_VSEARCH)
+        make_query(question, sizeof(question), cfg, idx);
+    else
+        make_question(question, sizeof(question), cfg, idx);
 
     long long t0 = now_us();
     int send_ret = 0;
 
     switch (cfg->op) {
     case OP_VSET:
-        make_answer(answer, sizeof(answer), cfg->prefix, *total_sent);
+        make_answer(answer, sizeof(answer), cfg, *total_sent);
         send_ret = send_vset(c->fd, question, answer, cfg->scope);
         break;
     case OP_VGET:
         send_ret = send_vget(c->fd, question, cfg->scope);
         break;
     case OP_VSEARCH:
-        send_ret = send_vsearch(c->fd, question, cfg->scope, cfg->topk);
+        send_ret = send_vsearch(c->fd, question, cfg->scope, cfg->topk, cfg->threshold);
         break;
     case OP_VDEL:
         send_ret = send_vdel(c->fd, question, cfg->scope);
@@ -781,8 +854,8 @@ static void run_prepare(const config_t *cfg) {
     long long start_us = now_us();
 
     for (int i = 0; i < cfg->prepare_count; i++) {
-        make_question(question, sizeof(question), cfg->prefix, i);
-        make_answer(answer, sizeof(answer), cfg->prefix, i);
+        make_question(question, sizeof(question), cfg, i);
+        make_answer(answer, sizeof(answer), cfg, i);
 
         if (send_vset(fd, question, answer, cfg->scope) != 0) {
             failed++;
@@ -854,6 +927,9 @@ static void print_usage(const char *prog) {
     printf("  --scope <scope>              Scope (default: bench_scope)\n");
     printf("  --prefix <prefix>            Key prefix (default: bench)\n");
     printf("  --topk <topk>                Top-K for VSEARCH (default: 10)\n");
+    printf("  --threshold <score>          Threshold for VSEARCH (default: 0.0)\n");
+    printf("  --text-mode <synthetic|semantic>\n");
+    printf("                               synthetic uses old ASCII keys; semantic uses Chinese short text\n");
     printf("  --prepare <count>            Pre-populate count records before benchmark\n");
 }
 
@@ -865,6 +941,8 @@ int main(int argc, char **argv) {
     cfg.scope = "bench_scope";
     cfg.prefix = "bench";
     cfg.topk = DEFAULT_TOPK;
+    cfg.threshold = DEFAULT_THRESHOLD;
+    cfg.text_mode = TEXT_MODE_SYNTHETIC;
     cfg.pipeline = 1;
 
     int mode_set = 0, op_set = 0;
@@ -874,6 +952,8 @@ int main(int argc, char **argv) {
         OPT_SCOPE,
         OPT_PREFIX,
         OPT_TOPK,
+        OPT_THRESHOLD,
+        OPT_TEXT_MODE,
         OPT_PREPARE,
     };
 
@@ -882,6 +962,8 @@ int main(int argc, char **argv) {
         {"scope",   required_argument, NULL, OPT_SCOPE},
         {"prefix",  required_argument, NULL, OPT_PREFIX},
         {"topk",    required_argument, NULL, OPT_TOPK},
+        {"threshold", required_argument, NULL, OPT_THRESHOLD},
+        {"text-mode", required_argument, NULL, OPT_TEXT_MODE},
         {"prepare", required_argument, NULL, OPT_PREPARE},
         {NULL, 0, NULL, 0}
     };
@@ -918,6 +1000,12 @@ int main(int argc, char **argv) {
         case OPT_SCOPE: cfg.scope = optarg; break;
         case OPT_PREFIX: cfg.prefix = optarg; break;
         case OPT_TOPK: cfg.topk = atoi(optarg); break;
+        case OPT_THRESHOLD: cfg.threshold = optarg; break;
+        case OPT_TEXT_MODE:
+            if (strcmp(optarg, "synthetic") == 0) cfg.text_mode = TEXT_MODE_SYNTHETIC;
+            else if (strcmp(optarg, "semantic") == 0) cfg.text_mode = TEXT_MODE_SEMANTIC;
+            else { fprintf(stderr, "Invalid text mode: %s\n", optarg); return 1; }
+            break;
         case OPT_PREPARE: cfg.prepare_count = atoi(optarg); break;
         default:
             print_usage(argv[0]);

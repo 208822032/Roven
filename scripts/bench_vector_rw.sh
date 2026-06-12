@@ -32,12 +32,14 @@ PREPARE_COUNT="${PREPARE_COUNT:-100000}"
 SCOPE="${SCOPE:-bench_scope}"
 PREFIX="${PREFIX:-rw_data}"
 TOPK="${TOPK:-10}"
+THRESHOLD="${THRESHOLD:-0.0}"
+TEXT_MODE="${TEXT_MODE:-synthetic}"
 
 # Fixed server configuration
 INDEX_TYPE="${INDEX_TYPE:-hnsw}"
 METRIC="${METRIC:-ip}"
 DISTANCE_BACKEND="${DISTANCE_BACKEND:-auto}"
-DIM="64"
+DIM="${DIM:-64}"
 
 # latency defaults
 LATENCY_CLIENTS="${LATENCY_CLIENTS:-1}"
@@ -166,6 +168,8 @@ run_bench() {
     --scope "$SCOPE"
     --prefix "$PREFIX"
     --topk "$TOPK"
+    --threshold "$THRESHOLD"
+    --text-mode "$TEXT_MODE"
   )
 
   if [ "$prepare" -gt 0 ]; then
@@ -200,7 +204,7 @@ main() {
   log "Target: $HOST:$PORT"
   log "Config: idx=$INDEX_TYPE metric=$METRIC dist=$DISTANCE_BACKEND dim=$DIM"
   log "Params: COUNT=$COUNT SEARCH_COUNT=$SEARCH_COUNT TOPK=$TOPK"
-  log "Scope: $SCOPE  Prefix: $PREFIX"
+  log "Scope: $SCOPE  Prefix: $PREFIX  TEXT_MODE=$TEXT_MODE THRESHOLD=$THRESHOLD"
   log "Logs: $LOG_DIR"
 
   start_kvstore
