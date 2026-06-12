@@ -260,7 +260,7 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
     if (config_path_out) *config_path_out = NULL;
 
     for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0) {
+        if (strcmp(argv[i], "--config") == 0 || strcmp(argv[i], "-c") == 0) {
             if (i + 1 < argc) {
                 if (config_path_out) *config_path_out = argv[++i];
             }

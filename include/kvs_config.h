@@ -194,6 +194,7 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path);
 // 从命令行覆盖关键配置项（保持兼容）
 // 支持：
 //  --config <path>
+//  -c <path>
 //  --slave
 //  --master <ip> <port> <listen_port>
 //  <port>                // 仅 master：第一个非选项参数

@@ -129,8 +129,11 @@ flowchart TD
 git submodule init && git submodule update
 make
 
-# 启动服务
-./kvstore --config config/master.conf
+# 启动服务（默认会读取 config/kvstore.conf）
+./kvstore
+
+# 或显式指定配置文件
+./kvstore -c config/master.conf
 
 # 基础 KV 功能测试
 ./tests/testcase 127.0.0.1 9300 5
@@ -140,6 +143,14 @@ make
 
 # 向量压测（latency 模式）
 BENCH_MODE=latency COUNT=100000 SEARCH_COUNT=10000 ./scripts/bench_vector_rw.sh
+```
+
+ONNX embedding 版本：
+
+```bash
+make setup-embedding
+make embedding
+./kvstore -c config/kvstore-embedding.conf
 ```
 
 ---

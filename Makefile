@@ -12,6 +12,8 @@
 #    ebpf            仅构建 eBPF 内核对象 + 用户态守护进程
 #    tests           仅构建测试二进制
 #    setup           初始化：git submodules + bootstrap
+#    embedding       构建 ONNX embedding 版本
+#    setup-embedding 显式下载 ONNX Runtime 和 bge-small-zh-v1.5 模型
 #    deps            检查/提示缺失的系统包 (AUTO_INSTALL_DEPS=1 自动安装)
 #    bootstrap       构建 libbpf + btf2header (项目内安装，无需 sudo)
 #    doctor          全面环境诊断 (内核、Clang、库、BTF)
@@ -22,6 +24,7 @@
 #    ENABLE_EBPF=0   跳过 eBPF 对象构建
 #    ENABLE_ONNX_EMBEDDING=1  使用 ONNX Runtime C API embedding 空壳
 #    ONNXRUNTIME_ROOT=/path/to/onnxruntime  ONNX Runtime 安装目录
+#    ONNX_MODEL_DIR=models/bge-small-zh-v1.5  ONNX embedding 模型目录
 #    AUTO_INSTALL_DEPS=1  配合 deps 目标自动 apt-get install (需 sudo)
 #    SYNC_MODE=1     编译同步模式
 #    OPT_CFLAGS=-O0  覆盖优化级别
@@ -50,6 +53,9 @@ ENABLE_ONNX_EMBEDDING ?= 0
 ONNXRUNTIME_ROOT ?= third_party/onnxruntime
 ONNXRUNTIME_HEADER := $(ONNXRUNTIME_ROOT)/include/onnxruntime_c_api.h
 ONNXRUNTIME_LIBDIR := $(ONNXRUNTIME_ROOT)/lib
+ONNX_MODEL_DIR ?= models/bge-small-zh-v1.5
+ONNX_MODEL_PATH ?= $(ONNX_MODEL_DIR)/model.onnx
+ONNX_EMBEDDING_DIM ?= 512
 
 ifeq ($(ENABLE_ONNX_EMBEDDING),1)
   EMBED_RUNTIME_SRC := $(SRC_EMBED)/embedding_runtime_onnx.c
@@ -191,7 +197,7 @@ TARGET := kvstore
 	@echo '  (忽略隐式链接规则 $@)'
 
 .PHONY: all setup deps bootstrap doctor clean distclean
-.PHONY: main ebpf tests help
+.PHONY: main ebpf tests help embedding setup-embedding setup-onnx check-embedding-assets
 
 # 默认：完整构建
 all: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_TARGETS)
@@ -213,6 +219,10 @@ tests: $(NTYCO_LIB) $(TEST_BINARIES)
 # 仅 eBPF
 ebpf: $(EBPF_TARGETS)
 
+# ONNX embedding 版本：显式检查环境，然后用 ONNX runtime 构建。
+embedding: check-embedding-assets
+	@$(MAKE) ENABLE_ONNX_EMBEDDING=1 ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) all
+
 # 帮助
 help:
 	@echo "用法: make [目标] [选项]"
@@ -222,9 +232,12 @@ help:
 	@echo "  main        仅构建主服务 kvstore"
 	@echo "  tests       仅构建测试二进制"
 	@echo "  ebpf        仅构建 eBPF 对象"
+	@echo "  embedding   构建 ONNX embedding 版本"
 	@echo ""
 	@echo "环境目标:"
 	@echo "  setup       一键初始化 (submodules → bootstrap)"
+	@echo "  setup-embedding  下载 ONNX Runtime 和 bge-small-zh-v1.5 模型"
+	@echo "  setup-onnx       setup-embedding 的兼容别名"
 	@echo "  deps        检查系统依赖 (AUTO_INSTALL_DEPS=1 自动安装)"
 	@echo "  bootstrap   构建项目内 libbpf + btf2header"
 	@echo "  doctor      全面环境诊断"
@@ -237,6 +250,7 @@ help:
 	@echo "  ENABLE_EBPF=0        跳过 eBPF 构建"
 	@echo "  ENABLE_ONNX_EMBEDDING=1  编译 ONNX Runtime embedding 空壳"
 	@echo "  ONNXRUNTIME_ROOT=/path/to/onnxruntime  指定 ONNX Runtime 根目录"
+	@echo "  ONNX_MODEL_DIR=models/bge-small-zh-v1.5  指定 ONNX embedding 模型目录"
 	@echo "  AUTO_INSTALL_DEPS=1  deps 时自动安装系统包 (需 sudo)"
 	@echo "  SYNC_MODE=1          同步模式编译"
 
@@ -244,6 +258,11 @@ help:
 setup: deps _init_submodules bootstrap
 	@echo ""
 	@echo "  ✓ 环境初始化完成，现在可以执行 make"
+
+setup-embedding:
+	@bash tools/setup_onnx_embedding.sh
+
+setup-onnx: setup-embedding
 
 _init_submodules:
 	@if [ ! -f NtyCo/Makefile ]; then \
@@ -451,8 +470,34 @@ src/vector/kvs_vector_distance_avx2.o: src/vector/kvs_vector_distance_avx2.c
 
 check-onnx-runtime:
 	@if [ ! -f "$(ONNXRUNTIME_HEADER)" ]; then \
-		echo "ONNX Runtime not found. Please set ONNXRUNTIME_ROOT=/path/to/onnxruntime"; \
+		echo "ONNX Runtime not found. Please run:"; \
+		echo "  make setup-embedding"; \
 		echo "Expected header: $(ONNXRUNTIME_HEADER)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(ONNXRUNTIME_LIBDIR)/libonnxruntime.so" ]; then \
+		echo "ONNX Runtime library not found. Please run:"; \
+		echo "  make setup-embedding"; \
+		echo "Expected library: $(ONNXRUNTIME_LIBDIR)/libonnxruntime.so"; \
+		exit 1; \
+	fi
+
+check-embedding-assets:
+	@if [ ! -f "$(ONNXRUNTIME_HEADER)" ] || \
+	    [ ! -f "$(ONNXRUNTIME_LIBDIR)/libonnxruntime.so" ] || \
+	    [ ! -f "$(ONNX_MODEL_PATH)" ] || \
+	    [ ! -f "$(ONNX_MODEL_DIR)/model.onnx_data" ] || \
+	    [ ! -f "$(ONNX_MODEL_DIR)/vocab.txt" ]; then \
+		echo "Embedding assets are missing."; \
+		echo "Please run:"; \
+		echo "  make setup-embedding"; \
+		echo ""; \
+		echo "Expected files:"; \
+		echo "  $(ONNXRUNTIME_HEADER)"; \
+		echo "  $(ONNXRUNTIME_LIBDIR)/libonnxruntime.so"; \
+		echo "  $(ONNX_MODEL_PATH)"; \
+		echo "  $(ONNX_MODEL_DIR)/model.onnx_data"; \
+		echo "  $(ONNX_MODEL_DIR)/vocab.txt"; \
 		exit 1; \
 	fi
 
@@ -484,4 +529,5 @@ distclean: clean
 FORCE:
 
 .PHONY: all setup deps bootstrap doctor clean distclean help \
-        main tests ebpf _init_submodules FORCE
+        main tests ebpf embedding setup-embedding setup-onnx \
+        check-embedding-assets _init_submodules FORCE
