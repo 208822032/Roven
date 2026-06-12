@@ -20,6 +20,8 @@
 #
 #  Options:
 #    ENABLE_EBPF=0   跳过 eBPF 对象构建
+#    ENABLE_ONNX_EMBEDDING=1  使用 ONNX Runtime C API embedding 空壳
+#    ONNXRUNTIME_ROOT=/path/to/onnxruntime  ONNX Runtime 安装目录
 #    AUTO_INSTALL_DEPS=1  配合 deps 目标自动 apt-get install (需 sudo)
 #    SYNC_MODE=1     编译同步模式
 #    OPT_CFLAGS=-O0  覆盖优化级别
@@ -42,6 +44,24 @@ SRC_VECTOR  := src/vector
 SRC_EMBED   := src/embedding
 TEST_DIR    := tests
 KVS_LOG_OBJS := $(SRC_UTILS)/kvs_log.o $(SRC_UTILS)/kvs_log_writer.o
+
+# ── embedding runtime 选择 ─────────────────────────────────────────────
+ENABLE_ONNX_EMBEDDING ?= 0
+ONNXRUNTIME_ROOT ?= third_party/onnxruntime
+ONNXRUNTIME_HEADER := $(ONNXRUNTIME_ROOT)/include/onnxruntime_c_api.h
+ONNXRUNTIME_LIBDIR := $(ONNXRUNTIME_ROOT)/lib
+
+ifeq ($(ENABLE_ONNX_EMBEDDING),1)
+  EMBED_RUNTIME_SRC := $(SRC_EMBED)/embedding_runtime_onnx.c
+  ONNX_CFLAGS := -I$(ONNXRUNTIME_ROOT)/include
+  ONNX_LDFLAGS := -L$(ONNXRUNTIME_LIBDIR) -lonnxruntime -Wl,-rpath,$(ONNXRUNTIME_LIBDIR)
+  ONNX_PREFLIGHT := check-onnx-runtime
+else
+  EMBED_RUNTIME_SRC := $(SRC_EMBED)/embedding_runtime.c
+  ONNX_CFLAGS :=
+  ONNX_LDFLAGS :=
+  ONNX_PREFLIGHT :=
+endif
 
 # ── 第三方库 (项目内安装，端口无关) ─────────────────────────────────────
 THIRD_PARTY := $(ROOT)/third_party
@@ -91,7 +111,7 @@ BASE_SRCS = \
 	$(SRC_VECTOR)/kvs_vector_embedding.c                          \
 	$(SRC_VECTOR)/kvs_vector_distance.c                           \
 	$(SRC_VECTOR)/kvs_vector_distance_avx2.c                      \
-	$(SRC_EMBED)/embedding_runtime.c
+	$(EMBED_RUNTIME_SRC)
 
 SRCS = $(BASE_SRCS) $(SRC_DIST)/sync_backend_tcp.c
 OBJS = $(SRCS:.c=.o)
@@ -106,9 +126,9 @@ CXXFLAGS      = -I ./include -I ./src -g -std=c++17
 CFLAGS        = -I ./NtyCo/core/ -I ./include -I ./src \
                 -I $(JEMALLOC_INCLUDE) \
                 -DSYNC_MODE=$(SYNC_MODE) \
-                -g $(OPT_CFLAGS) $(EXTRA_CFLAGS)
+                -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS)
 LDFLAGS       = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -lm \
-                $(EXTRA_LIBS) $(JEMALLOC_LIB)
+                $(EXTRA_LIBS) $(JEMALLOC_LIB) $(ONNX_LDFLAGS)
 
 # ── eBPF 配置 ────────────────────────────────────────────────────────────
 ENABLE_EBPF ?= 1
@@ -174,7 +194,7 @@ TARGET := kvstore
 .PHONY: main ebpf tests help
 
 # 默认：完整构建
-all: $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_TARGETS)
+all: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_TARGETS)
 	@echo ""
 	@echo "  ✓ 构建完成"
 	@echo "    二进制: $(TARGET) $(if $(filter 1,$(ENABLE_EBPF)),$(EBPF_SYNCD_BIN),)"
@@ -185,7 +205,7 @@ all: $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_TARGETS)
 	fi
 
 # 仅主二进制
-main: $(NTYCO_LIB) $(TARGET)
+main: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET)
 
 # 仅测试
 tests: $(NTYCO_LIB) $(TEST_BINARIES)
@@ -215,6 +235,8 @@ help:
 	@echo ""
 	@echo "选项:"
 	@echo "  ENABLE_EBPF=0        跳过 eBPF 构建"
+	@echo "  ENABLE_ONNX_EMBEDDING=1  编译 ONNX Runtime embedding 空壳"
+	@echo "  ONNXRUNTIME_ROOT=/path/to/onnxruntime  指定 ONNX Runtime 根目录"
 	@echo "  AUTO_INSTALL_DEPS=1  deps 时自动安装系统包 (需 sudo)"
 	@echo "  SYNC_MODE=1          同步模式编译"
 
@@ -427,6 +449,15 @@ $(EBPF_SYNCD_BIN): $(BOOTSTRAP_LIBBPF) $(EBPF_SYNCD_SRCS)
 src/vector/kvs_vector_distance_avx2.o: src/vector/kvs_vector_distance_avx2.c
 	$(CC) $(CFLAGS) $(AVX2_CFLAGS) -c $< -o $@
 
+check-onnx-runtime:
+	@if [ ! -f "$(ONNXRUNTIME_HEADER)" ]; then \
+		echo "ONNX Runtime not found. Please set ONNXRUNTIME_ROOT=/path/to/onnxruntime"; \
+		echo "Expected header: $(ONNXRUNTIME_HEADER)"; \
+		exit 1; \
+	fi
+
+$(SRC_EMBED)/embedding_runtime_onnx.o: check-onnx-runtime
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -439,6 +470,7 @@ src/vector/kvs_vector_distance_avx2.o: src/vector/kvs_vector_distance_avx2.c
 
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
+	rm -f $(SRC_EMBED)/embedding_runtime.o $(SRC_EMBED)/embedding_runtime_onnx.o
 	rm -f $(TEST_DIR)/write_ttl_qps_test
 	rm -f $(TEST_TTL_EXPIRED_PATH) $(TEST_TTL_LOOKUP_SPLIT) $(TEST_SKIPTABLE_TARGETED)
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
