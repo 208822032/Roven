@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <fcntl.h> 
 #include <netinet/tcp.h>
+#include <stdint.h>
 
 #include "kvs_api.h"
 #include "kvs_log.h"
@@ -19,6 +20,8 @@
 #define EVENT_ACCEPT   	0
 #define EVENT_READ		1
 #define EVENT_WRITE		2
+
+#define PROACTOR_CONNECTION_SIZE 1024
 
 extern int g_shutdown_flag; // 声明全局关闭标志
 
@@ -34,6 +37,7 @@ typedef struct conn_info{
     //当前是否有还在发送过程中的 READ/WRITE SQE
     int read_in_flight;
     int write_in_flight;
+    int owner_released;
 
     int is_replication;//是否是复制连接
 } conn_extension_t;
@@ -44,6 +48,157 @@ typedef struct{
 } io_uring_op_t;
 
 extern kvs_config_t g_cfg;
+
+static conn_extension_t *proactor_connections[PROACTOR_CONNECTION_SIZE] = {0};
+static uint32_t proactor_fd_generation[PROACTOR_CONNECTION_SIZE] = {0};
+static uint64_t proactor_next_session_id = 1;
+static int proactor_pending_conn_ops = 0;
+
+static int proactor_fd_valid(int fd) {
+    return fd >= 0 && fd < PROACTOR_CONNECTION_SIZE;
+}
+
+static int proactor_target_is_current(conn_extension_t *ext) {
+    int fd;
+
+    if (!ext) {
+        return 0;
+    }
+    fd = ext->fd;
+    if (!proactor_fd_valid(fd)) {
+        return 0;
+    }
+    if (proactor_connections[fd] != ext) {
+        return 0;
+    }
+    if (net_session_is_closing(&ext->session)) {
+        return 0;
+    }
+    if (ext->session.generation == 0 ||
+        ext->session.generation != proactor_fd_generation[fd]) {
+        return 0;
+    }
+    return 1;
+}
+
+static void proactor_conn_ref_inc(conn_extension_t *ext) {
+    if (!ext) {
+        return;
+    }
+    net_session_ref_inc(&ext->session);
+}
+
+static void proactor_conn_final_free(conn_extension_t *ext) {
+    if (!ext) {
+        return;
+    }
+    net_session_free(&ext->session);
+    kvs_free(ext);
+}
+
+static void proactor_conn_release(conn_extension_t *ext) {
+    if (!ext) {
+        return;
+    }
+    if (net_session_ref_dec(&ext->session) == 0 &&
+        net_session_is_closing(&ext->session)) {
+        proactor_conn_final_free(ext);
+    }
+}
+
+static void proactor_conn_remove_owner(conn_extension_t *ext) {
+    int fd;
+
+    if (!ext) {
+        return;
+    }
+    fd = ext->fd;
+    if (proactor_fd_valid(fd) && proactor_connections[fd] == ext) {
+        proactor_connections[fd] = NULL;
+    }
+}
+
+static void proactor_conn_mark_closing(conn_extension_t *ext) {
+    int fd;
+
+    if (!ext || net_session_is_closing(&ext->session)) {
+        return;
+    }
+
+    fd = ext->fd;
+    net_session_mark_closing(&ext->session);
+    proactor_conn_remove_owner(ext);
+    if (fd >= 0) {
+        close(fd);
+        ext->fd = -1;
+    }
+}
+
+static void proactor_conn_request_close(conn_extension_t *ext) {
+    if (!ext) {
+        return;
+    }
+    if (ext->owner_released) {
+        return;
+    }
+    proactor_conn_mark_closing(ext);
+    ext->owner_released = 1;
+    proactor_conn_release(ext);
+}
+
+static void proactor_close_all_connections(void) {
+    int fd;
+
+    for (fd = 0; fd < PROACTOR_CONNECTION_SIZE; ++fd) {
+        conn_extension_t *ext = proactor_connections[fd];
+        if (ext) {
+            proactor_conn_request_close(ext);
+        }
+    }
+}
+
+static void proactor_op_release(io_uring_op_t *op) {
+    if (!op) {
+        return;
+    }
+    if ((op->op == EVENT_READ || op->op == EVENT_WRITE) && op->ctx) {
+        conn_extension_t *ctx = op->ctx;
+        op->ctx = NULL;
+        if (proactor_pending_conn_ops > 0) {
+            proactor_pending_conn_ops--;
+        }
+        proactor_conn_release(ctx);
+    }
+    kvs_free(op);
+}
+
+static void proactor_drain_pending_ops(struct io_uring *ring) {
+    int attempts = 0;
+
+    while (proactor_pending_conn_ops > 0 && attempts < 4096) {
+        struct io_uring_cqe *cqe = NULL;
+        struct __kernel_timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 };
+        int ret;
+
+        io_uring_submit(ring);
+        ret = io_uring_wait_cqe_timeout(ring, &cqe, &ts);
+        if (ret < 0 || !cqe) {
+            attempts++;
+            continue;
+        }
+
+        io_uring_op_t *op = (io_uring_op_t *)io_uring_cqe_get_data(cqe);
+        if (op && op->ctx) {
+            if (op->op == EVENT_READ) {
+                op->ctx->read_in_flight = 0;
+            } else if (op->op == EVENT_WRITE) {
+                op->ctx->write_in_flight = 0;
+            }
+        }
+        io_uring_cqe_seen(ring, cqe);
+        proactor_op_release(op);
+    }
+}
 
 //工具函数
 static int p_set_nonblocking(int fd) {
@@ -72,12 +227,18 @@ static int p_set_tcp_buffer_size(int fd, int recv_size, int send_size) {
 
 //初始化连接上下文
 static int p_init_conn_extension(conn_extension_t *ext, int fd) {
+    uint32_t generation;
+
+    if (!proactor_fd_valid(fd)) {
+        return -1;
+    }
     memset(ext, 0, sizeof(conn_extension_t));
     ext->fd = fd;
     ext->send_offset = 0;
     ext->is_replication = 0;
     ext->read_in_flight = 0;
     ext->write_in_flight = 0;
+    ext->owner_released = 0;
     
     //初始化net_session
     if(net_session_init(&ext->session,
@@ -86,26 +247,23 @@ static int p_init_conn_extension(conn_extension_t *ext, int fd) {
         return -1;
     }
 
+    proactor_fd_generation[fd]++;
+    if (proactor_fd_generation[fd] == 0) {
+        proactor_fd_generation[fd] = 1;
+    }
+    generation = proactor_fd_generation[fd];
+    net_session_set_identity(&ext->session,
+                             proactor_next_session_id++,
+                             generation,
+                             0);
+    proactor_connections[fd] = ext;
+
     //TCP优化
     p_set_nonblocking(fd);
     p_set_tcp_nodelay(fd);
     p_set_tcp_buffer_size(fd, 1024 * 1024, 1024 * 1024); // 1MB缓冲区
     
     return 0;
-}
-
-// 释放连接扩展
-static void p_free_conn_extension(conn_extension_t *ext) {
-    if (!ext) return;
-    
-    net_session_free(&ext->session);
-      
-    if (ext->fd >= 0) {
-        close(ext->fd);
-        ext->fd = -1;
-    }
-    
-    kvs_free(ext);
 }
 
 static int proactor_session_handler(resp_parser_t* parser,
@@ -176,6 +334,9 @@ static int proactor_session_handler(resp_parser_t* parser,
 // === net_session 封装 ===
 
 static int p_process_received_data(conn_extension_t *ext) {
+    if (!proactor_target_is_current(ext)) {
+        return -1;
+    }
     return net_session_process_resp(ext->fd,
                                     &ext->session,
                                     proactor_session_handler,
@@ -194,12 +355,14 @@ void proactor_wait(void) {
 #define ENTRIES_LENGTH		1024
 
 int set_event_recv(struct io_uring *ring, conn_extension_t *ctx) {
+    io_uring_op_t* op;
+    struct io_uring_sqe *sqe;
+    netbuf_t* recv_buf;
+
+    if(!proactor_target_is_current(ctx)) return -1;
     if(ctx->read_in_flight) return 0; // 已经有一个 READ 在飞
 
-	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-	if (!sqe) return -1;
-
-    netbuf_t* recv_buf = &ctx->session.recv_buf;
+    recv_buf = &ctx->session.recv_buf;
 
 	// 确保有足够空间接收数据
     size_t min_space = 4096;
@@ -209,13 +372,19 @@ int set_event_recv(struct io_uring *ring, conn_extension_t *ctx) {
         }
     }
 
-    size_t remaining = recv_buf->capacity - recv_buf->size;
-
-    io_uring_op_t* op = kvs_malloc(sizeof(io_uring_op_t));
+    op = kvs_malloc(sizeof(io_uring_op_t));
     if(!op) return -1;
+
+	sqe = io_uring_get_sqe(ring);
+	if (!sqe) {
+        kvs_free(op);
+        return -1;
+    }
 
     op->op  = EVENT_READ;
     op->ctx = ctx;
+    proactor_conn_ref_inc(ctx);
+    proactor_pending_conn_ops++;
 	
 	io_uring_prep_recv(sqe, ctx->fd, 
                       recv_buf->data + recv_buf->size, 
@@ -230,22 +399,33 @@ int set_event_recv(struct io_uring *ring, conn_extension_t *ctx) {
 
 
 int set_event_send(struct io_uring *ring, conn_extension_t *ctx) {
+    io_uring_op_t *op;
+    struct io_uring_sqe *sqe;
+    netbuf_t* send_buf;
+    size_t remaining;
+
+    if (!proactor_target_is_current(ctx)) return -1;
     if (ctx->write_in_flight) return 0; // 已经有一个 WRITE 在飞
 
-    netbuf_t* send_buf = &ctx->session.send_buf;
+    send_buf = &ctx->session.send_buf;
 
     if (ctx->send_offset >= send_buf->size) return 0; // 无数据可发
 
-	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-	if(!sqe) return -1;
-
-	size_t remaining = send_buf->size - ctx->send_offset;
-
-    io_uring_op_t *op = kvs_malloc(sizeof(io_uring_op_t));
+    op = kvs_malloc(sizeof(io_uring_op_t));
     if (!op) return -1;
+
+	sqe = io_uring_get_sqe(ring);
+	if(!sqe) {
+        kvs_free(op);
+        return -1;
+    }
+
+	remaining = send_buf->size - ctx->send_offset;
 
     op->op  = EVENT_WRITE;
     op->ctx = ctx;
+    proactor_conn_ref_inc(ctx);
+    proactor_pending_conn_ops++;
 
     io_uring_prep_send(sqe,
                        ctx->fd,
@@ -259,12 +439,17 @@ int set_event_send(struct io_uring *ring, conn_extension_t *ctx) {
 }
 
 int set_event_accept(struct io_uring *ring, int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
+    io_uring_op_t* op;
+    struct io_uring_sqe *sqe;
 
-	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-	if(!sqe) return -1;
-
-    io_uring_op_t* op = kvs_malloc(sizeof(io_uring_op_t));
+    op = kvs_malloc(sizeof(io_uring_op_t));
     if(!op) return -1;
+
+	sqe = io_uring_get_sqe(ring);
+	if(!sqe) {
+        kvs_free(op);
+        return -1;
+    }
 
     op->op  = EVENT_ACCEPT;
     op->ctx = NULL; // 对于 ACCEPT，ctx 暂时不用
@@ -277,12 +462,15 @@ int set_event_accept(struct io_uring *ring, int sockfd, struct sockaddr *addr, s
 
 static void post_recv_if_needed(struct io_uring *ring, conn_extension_t *ctx) {
     // 连接还活着且当前没有 READ，就再投一个
-    if (!ctx->read_in_flight) {
+    if (proactor_target_is_current(ctx) && !ctx->read_in_flight) {
         set_event_recv(ring, ctx);
     }
 }
 
 static void post_send_if_needed(struct io_uring *ring, conn_extension_t *ctx) {
+    if (!proactor_target_is_current(ctx)) {
+        return;
+    }
     netbuf_t* send_buf = &ctx->session.send_buf;
     if (ctx->send_offset < send_buf->size && !ctx->write_in_flight) {
         set_event_send(ring, ctx);
@@ -350,7 +538,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
 
 	struct io_uring_params params;
 	memset(&params, 0, sizeof(params));
-	struct io_uring ring;
+    struct io_uring ring;
 	if (io_uring_queue_init_params(ENTRIES_LENGTH, &ring, &params) < 0) {
     KVS_LOG_ERROR_ERRNO("network", "io_uring_queue_init_params failed");
         close(sockfd);
@@ -379,7 +567,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
 
 		if (g_shutdown_flag) {
 			io_uring_cqe_seen(&ring, cqe);
-            if(op) kvs_free(op);
+            proactor_op_release(op);
 			break;
 		}
 
@@ -394,7 +582,9 @@ int proactor_start(unsigned short port, msg_handler handler) {
                 conn_extension_t *new_ctx = kvs_malloc(sizeof(conn_extension_t));
                 if (new_ctx && p_init_conn_extension(new_ctx, connfd) == 0) {
                     // 新连接：立即投一个 READ
-                    set_event_recv(&ring, new_ctx);
+                    if (set_event_recv(&ring, new_ctx) < 0) {
+                        proactor_conn_request_close(new_ctx);
+                    }
                 } else {
                     if (new_ctx) kvs_free(new_ctx);
                     close(connfd);
@@ -406,18 +596,23 @@ int proactor_start(unsigned short port, msg_handler handler) {
         } else if (op->op == EVENT_READ) {
             conn_extension_t *ctx = op->ctx;
             int n = cqe->res;
-            ctx->read_in_flight = 0;
 
-            if (n <= 0) {
+            if (!ctx) {
+                /* nothing to do */
+            } else if (!proactor_target_is_current(ctx)) {
+                ctx->read_in_flight = 0;
+            } else if (n <= 0) {
+                ctx->read_in_flight = 0;
                 // client 关闭或错误
-                p_free_conn_extension(ctx);
+                proactor_conn_request_close(ctx);
             } else {
+                ctx->read_in_flight = 0;
                 netbuf_t* recv_buf = &ctx->session.recv_buf;
                 recv_buf->size += n;
 
                 int cmd_cnt = p_process_received_data(ctx);
                 if (cmd_cnt < 0) {
-                    p_free_conn_extension(ctx);
+                    proactor_conn_request_close(ctx);
                 } else {
                     // 始终保持至少一个 READ 在队列中
                     post_recv_if_needed(&ring, ctx);
@@ -430,11 +625,16 @@ int proactor_start(unsigned short port, msg_handler handler) {
 
             conn_extension_t *ctx = op->ctx;
             int n = cqe->res;
-            ctx->write_in_flight = 0;
 
-            if (n <= 0) {
-                p_free_conn_extension(ctx);
+            if (!ctx) {
+                /* nothing to do */
+            } else if (!proactor_target_is_current(ctx)) {
+                ctx->write_in_flight = 0;
+            } else if (n <= 0) {
+                ctx->write_in_flight = 0;
+                proactor_conn_request_close(ctx);
             } else {
+                ctx->write_in_flight = 0;
                 ctx->send_offset += n;
 
                 netbuf_t* send_buf = &ctx->session.send_buf;
@@ -451,10 +651,12 @@ int proactor_start(unsigned short port, msg_handler handler) {
         }
 
         io_uring_cqe_seen(&ring, cqe);
-        kvs_free(op);
+        proactor_op_release(op);
     }
 
 
+    proactor_close_all_connections();
+    proactor_drain_pending_ops(&ring);
 	close(sockfd);
 	io_uring_queue_exit(&ring);
     KVS_LOG_INFO("network", "Proactor network exited");
