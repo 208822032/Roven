@@ -4,6 +4,7 @@
 #define KVS_VECTOR_INTERNAL
 #include "kvs_api.h"
 #include "kvs_aof_internal.h"
+#include "kvs_globals.h"
 #include "kvs_log.h"
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -685,6 +686,19 @@ static int is_proactor_mode(void) {
 #endif
 }
 
+static int aof_rewrite_acquire_store_read_lock(void) {
+    int lock_ret = pthread_rwlock_rdlock(&g_kv_data_rwlock);
+    if (lock_ret != 0) {
+        KVS_LOG_ERROR("aof", "failed to acquire global store read lock for AOF rewrite: %d", lock_ret);
+        return -1;
+    }
+    return 0;
+}
+
+static void aof_rewrite_release_store_read_lock(void) {
+    pthread_rwlock_unlock(&g_kv_data_rwlock);
+}
+
 //线程方式的 AOF 重写（用于 Proactor 模式）
 static void* aof_rewrite_thread(void *arg) {
     // printf("AOF rewrite thread started (TID: %ld)\n", (long)pthread_self());
@@ -697,7 +711,7 @@ static void* aof_rewrite_thread(void *arg) {
     }
 
 #if (NETWORK_SELECT == NETWORK_PROACTOR)
-    // 读锁保护遍历，避免并发释放导致段错误
+    // 仅保护 AOF rewrite 自身状态，不保护 global store。
     if (pthread_rwlock_rdlock(&aof_state.data_rwlock) != 0) {
         KVS_LOG_ERROR_ERRNO("aof", "rewrite thread: rdlock failed");
         close(fd);
@@ -706,8 +720,14 @@ static void* aof_rewrite_thread(void *arg) {
     }
 #endif
 
-    // 写入数据到临时文件
-    if (write_data_to_tempfile(fd) == -1) {
+    /*
+     * 阶段 0.5 临时一致性修复：AOF rewrite 会遍历普通 KV 和
+     * vector live store。aof_state.data_rwlock 不是 global store 锁，
+     * 因此这里用 g_kv_data_rwlock 读锁覆盖实际遍历和写临时文件。
+     * rewrite 期间会阻塞写命令；长期路线 C 会改为 executor 生成
+     * snapshot，AOF rewrite IO 线程只负责锁外写 snapshot。
+     */
+    if (aof_rewrite_acquire_store_read_lock() != 0) {
 #if (NETWORK_SELECT == NETWORK_PROACTOR)
         pthread_rwlock_unlock(&aof_state.data_rwlock);
 #endif
@@ -715,6 +735,19 @@ static void* aof_rewrite_thread(void *arg) {
         aof_state.rewrite_in_progress = 0;
         pthread_exit(NULL);
     }
+
+    // 写入数据到临时文件
+    if (write_data_to_tempfile(fd) == -1) {
+        aof_rewrite_release_store_read_lock();
+#if (NETWORK_SELECT == NETWORK_PROACTOR)
+        pthread_rwlock_unlock(&aof_state.data_rwlock);
+#endif
+        close(fd);
+        aof_state.rewrite_in_progress = 0;
+        pthread_exit(NULL);
+    }
+
+    aof_rewrite_release_store_read_lock();
 
 #if (NETWORK_SELECT == NETWORK_PROACTOR)
     // 遍历完成后释放读锁
@@ -827,12 +860,27 @@ void aof_rewrite_background(void){
         return;
     }
 
+    /*
+     * 阶段 0.5 临时一致性修复：fork 前持全局读锁，保证子进程
+     * 获得的 COW 视图不会和普通写命令、TTL 删除、slave apply 或
+     * vector 写入并发修改同一 live store。该锁与 aof_state.data_rwlock
+     * 顺序固定为先 aof_state.data_rwlock，后 g_kv_data_rwlock；父进程
+     * fork 后立即释放。长期路线 C 会改为 executor snapshot_task。
+     */
+    if (aof_rewrite_acquire_store_read_lock() != 0) {
+        release_cow_snapshot();
+        aof_state.rewrite_in_progress = 0;
+        KVS_LOG_ERROR("aof", "failed to acquire global store snapshot lock");
+        return;
+    }
+
     pid_t childpid = fork();
     if(childpid == 0){
         // 子进程 - 拥有父进程数据的 COW 副本
         // printf("AOF rewrite child process started (PID: %d)\n", getpid());
 
         // 解除 COW 保护（子进程有自己的锁副本）
+        pthread_rwlock_unlock(&g_kv_data_rwlock);
         pthread_rwlock_unlock(&aof_state.data_rwlock);
 
         //子进程
@@ -858,7 +906,8 @@ void aof_rewrite_background(void){
         // printf("AOF rewrite child process completed\n");
         _exit(0);
     }else if(childpid > 0){
-        // 父进程 - 释放 COW 保护，允许继续处理写操作
+        // 父进程 - 释放快照保护，允许继续处理写操作
+        aof_rewrite_release_store_read_lock();
         release_cow_snapshot();
 
         //父进程
@@ -926,6 +975,9 @@ void aof_rewrite_background(void){
 
     }else{
         //错误
+        aof_rewrite_release_store_read_lock();
+        release_cow_snapshot();
+        aof_state.rewrite_in_progress = 0;
         KVS_LOG_ERROR_ERRNO("aof", "fork failed for AOF rewrite");
     }
 }
@@ -955,7 +1007,7 @@ void aof_stop_rewrite(void) {
 }
 
 //重写缓冲区写入
-int aof_rewrite_buffer_write(int fd){
+static int aof_rewrite_buffer_write_unlocked(int fd){
     int total_commands = 0;
 
     #if ENABLE_ARRAY
@@ -1057,4 +1109,22 @@ int aof_rewrite_buffer_write(int fd){
     #endif
 
     return 0;
+}
+
+int aof_rewrite_buffer_write(int fd){
+    int ret;
+
+    /*
+     * Legacy rewrite helper kept for the existing public symbol. It also
+     * traverses live KV structures, so protect it with the same stage 0.5
+     * global read-lock boundary as the main rewrite path.
+     */
+    if (aof_rewrite_acquire_store_read_lock() != 0) {
+        return -1;
+    }
+
+    ret = aof_rewrite_buffer_write_unlocked(fd);
+
+    aof_rewrite_release_store_read_lock();
+    return ret;
 }

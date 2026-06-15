@@ -109,3 +109,11 @@
 - 实现方式：`kvs_rdb_save()` 外层加读锁，实际保存逻辑下沉到 unlocked helper，避免后续 executor/snapshot 场景复用困难。
 - 已知限制：RDB save 期间会阻塞写命令，且当前仍可能在读锁内做文件 IO。
 - 后续路线 C：改为 executor `snapshot_task`，IO 线程只负责写 snapshot。
+
+## 实现状态：AOF rewrite
+
+- 当前状态：已通过 `g_kv_data_rwlock` 读锁保护 AOF rewrite 遍历 live store。
+- 锁范围：覆盖普通 KV array/rbtree/hash/skiptable 以及 vector section 的 rewrite 遍历。
+- 实现方式：采用方案 A，在现有 rewrite 入口内部补全局读锁边界；fork 路径在 fork 前持读锁建立 COW 视图，thread 路径在写临时文件遍历期间持读锁。
+- 已知限制：AOF rewrite 期间可能阻塞写命令，且当前仍可能在读锁内做文件 IO。
+- 后续路线 C：改为 executor `snapshot_task`，AOF rewrite IO 线程只负责写 snapshot。
