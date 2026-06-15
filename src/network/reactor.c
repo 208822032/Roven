@@ -597,7 +597,11 @@ static void reactor_process_executor_event(void) {
 
     for (;;) {
         kvs_response_task_t *resp = NULL;
-        int ret = kvs_command_executor_poll_response(&resp);
+        int ret = kvs_command_executor_poll_response_for_owner(
+            KVS_ASYNC_NET_OWNER_REACTOR,
+            0,
+            &resp
+        );
         if (ret <= 0 || !resp) {
             break;
         }

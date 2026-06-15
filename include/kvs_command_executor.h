@@ -35,6 +35,12 @@ void kvs_command_executor_stop(void);
 
 int kvs_command_executor_submit(kvs_command_task_t *task);
 int kvs_command_executor_poll_response(kvs_response_task_t **resp);
+int kvs_command_executor_poll_response_for(int owner_type,
+                                           int owner_poller_id,
+                                           kvs_response_task_t **resp);
+int kvs_command_executor_poll_response_for_owner(int owner_type,
+                                                 int owner_poller_id,
+                                                 kvs_response_task_t **resp);
 int kvs_command_executor_response_event_fd(void);
 void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out);
 void kvs_command_executor_record_response_drop(int reason);

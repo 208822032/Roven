@@ -17,6 +17,9 @@
 #include "resp_protocol.h"
 #include "distributed.h"
 #include "kvs_command_executor.h"
+#include "kvs_command_task.h"
+#include "kvs_response_task.h"
+#include "kvs_async_net_adapter.h"
 #include "net_session.h" //通用会话层
 
 
@@ -34,6 +37,7 @@ static msg_handler kvs_handler;
 
 typedef struct conn_info{
 	int fd;
+    struct io_uring *ring;
 
 	net_session_t session; //通用会话层 封装recv/send缓冲区和RESP解析器
     size_t send_offset;        // 发送偏移量
@@ -59,6 +63,11 @@ static uint64_t proactor_next_session_id = 1;
 static int proactor_pending_conn_ops = 0;
 static io_uring_op_t *proactor_executor_event_op = NULL;
 static int proactor_executor_event_pending = 0;
+
+static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t *ext);
+int set_event_send(struct io_uring *ring, conn_extension_t *ctx);
+static void post_recv_if_needed(struct io_uring *ring, conn_extension_t *ctx);
+static void post_send_if_needed(struct io_uring *ring, conn_extension_t *ctx);
 
 static int proactor_fd_valid(int fd) {
     return fd >= 0 && fd < PROACTOR_CONNECTION_SIZE;
@@ -87,11 +96,33 @@ static int proactor_target_is_current(conn_extension_t *ext) {
     return 1;
 }
 
+static int proactor_can_submit_next(conn_extension_t *ext) {
+    net_session_t *session;
+
+    if (!proactor_target_is_current(ext)) {
+        return 0;
+    }
+    session = &ext->session;
+    return !session->single_inflight &&
+           session->recv_buf.size > 0 &&
+           session->send_buf.size == 0 &&
+           ext->send_offset == 0 &&
+           !ext->write_in_flight;
+}
+
 static void proactor_conn_ref_inc(conn_extension_t *ext) {
     if (!ext) {
         return;
     }
     net_session_ref_inc(&ext->session);
+}
+
+static void proactor_response_destroy(kvs_response_task_t *resp) {
+    if (!resp) {
+        return;
+    }
+    kvs_response_task_destroy(resp);
+    kvs_free(resp);
 }
 
 static void proactor_conn_final_free(conn_extension_t *ext) {
@@ -110,6 +141,10 @@ static void proactor_conn_release(conn_extension_t *ext) {
         net_session_is_closing(&ext->session)) {
         proactor_conn_final_free(ext);
     }
+}
+
+static void proactor_conn_release_owner(void *owner) {
+    proactor_conn_release((conn_extension_t *)owner);
 }
 
 static void proactor_conn_remove_owner(conn_extension_t *ext) {
@@ -316,7 +351,7 @@ static int p_set_tcp_buffer_size(int fd, int recv_size, int send_size) {
 
 
 //初始化连接上下文
-static int p_init_conn_extension(conn_extension_t *ext, int fd) {
+static int p_init_conn_extension(conn_extension_t *ext, int fd, struct io_uring *ring) {
     uint32_t generation;
 
     if (!proactor_fd_valid(fd)) {
@@ -324,6 +359,7 @@ static int p_init_conn_extension(conn_extension_t *ext, int fd) {
     }
     memset(ext, 0, sizeof(conn_extension_t));
     ext->fd = fd;
+    ext->ring = ring;
     ext->send_offset = 0;
     ext->is_replication = 0;
     ext->read_in_flight = 0;
@@ -431,6 +467,315 @@ static int p_process_received_data(conn_extension_t *ext) {
                                     &ext->session,
                                     proactor_session_handler,
                                     ext);
+}
+
+static int proactor_command_is_replsync(net_session_t *session) {
+    resp_parser_t *parser;
+
+    if (!session) {
+        return 0;
+    }
+    parser = &session->resp_parser;
+    return parser->arg_index > 0 &&
+           parser->tokens[0] &&
+           strcasecmp(parser->tokens[0], "REPLSYNC") == 0;
+}
+
+static int proactor_async_validate_owner(
+    const kvs_async_net_response_target_t *target,
+    kvs_async_net_drop_reason_t *reason
+) {
+    conn_extension_t *ext;
+    net_session_t *session;
+
+    if (reason) {
+        *reason = KVS_ASYNC_NET_DROP_SESSION_MISMATCH;
+    }
+
+    if (!target || target->owner_type != KVS_ASYNC_NET_OWNER_PROACTOR) {
+        return 0;
+    }
+    ext = (conn_extension_t *)target->owner;
+    if (!proactor_target_is_current(ext)) {
+        return 0;
+    }
+    if (ext->fd != target->fd) {
+        return 0;
+    }
+
+    session = &ext->session;
+    if (session->session_id != target->session_id ||
+        session->generation != target->generation) {
+        return 0;
+    }
+    if (net_session_is_closing(session)) {
+        if (reason) {
+            *reason = KVS_ASYNC_NET_DROP_SESSION_CLOSING;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static int proactor_async_append_response(const kvs_async_net_response_target_t *target) {
+    conn_extension_t *ext;
+    net_session_t *session;
+    size_t len;
+
+    if (!target || target->owner_type != KVS_ASYNC_NET_OWNER_PROACTOR) {
+        return -1;
+    }
+    ext = (conn_extension_t *)target->owner;
+    if (!proactor_target_is_current(ext)) {
+        return -1;
+    }
+
+    session = &ext->session;
+    len = target->response_len;
+    if (session->send_buf.capacity - session->send_buf.size < len &&
+        netbuf_reserve(&session->send_buf, session->send_buf.size + len) < 0) {
+        return -1;
+    }
+
+    memcpy(session->send_buf.data + session->send_buf.size,
+           target->response_buf,
+           len);
+    session->send_buf.size += len;
+    return 0;
+}
+
+static void proactor_async_drop_response(
+    const kvs_async_net_response_target_t *target,
+    kvs_async_net_drop_reason_t reason
+) {
+    int executor_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_MISMATCH;
+
+    if (reason == KVS_ASYNC_NET_DROP_SESSION_CLOSING) {
+        executor_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_CLOSING;
+    } else if (reason == KVS_ASYNC_NET_DROP_APPEND_FAILED) {
+        executor_reason = KVS_COMMAND_EXECUTOR_DROP_APPEND_FAILED;
+        if (target && target->owner_type == KVS_ASYNC_NET_OWNER_PROACTOR) {
+            conn_extension_t *ext = (conn_extension_t *)target->owner;
+            if (proactor_target_is_current(ext)) {
+                proactor_conn_request_close(ext);
+            }
+        }
+    }
+
+    kvs_command_executor_record_response_drop(executor_reason);
+}
+
+static void proactor_async_release_session(kvs_async_net_response_target_t *target) {
+    void (*release_fn)(void *) = NULL;
+    void *owner = NULL;
+
+    if (!target) {
+        return;
+    }
+    release_fn = target->release_session;
+    owner = target->owner;
+    target->release_session = NULL;
+    target->owner = NULL;
+    target->session = NULL;
+    if (release_fn && owner) {
+        release_fn(owner);
+    }
+}
+
+static int proactor_async_enable_write(const kvs_async_net_response_target_t *target) {
+    conn_extension_t *ext;
+
+    if (!target || target->owner_type != KVS_ASYNC_NET_OWNER_PROACTOR) {
+        return -1;
+    }
+    ext = (conn_extension_t *)target->owner;
+    if (!proactor_target_is_current(ext)) {
+        return -1;
+    }
+    return set_event_send(ext->ring, ext);
+}
+
+static int proactor_async_restore_read(const kvs_async_net_response_target_t *target) {
+    conn_extension_t *ext;
+
+    if (!target || target->owner_type != KVS_ASYNC_NET_OWNER_PROACTOR) {
+        return -1;
+    }
+    ext = (conn_extension_t *)target->owner;
+    if (!proactor_target_is_current(ext)) {
+        return -1;
+    }
+    if (proactor_can_submit_next(ext)) {
+        int processed = proactor_submit_async_command(ext->ring, ext);
+        if (processed < 0) {
+            proactor_conn_request_close(ext);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int proactor_async_wake_owner(int owner_poller_id) {
+    (void)owner_poller_id;
+    return 0;
+}
+
+static const kvs_async_net_ops_t g_proactor_async_net_ops = {
+    .validate_owner = proactor_async_validate_owner,
+    .append_response = proactor_async_append_response,
+    .drop_response = proactor_async_drop_response,
+    .release_session = proactor_async_release_session,
+    .restore_read = proactor_async_restore_read,
+    .enable_write = proactor_async_enable_write,
+    .wake_owner = proactor_async_wake_owner,
+};
+
+static void proactor_handle_executor_response(kvs_response_task_t *resp) {
+    kvs_async_net_response_target_t target;
+
+    if (!resp) {
+        return;
+    }
+    kvs_async_net_response_target_from_task(&target, resp);
+    kvs_async_net_dispatch_response(&g_proactor_async_net_ops, &target);
+    proactor_response_destroy(resp);
+}
+
+static void proactor_process_executor_responses(struct io_uring *ring) {
+    for (;;) {
+        kvs_response_task_t *resp = NULL;
+        int ret = kvs_command_executor_poll_response_for_owner(
+            KVS_ASYNC_NET_OWNER_PROACTOR,
+            0,
+            &resp
+        );
+        if (ret <= 0 || !resp) {
+            break;
+        }
+        proactor_handle_executor_response(resp);
+    }
+
+    for (int fd = 0; fd < PROACTOR_CONNECTION_SIZE; ++fd) {
+        conn_extension_t *ext = proactor_connections[fd];
+        if (!proactor_target_is_current(ext)) {
+            continue;
+        }
+        if (proactor_can_submit_next(ext)) {
+            if (proactor_submit_async_command(ring, ext) < 0) {
+                proactor_conn_request_close(ext);
+            }
+        }
+        post_send_if_needed(ring, ext);
+        post_recv_if_needed(ring, ext);
+    }
+}
+
+static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t *ext) {
+    net_session_t *session;
+    resp_parser_t *parser;
+    kvs_response_task_t *resp = NULL;
+    kvs_command_task_t *task = NULL;
+    size_t cmd_len = 0;
+    uint64_t request_seq;
+    int parse_ret;
+    int build_ret;
+
+    if (!proactor_target_is_current(ext)) {
+        return -1;
+    }
+    session = &ext->session;
+    if (net_session_is_closing(session) || session->single_inflight) {
+        return 0;
+    }
+
+    parse_ret = net_session_parse_one_resp(ext->fd, session, &cmd_len);
+    if (parse_ret <= 0) {
+        return parse_ret;
+    }
+
+    if (ext->is_replication || proactor_command_is_replsync(session)) {
+        int processed = p_process_received_data(ext);
+        return processed < 0 ? -1 : processed;
+    }
+
+    parser = &session->resp_parser;
+    resp = (kvs_response_task_t *)kvs_malloc(sizeof(*resp));
+    task = (kvs_command_task_t *)kvs_malloc(sizeof(*task));
+    if (!resp || !task) {
+        if (resp) kvs_free(resp);
+        if (task) kvs_free(task);
+        return p_process_received_data(ext) < 0 ? -1 : 1;
+    }
+    memset(resp, 0, sizeof(*resp));
+    memset(task, 0, sizeof(*task));
+
+    if (kvs_response_task_init_owned(resp, KVS_MAX_RESPONSE_LENGTH) < 0) {
+        kvs_free(resp);
+        kvs_free(task);
+        return p_process_received_data(ext) < 0 ? -1 : 1;
+    }
+
+    build_ret = kvs_command_task_build(task,
+                                       parser->tokens,
+                                       parser->arg_index,
+                                       parser->token_lens,
+                                       resp);
+    if (build_ret < 0 && task->status <= 0) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        return p_process_received_data(ext) < 0 ? -1 : 1;
+    }
+    if (kvs_command_task_copy_argv(task) < 0) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        return p_process_received_data(ext) < 0 ? -1 : 1;
+    }
+
+    request_seq = net_session_next_request_seq(session);
+    if (!net_session_try_begin_inflight(session)) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return 0;
+    }
+
+    proactor_conn_ref_inc(ext);
+    task->session = session;
+    task->session_owner = ext;
+    task->session_release = proactor_conn_release_owner;
+    task->fd = ext->fd;
+    task->session_id = session->session_id;
+    task->generation = session->generation;
+    task->request_seq = request_seq;
+    task->owner_type = KVS_ASYNC_NET_OWNER_PROACTOR;
+    task->owner_poller_id = session->owner_poller_id;
+    task->sync_context = 0;
+    task->is_replication = 0;
+
+    if (kvs_command_executor_submit(task) < 0) {
+        net_session_end_inflight(session);
+        proactor_conn_release(ext);
+        task->session = NULL;
+        task->session_owner = NULL;
+        task->session_release = NULL;
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        return p_process_received_data(ext) < 0 ? -1 : 1;
+    }
+
+    netbuf_consume_front(&session->recv_buf, cmd_len);
+    resp_parser_reset(parser);
+
+    (void)ring;
+    return 1;
 }
 
 
@@ -552,7 +897,12 @@ int set_event_accept(struct io_uring *ring, int sockfd, struct sockaddr *addr, s
 
 static void post_recv_if_needed(struct io_uring *ring, conn_extension_t *ctx) {
     // 连接还活着且当前没有 READ，就再投一个
-    if (proactor_target_is_current(ctx) && !ctx->read_in_flight) {
+    if (proactor_target_is_current(ctx) &&
+        !ctx->read_in_flight &&
+        !ctx->session.single_inflight &&
+        ctx->session.send_buf.size == 0 &&
+        ctx->send_offset == 0 &&
+        !ctx->write_in_flight) {
         set_event_recv(ring, ctx);
     }
 }
@@ -683,7 +1033,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
             int connfd = cqe->res;
             if (connfd > 0) {
                 conn_extension_t *new_ctx = kvs_malloc(sizeof(conn_extension_t));
-                if (new_ctx && p_init_conn_extension(new_ctx, connfd) == 0) {
+                if (new_ctx && p_init_conn_extension(new_ctx, connfd, &ring) == 0) {
                     // 新连接：立即投一个 READ
                     if (set_event_recv(&ring, new_ctx) < 0) {
                         proactor_conn_request_close(new_ctx);
@@ -713,7 +1063,10 @@ int proactor_start(unsigned short port, msg_handler handler) {
                 netbuf_t* recv_buf = &ctx->session.recv_buf;
                 recv_buf->size += n;
 
-                int cmd_cnt = p_process_received_data(ctx);
+                int cmd_cnt = 0;
+                if (proactor_can_submit_next(ctx)) {
+                    cmd_cnt = proactor_submit_async_command(&ring, ctx);
+                }
                 if (cmd_cnt < 0) {
                     proactor_conn_request_close(ctx);
                 } else {
@@ -745,6 +1098,12 @@ int proactor_start(unsigned short port, msg_handler handler) {
                     // 全部发送完毕，重置发送缓冲
                     ctx->send_offset   = 0;
                     send_buf->size = 0;
+                    if (proactor_can_submit_next(ctx)) {
+                        int processed = proactor_submit_async_command(&ring, ctx);
+                        if (processed < 0) {
+                            proactor_conn_request_close(ctx);
+                        }
+                    }
                 }
                 // 如果还有未发送的内容，再投一个 WRITE
                 post_send_if_needed(&ring, ctx);
@@ -758,12 +1117,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
             }
             if (cqe->res >= 0) {
                 proactor_drain_executor_eventfd();
-                /*
-                 * The executor response queue is currently global FIFO, and
-                 * poll_response pops the head without owner routing. Stage 6B
-                 * therefore only wires eventfd wake/drain into the proactor
-                 * owner loop; response polling waits for 6C routing/ops.
-                 */
+                proactor_process_executor_responses(&ring);
             }
             if (!g_shutdown_flag) {
                 proactor_arm_executor_eventfd(&ring);
@@ -776,6 +1130,8 @@ int proactor_start(unsigned short port, msg_handler handler) {
 
 
     proactor_close_all_connections();
+    proactor_drain_executor_eventfd();
+    proactor_process_executor_responses(&ring);
     proactor_cancel_executor_eventfd(&ring);
     proactor_drain_pending_ops(&ring);
 	close(sockfd);
