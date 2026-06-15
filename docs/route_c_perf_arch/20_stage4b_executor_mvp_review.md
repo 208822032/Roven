@@ -905,6 +905,8 @@ avg_ms=46.09  p50_ms=45.01  p95_ms=54.09  p99_ms=56.92
 
 5. **`refcount` 非原子变量**：[低优先级] 正常路径中 `refcount` 仅 reactor 线程访问，无竞争。在 executor error path（`!task->response_task`，极罕见）中 executor 线程会访问 `refcount`，存在理论 data race。建议后续统一使用 `atomic_int` 或在 error path 中不调用 `session_release`（当前 error path 几乎不会触发）。
 
+   阶段 4C 状态：已收口。`net_session_ref_inc/ref_dec/ref_count` 内部改为 GCC atomic builtin，调用方继续只通过辅助函数访问 refcount。
+
 6. **`send_cb` 中 `single_inflight` 检查未区分 inflight/非 inflight 行为**：[低优先级] 当前 `send_cb` 中的 `if (ext->session.single_inflight)` 分支与 `else` 分支做完全相同的事（都调用 `set_event(fd, EPOLLIN, 0)`），代码冗余。建议后续统一或添加注释说明为预留扩展点。
 
 7. **`event_unregister` 中新增 `epoll_ctl DEL`**：[正确] 原代码 `event_unregister` 没有显式 DEL（依赖 `close` 自动移除）。阶段 4B 新增显式 DEL，对 EPOLLET 模式正确且对 LT 模式无害。

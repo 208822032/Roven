@@ -54,6 +54,7 @@ void net_session_mark_closing(net_session_t *session);
 int net_session_is_closing(const net_session_t *session);
 void net_session_ref_inc(net_session_t *session);
 int net_session_ref_dec(net_session_t *session);
+int net_session_ref_count(const net_session_t *session);
 uint64_t net_session_next_request_seq(net_session_t *session);
 int net_session_try_begin_inflight(net_session_t *session);
 void net_session_end_inflight(net_session_t *session);

@@ -163,6 +163,7 @@ int init_conn_extension(int fd) {
     ext->iovecs = kvs_malloc(MAX_IOVEC_COUNT * sizeof(struct iovec));
     if (!ext->iovecs) {
         net_session_free(&ext->session);
+        kvs_free(ext);
         return -1;
     }
 
@@ -203,7 +204,14 @@ int event_register(int fd, int event) {
     set_tcp_nodelay(fd);
     set_tcp_buffer_size(fd, 8 * 1024 * 1024, 8 * 1024 * 1024); // 8MB 缓冲区
 
-	return set_event(fd, event | EPOLLET, 1);
+	if (set_event(fd, event | EPOLLET, 1) < 0) {
+        net_session_mark_closing(&conn_extensions[fd]->session);
+        free_conn_extension(fd);
+        conn_list[fd].fd = -1;
+        return -1;
+    }
+
+	return 0;
 
 }
 
@@ -228,27 +236,39 @@ void event_unregister(int fd) {
 
 // listenfd(sockfd) --> EPOLLIN --> accept_cb
 int accept_cb(int fd) {
+    int accepted = 0;
 
-	struct sockaddr_in  clientaddr;
-	socklen_t len = sizeof(clientaddr);
+    for (;;) {
+        struct sockaddr_in clientaddr;
+        socklen_t len = sizeof(clientaddr);
+        int clientfd = accept(fd, (struct sockaddr*)&clientaddr, &len);
 
-	int clientfd = accept(fd, (struct sockaddr*)&clientaddr, &len);
-	if (clientfd < 0) {
+        if (clientfd >= 0) {
+            accepted++;
+            if (clientfd >= CONNECTION_SIZE) {
+                KVS_LOG_WARN("net", "accepted fd %d exceeds connection table size", clientfd);
+                close(clientfd);
+                continue;
+            }
+
+            if (event_register(clientfd, EPOLLIN) < 0) {
+                KVS_LOG_ERROR_ERRNO("net", "failed to register accepted fd %d", clientfd);
+                close(clientfd);
+                continue;
+            }
+            continue;
+        }
+
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+        }
+
         KVS_LOG_ERROR_ERRNO("net", "accept failed: fd=%d", fd);
-		return -1;
-	}
-
-    if (clientfd >= CONNECTION_SIZE) {
-        KVS_LOG_WARN("net", "accepted fd %d exceeds connection table size", clientfd);
-        close(clientfd);
-        return -1;
+        return accepted > 0 ? 0 : -1;
     }
-
-	if (event_register(clientfd, EPOLLIN) < 0) {
-        close(clientfd);
-        return -1;
-    }
-
 	return 0;
 }
 
@@ -419,6 +439,7 @@ static void reactor_handle_executor_response(kvs_response_task_t *resp) {
     size_t len;
     int fd;
     int valid = 0;
+    int drop_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_MISMATCH;
 
     if (!resp) {
         return;
@@ -431,13 +452,17 @@ static void reactor_handle_executor_response(kvs_response_task_t *resp) {
         ext = conn_extensions[fd];
         session = &ext->session;
         if (session->session_id == resp->session_id &&
-            session->generation == resp->generation &&
-            !net_session_is_closing(session)) {
-            valid = 1;
+            session->generation == resp->generation) {
+            if (net_session_is_closing(session)) {
+                drop_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_CLOSING;
+            } else {
+                valid = 1;
+            }
         }
     }
 
     if (!valid) {
+        kvs_command_executor_record_response_drop(drop_reason);
         reactor_clear_inflight_and_release(resp);
         reactor_destroy_response(resp);
         return;
@@ -445,6 +470,7 @@ static void reactor_handle_executor_response(kvs_response_task_t *resp) {
 
     len = kvs_response_task_length(resp);
     if (len == 0 || len > KVS_MAX_RESPONSE_LENGTH || len > kvs_response_task_capacity(resp)) {
+        kvs_command_executor_record_response_drop(KVS_COMMAND_EXECUTOR_DROP_APPEND_FAILED);
         event_unregister(fd);
         reactor_clear_inflight_and_release(resp);
         reactor_destroy_response(resp);
@@ -453,6 +479,7 @@ static void reactor_handle_executor_response(kvs_response_task_t *resp) {
 
     if (session->send_buf.capacity - session->send_buf.size < len &&
         netbuf_reserve(&session->send_buf, session->send_buf.size + len) < 0) {
+        kvs_command_executor_record_response_drop(KVS_COMMAND_EXECUTOR_DROP_APPEND_FAILED);
         event_unregister(fd);
         reactor_clear_inflight_and_release(resp);
         reactor_destroy_response(resp);

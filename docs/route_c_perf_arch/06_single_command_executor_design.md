@@ -117,3 +117,14 @@ executor 内仍保留：
 - 同步 fallback：REPLSYNC 和已标记 replication connection 继续走 reactor 同步旧路径。
 - 不支持范围：proactor/ntyco、多 poller、多 executor、pipeline 多 in-flight、response reorder、embedding worker pool。
 - 已知限制：单 executor 串行执行所有 async 命令，慢 VSET/VSEARCH 会造成 executor 队头阻塞。
+
+## 实现状态：阶段 4C reactor executor 稳定化与边界收口
+
+- 当前状态：已完成阶段 4B 后的稳定化收口，不引入新的执行模型。
+- accept 边界：reactor listen fd 继续使用 EPOLLET，`accept_cb` 已改为循环 accept 至 `EAGAIN/EWOULDBLOCK`，避免高并发短连接在 listen backlog 中积压。
+- session refcount：`refcount` 仍通过 `net_session_ref_inc/ref_dec/ref_count` 访问，内部改为 GCC atomic builtin，收口 executor error path 理论竞态。
+- executor stats：新增代码层 stats API，统计 submitted/completed、command/response queue depth 和 max depth、eventfd wakeup/write fail、response drop。
+- response drop 观测：reactor response 回投 drop/append failed 时记录 executor drop stats；不新增 RESP 命令，不改变 response 格式。
+- 保持不变：reactor-only、single executor、每 session 单 in-flight、REPLSYNC/replication 同步 fallback、g_kv_data_rwlock、RESP/RDB/AOF/主从协议。
+- 不支持范围：proactor/ntyco executor、多 poller、多 executor、pipeline 多 in-flight、response reorder、dynamic response buffer、embedding worker pool。
+- 阶段 5 前置：4C 只提供稳定边界和观测数据，async network adapter 抽象留到阶段 5。

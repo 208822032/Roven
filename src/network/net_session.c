@@ -34,7 +34,7 @@ int net_session_init(net_session_t* session,
     session->session_id = 0;
     session->generation = 0;
     session->closing = 0;
-    session->refcount = 1;
+    __atomic_store_n(&session->refcount, 1, __ATOMIC_RELAXED);
     session->owner_poller_id = -1;
     session->next_request_seq = 0;
     session->single_inflight = 0;
@@ -65,7 +65,7 @@ void net_session_set_identity(net_session_t *session,
     session->generation = generation;
     session->owner_poller_id = owner_poller_id;
     session->closing = 0;
-    session->refcount = 1;
+    __atomic_store_n(&session->refcount, 1, __ATOMIC_RELAXED);
     session->next_request_seq = 0;
     session->single_inflight = 0;
 }
@@ -85,17 +85,36 @@ void net_session_ref_inc(net_session_t *session) {
     if (!session) {
         return;
     }
-    session->refcount++;
+    __atomic_add_fetch(&session->refcount, 1, __ATOMIC_RELAXED);
 }
 
 int net_session_ref_dec(net_session_t *session) {
+    int old_count;
+
     if (!session) {
         return 0;
     }
-    if (session->refcount > 0) {
-        session->refcount--;
+
+    old_count = __atomic_load_n(&session->refcount, __ATOMIC_ACQUIRE);
+    while (old_count > 0) {
+        int new_count = old_count - 1;
+        if (__atomic_compare_exchange_n(&session->refcount,
+                                        &old_count,
+                                        new_count,
+                                        0,
+                                        __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE)) {
+            return new_count;
+        }
     }
-    return session->refcount;
+    return 0;
+}
+
+int net_session_ref_count(const net_session_t *session) {
+    if (!session) {
+        return 0;
+    }
+    return __atomic_load_n(&session->refcount, __ATOMIC_ACQUIRE);
 }
 
 uint64_t net_session_next_request_seq(net_session_t *session) {

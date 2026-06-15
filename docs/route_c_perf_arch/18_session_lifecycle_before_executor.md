@@ -390,3 +390,13 @@ typedef struct net_session {
 - 保持不变：g_kv_data_rwlock、命令锁模型、RESP 格式、RDB/AOF 格式、主从协议。
 - 同步 fallback：REPLSYNC 和已标记 replication connection 继续走 reactor 同步旧路径。
 - 不支持范围：proactor/ntyco、多 poller、多 executor、pipeline 多 in-flight、response reorder、embedding worker pool。
+
+## 实现状态：阶段 4C reactor executor 稳定化与边界收口
+
+- 当前状态：阶段 4C 没有改变 session owner 模型，仍是 reactor fd slot 指向每连接 heap owner。
+- accept 修复：EPOLLET 下 listen fd 的 `accept_cb` 改为循环 accept 至 `EAGAIN/EWOULDBLOCK`，每个新连接仍走原 `event_register`、identity/generation 初始化和 nonblocking/TCP 选项设置。
+- refcount 收口：`net_session_t.refcount` 保持辅助函数封装，内部改为 atomic inc/dec/load；`closing` 与 `single_inflight` 仍由 reactor 线程维护，不做额外跨线程状态扩展。
+- response 回投：仍按 fd slot owner、session_id、generation、closing 校验；不匹配或 closing 时 drop response 并释放 owned buffer/release session ref。
+- drop 观测：response drop、append failed 和 executor queue depth 进入 executor stats，便于后续判断单 executor 队头阻塞。
+- 保持不变：proactor/ntyco 同步旧路径、每 session 单 in-flight、g_kv_data_rwlock、RESP/RDB/AOF/主从协议。
+- 不支持范围：多 poller、多 executor、pipeline 并行、response reorder、dynamic response buffer、embedding worker pool。
