@@ -9,17 +9,21 @@
 #include <fcntl.h> 
 #include <netinet/tcp.h>
 #include <stdint.h>
+#include <errno.h>
+#include <poll.h>
 
 #include "kvs_api.h"
 #include "kvs_log.h"
 #include "resp_protocol.h"
 #include "distributed.h"
+#include "kvs_command_executor.h"
 #include "net_session.h" //通用会话层
 
 
 #define EVENT_ACCEPT   	0
 #define EVENT_READ		1
 #define EVENT_WRITE		2
+#define EVENT_EXECUTOR_EVENTFD 3
 
 #define PROACTOR_CONNECTION_SIZE 1024
 
@@ -53,6 +57,8 @@ static conn_extension_t *proactor_connections[PROACTOR_CONNECTION_SIZE] = {0};
 static uint32_t proactor_fd_generation[PROACTOR_CONNECTION_SIZE] = {0};
 static uint64_t proactor_next_session_id = 1;
 static int proactor_pending_conn_ops = 0;
+static io_uring_op_t *proactor_executor_event_op = NULL;
+static int proactor_executor_event_pending = 0;
 
 static int proactor_fd_valid(int fd) {
     return fd >= 0 && fd < PROACTOR_CONNECTION_SIZE;
@@ -169,13 +175,91 @@ static void proactor_op_release(io_uring_op_t *op) {
         }
         proactor_conn_release(ctx);
     }
+    if (op->op == EVENT_EXECUTOR_EVENTFD &&
+        proactor_executor_event_op == op) {
+        proactor_executor_event_op = NULL;
+        proactor_executor_event_pending = 0;
+    }
     kvs_free(op);
+}
+
+static void proactor_drain_executor_eventfd(void) {
+    int event_fd = kvs_command_executor_response_event_fd();
+    uint64_t value;
+
+    if (event_fd < 0) {
+        return;
+    }
+
+    for (;;) {
+        ssize_t n = read(event_fd, &value, sizeof(value));
+        if (n == (ssize_t)sizeof(value)) {
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+        break;
+    }
+}
+
+static int proactor_arm_executor_eventfd(struct io_uring *ring) {
+    int event_fd = kvs_command_executor_response_event_fd();
+    io_uring_op_t *op;
+    struct io_uring_sqe *sqe;
+
+    if (event_fd < 0 || g_shutdown_flag) {
+        return 0;
+    }
+    if (proactor_executor_event_pending) {
+        return 0;
+    }
+
+    op = kvs_malloc(sizeof(io_uring_op_t));
+    if (!op) {
+        return -1;
+    }
+
+    sqe = io_uring_get_sqe(ring);
+    if (!sqe) {
+        kvs_free(op);
+        return -1;
+    }
+
+    op->op = EVENT_EXECUTOR_EVENTFD;
+    op->ctx = NULL;
+    io_uring_prep_poll_add(sqe, event_fd, POLLIN);
+    io_uring_sqe_set_data(sqe, op);
+
+    proactor_executor_event_op = op;
+    proactor_executor_event_pending = 1;
+    return 0;
+}
+
+static void proactor_cancel_executor_eventfd(struct io_uring *ring) {
+    struct io_uring_sqe *sqe;
+    io_uring_op_t *op = proactor_executor_event_op;
+
+    if (!op || !proactor_executor_event_pending) {
+        return;
+    }
+
+    sqe = io_uring_get_sqe(ring);
+    if (!sqe) {
+        return;
+    }
+    io_uring_prep_cancel(sqe, op, 0);
+    io_uring_sqe_set_data(sqe, NULL);
 }
 
 static void proactor_drain_pending_ops(struct io_uring *ring) {
     int attempts = 0;
 
-    while (proactor_pending_conn_ops > 0 && attempts < 4096) {
+    while ((proactor_pending_conn_ops > 0 || proactor_executor_event_pending) &&
+           attempts < 4096) {
         struct io_uring_cqe *cqe = NULL;
         struct __kernel_timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 };
         int ret;
@@ -197,6 +281,12 @@ static void proactor_drain_pending_ops(struct io_uring *ring) {
         }
         io_uring_cqe_seen(ring, cqe);
         proactor_op_release(op);
+    }
+    if (proactor_executor_event_pending && proactor_executor_event_op) {
+        io_uring_op_t *op = proactor_executor_event_op;
+        proactor_executor_event_op = NULL;
+        proactor_executor_event_pending = 0;
+        kvs_free(op);
     }
 }
 
@@ -535,6 +625,11 @@ int proactor_start(unsigned short port, msg_handler handler) {
     }
 	kvs_handler = handler;
 
+    if (kvs_command_executor_start() != 0) {
+        KVS_LOG_ERROR("core", "failed to start command executor for proactor eventfd wake");
+        close(sockfd);
+        return -1;
+    }
 
 	struct io_uring_params params;
 	memset(&params, 0, sizeof(params));
@@ -542,12 +637,20 @@ int proactor_start(unsigned short port, msg_handler handler) {
 	if (io_uring_queue_init_params(ENTRIES_LENGTH, &ring, &params) < 0) {
     KVS_LOG_ERROR_ERRNO("network", "io_uring_queue_init_params failed");
         close(sockfd);
+        kvs_command_executor_stop();
         return -1;
     }
 
 	struct sockaddr_in clientaddr;	
 	socklen_t len = sizeof(clientaddr);
 	set_event_accept(&ring, sockfd, (struct sockaddr*)&clientaddr, &len, 0);
+    if (proactor_arm_executor_eventfd(&ring) < 0) {
+        KVS_LOG_ERROR("network", "failed to arm executor eventfd poll in proactor");
+        close(sockfd);
+        io_uring_queue_exit(&ring);
+        kvs_command_executor_stop();
+        return -1;
+    }
 	
 	// int nready;
 	while (!g_shutdown_flag) {
@@ -648,6 +751,23 @@ int proactor_start(unsigned short port, msg_handler handler) {
                 // 同时确保 READ 也一直在排队
                 post_recv_if_needed(&ring, ctx);
             }
+        } else if (op->op == EVENT_EXECUTOR_EVENTFD) {
+            if (proactor_executor_event_op == op) {
+                proactor_executor_event_op = NULL;
+                proactor_executor_event_pending = 0;
+            }
+            if (cqe->res >= 0) {
+                proactor_drain_executor_eventfd();
+                /*
+                 * The executor response queue is currently global FIFO, and
+                 * poll_response pops the head without owner routing. Stage 6B
+                 * therefore only wires eventfd wake/drain into the proactor
+                 * owner loop; response polling waits for 6C routing/ops.
+                 */
+            }
+            if (!g_shutdown_flag) {
+                proactor_arm_executor_eventfd(&ring);
+            }
         }
 
         io_uring_cqe_seen(&ring, cqe);
@@ -656,9 +776,11 @@ int proactor_start(unsigned short port, msg_handler handler) {
 
 
     proactor_close_all_connections();
+    proactor_cancel_executor_eventfd(&ring);
     proactor_drain_pending_ops(&ring);
 	close(sockfd);
 	io_uring_queue_exit(&ring);
+    kvs_command_executor_stop();
     KVS_LOG_INFO("network", "Proactor network exited");
 
 	return 0;
