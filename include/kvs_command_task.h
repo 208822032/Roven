@@ -57,6 +57,7 @@ typedef struct kvs_command_task_s {
 	uint64_t session_id;
 	uint32_t generation;
 	uint64_t request_seq;
+	int owner_type;
 	int owner_poller_id;
 	int sync_context;
 	int is_replication;

@@ -22,6 +22,7 @@ typedef struct kvs_response_task_s {
 	uint64_t session_id;
 	uint32_t generation;
 	uint64_t request_seq;
+	int owner_type;
 	int owner_poller_id;
 } kvs_response_task_t;
 

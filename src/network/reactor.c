@@ -27,6 +27,7 @@
 #include "kvs_command_executor.h"
 #include "kvs_command_task.h"
 #include "kvs_response_task.h"
+#include "kvs_async_net_adapter.h"
 
 #include "net_session.h" //通用会话层
 
@@ -391,40 +392,6 @@ static int reactor_command_is_replsync(net_session_t *session) {
            strcasecmp(parser->tokens[0], "REPLSYNC") == 0;
 }
 
-static void reactor_clear_inflight_and_release(kvs_response_task_t *resp) {
-    if (!resp) {
-        return;
-    }
-    if (resp->session) {
-        net_session_end_inflight(resp->session);
-    }
-    if (resp->session_release && resp->session_owner) {
-        void (*release_fn)(void *) = resp->session_release;
-        void *owner = resp->session_owner;
-        resp->session_release = NULL;
-        resp->session_owner = NULL;
-        resp->session = NULL;
-        release_fn(owner);
-    }
-}
-
-static void reactor_release_response_owner(kvs_response_task_t *resp) {
-    void (*release_fn)(void *) = NULL;
-    void *owner = NULL;
-
-    if (!resp) {
-        return;
-    }
-    release_fn = resp->session_release;
-    owner = resp->session_owner;
-    resp->session_release = NULL;
-    resp->session_owner = NULL;
-    resp->session = NULL;
-    if (release_fn && owner) {
-        release_fn(owner);
-    }
-}
-
 static void reactor_destroy_response(kvs_response_task_t *resp) {
     if (!resp) {
         return;
@@ -433,74 +400,164 @@ static void reactor_destroy_response(kvs_response_task_t *resp) {
     kvs_free(resp);
 }
 
-static void reactor_handle_executor_response(kvs_response_task_t *resp) {
-    conn_extension_t *ext = NULL;
-    net_session_t *session = NULL;
-    size_t len;
+static int reactor_target_is_current(const kvs_async_net_response_target_t *target) {
     int fd;
-    int valid = 0;
-    int drop_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_MISMATCH;
+
+    if (!target || target->owner_type != KVS_ASYNC_NET_OWNER_REACTOR) {
+        return 0;
+    }
+    fd = target->fd;
+    if (fd >= 0 && fd < CONNECTION_SIZE &&
+        conn_list[fd].fd == fd &&
+        conn_extensions[fd] == (conn_extension_t *)target->owner) {
+        return 1;
+    }
+    return 0;
+}
+
+static int reactor_async_validate_owner(
+    const kvs_async_net_response_target_t *target,
+    kvs_async_net_drop_reason_t *reason
+) {
+    conn_extension_t *ext;
+    net_session_t *session;
+
+    if (reason) {
+        *reason = KVS_ASYNC_NET_DROP_SESSION_MISMATCH;
+    }
+
+    if (!reactor_target_is_current(target)) {
+        return 0;
+    }
+
+    ext = (conn_extension_t *)target->owner;
+    session = &ext->session;
+    if (session->session_id != target->session_id ||
+        session->generation != target->generation) {
+        return 0;
+    }
+    if (net_session_is_closing(session)) {
+        if (reason) {
+            *reason = KVS_ASYNC_NET_DROP_SESSION_CLOSING;
+        }
+        return 0;
+    }
+
+    return 1;
+}
+
+static int reactor_async_append_response(const kvs_async_net_response_target_t *target) {
+    conn_extension_t *ext;
+    net_session_t *session;
+    size_t len;
+
+    if (!reactor_target_is_current(target)) {
+        return -1;
+    }
+
+    ext = (conn_extension_t *)target->owner;
+    session = &ext->session;
+    len = target->response_len;
+    if (session->send_buf.capacity - session->send_buf.size < len &&
+        netbuf_reserve(&session->send_buf, session->send_buf.size + len) < 0) {
+        event_unregister(target->fd);
+        return -1;
+    }
+
+    memcpy(session->send_buf.data + session->send_buf.size,
+           target->response_buf,
+           len);
+    session->send_buf.size += len;
+    return 0;
+}
+
+static void reactor_async_drop_response(
+    const kvs_async_net_response_target_t *target,
+    kvs_async_net_drop_reason_t reason
+) {
+    int executor_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_MISMATCH;
+
+    if (reason == KVS_ASYNC_NET_DROP_SESSION_CLOSING) {
+        executor_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_CLOSING;
+    } else if (reason == KVS_ASYNC_NET_DROP_APPEND_FAILED) {
+        executor_reason = KVS_COMMAND_EXECUTOR_DROP_APPEND_FAILED;
+        if (reactor_target_is_current(target)) {
+            event_unregister(target->fd);
+        }
+    }
+
+    kvs_command_executor_record_response_drop(executor_reason);
+}
+
+static void reactor_async_release_session(kvs_async_net_response_target_t *target) {
+    void (*release_fn)(void *) = NULL;
+    void *owner = NULL;
+
+    if (!target) {
+        return;
+    }
+
+    release_fn = target->release_session;
+    owner = target->owner;
+    target->release_session = NULL;
+    target->owner = NULL;
+    target->session = NULL;
+    if (release_fn && owner) {
+        release_fn(owner);
+    }
+}
+
+static int reactor_async_enable_write(const kvs_async_net_response_target_t *target) {
+    if (!reactor_target_is_current(target)) {
+        return -1;
+    }
+    return set_event(target->fd, EPOLLIN | EPOLLOUT, 0);
+}
+
+static int reactor_async_restore_read(const kvs_async_net_response_target_t *target) {
+    conn_extension_t *ext;
+    net_session_t *session;
+
+    if (!reactor_target_is_current(target)) {
+        return -1;
+    }
+
+    ext = (conn_extension_t *)target->owner;
+    session = &ext->session;
+    if (session->recv_buf.size > 0 && !net_session_is_closing(session)) {
+        int processed = reactor_submit_async_command(target->fd, ext);
+        if (processed < 0) {
+            event_unregister(target->fd);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int reactor_async_wake_owner(int owner_poller_id) {
+    (void)owner_poller_id;
+    return 0;
+}
+
+static const kvs_async_net_ops_t g_reactor_async_net_ops = {
+    .validate_owner = reactor_async_validate_owner,
+    .append_response = reactor_async_append_response,
+    .drop_response = reactor_async_drop_response,
+    .release_session = reactor_async_release_session,
+    .restore_read = reactor_async_restore_read,
+    .enable_write = reactor_async_enable_write,
+    .wake_owner = reactor_async_wake_owner,
+};
+
+static void reactor_handle_executor_response(kvs_response_task_t *resp) {
+    kvs_async_net_response_target_t target;
 
     if (!resp) {
         return;
     }
 
-    fd = resp->fd;
-    if (fd >= 0 && fd < CONNECTION_SIZE &&
-        conn_list[fd].fd == fd &&
-        conn_extensions[fd] == (conn_extension_t *)resp->session_owner) {
-        ext = conn_extensions[fd];
-        session = &ext->session;
-        if (session->session_id == resp->session_id &&
-            session->generation == resp->generation) {
-            if (net_session_is_closing(session)) {
-                drop_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_CLOSING;
-            } else {
-                valid = 1;
-            }
-        }
-    }
-
-    if (!valid) {
-        kvs_command_executor_record_response_drop(drop_reason);
-        reactor_clear_inflight_and_release(resp);
-        reactor_destroy_response(resp);
-        return;
-    }
-
-    len = kvs_response_task_length(resp);
-    if (len == 0 || len > KVS_MAX_RESPONSE_LENGTH || len > kvs_response_task_capacity(resp)) {
-        kvs_command_executor_record_response_drop(KVS_COMMAND_EXECUTOR_DROP_APPEND_FAILED);
-        event_unregister(fd);
-        reactor_clear_inflight_and_release(resp);
-        reactor_destroy_response(resp);
-        return;
-    }
-
-    if (session->send_buf.capacity - session->send_buf.size < len &&
-        netbuf_reserve(&session->send_buf, session->send_buf.size + len) < 0) {
-        kvs_command_executor_record_response_drop(KVS_COMMAND_EXECUTOR_DROP_APPEND_FAILED);
-        event_unregister(fd);
-        reactor_clear_inflight_and_release(resp);
-        reactor_destroy_response(resp);
-        return;
-    }
-
-    memcpy(session->send_buf.data + session->send_buf.size,
-           kvs_response_task_buffer(resp),
-           len);
-    session->send_buf.size += len;
-    net_session_end_inflight(session);
-    set_event(fd, EPOLLIN | EPOLLOUT, 0);
-
-    if (session->recv_buf.size > 0 && !net_session_is_closing(session)) {
-        int processed = reactor_submit_async_command(fd, ext);
-        if (processed < 0) {
-            event_unregister(fd);
-        }
-    }
-
-    reactor_release_response_owner(resp);
+    kvs_async_net_response_target_from_task(&target, resp);
+    kvs_async_net_dispatch_response(&g_reactor_async_net_ops, &target);
     reactor_destroy_response(resp);
 }
 
@@ -626,6 +683,7 @@ static int reactor_submit_async_command(int fd, conn_extension_t *ext) {
     task->session_id = session->session_id;
     task->generation = session->generation;
     task->request_seq = request_seq;
+    task->owner_type = KVS_ASYNC_NET_OWNER_REACTOR;
     task->owner_poller_id = session->owner_poller_id;
     task->sync_context = 0;
     task->is_replication = 0;

@@ -110,6 +110,7 @@ BASE_SRCS = \
 	$(SRC_STORAGE)/kvs_mempool.c $(SRC_STORAGE)/jemalloc_wrapper.c \
 	$(SRC_DIST)/distributed.c                                    \
 	$(SRC_NETWORK)/resp_protocol.c $(SRC_NETWORK)/reactor.c       \
+	$(SRC_NETWORK)/kvs_async_net_adapter.c                       \
 	$(SRC_NETWORK)/proactor.c    $(SRC_NETWORK)/ntyco.c           \
 	$(SRC_NETWORK)/net_session.c                                  \
 	$(SRC_PERSIST)/kvs_rdb.c     $(SRC_PERSIST)/kvs_aof.c        \
