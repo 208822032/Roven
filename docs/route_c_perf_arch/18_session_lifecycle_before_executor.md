@@ -377,3 +377,16 @@ typedef struct net_session {
 6. 处理断连 drop response、fd generation mismatch、shutdown drain。
 7. 跑普通 KV、TTL、VSET/VSEARCH/VDEL、scope、pipeline 单 in-flight、断连、fd 复用压力验证。
 8. 阶段 4 稳定后，再评估多 poller、pipeline reorder、dynamic response buffer、worker pool。
+
+## 实现状态：阶段 4B reactor-only single command executor MVP
+
+- 当前状态：已接入 reactor-only single command executor。
+- 支持范围：reactor 模式、single executor、每 session 单 in-flight。
+- command_task：async 路径使用 heap task + owned argv。
+- response_task：async 路径使用 owned response buffer。
+- response 回投：executor 通过 response queue + eventfd 唤醒 reactor，由 owner reactor append 到 send_buf。
+- session 安全：使用 session_id/generation/closing 校验；reactor fd 槽位保存当前 heap 连接 owner，旧 response 必须同时匹配 fd 槽位 owner、session_id 和 generation，断连或 fd 复用时 drop response。
+- 生命周期策略：async task 入队前 session ref_inc；response append/drop 或 queue drain 后 release；closing session 在 refcount 归零后释放。
+- 保持不变：g_kv_data_rwlock、命令锁模型、RESP 格式、RDB/AOF 格式、主从协议。
+- 同步 fallback：REPLSYNC 和已标记 replication connection 继续走 reactor 同步旧路径。
+- 不支持范围：proactor/ntyco、多 poller、多 executor、pipeline 多 in-flight、response reorder、embedding worker pool。

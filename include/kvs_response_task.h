@@ -2,14 +2,27 @@
 #define KVS_RESPONSE_TASK_H
 
 #include <stddef.h>
+#include <stdint.h>
+
+typedef struct net_session_s net_session_t;
 
 typedef struct kvs_response_task_s {
+	struct kvs_response_task_s *queue_next;
 	char *buf;
 	size_t cap;
 	size_t len;
 	int status;
 	int owns_buf;
 	int finalized;
+
+	net_session_t *session;
+	void *session_owner;
+	void (*session_release)(void *session_owner);
+	int fd;
+	uint64_t session_id;
+	uint32_t generation;
+	uint64_t request_seq;
+	int owner_poller_id;
 } kvs_response_task_t;
 
 void kvs_response_task_reset(kvs_response_task_t *resp);

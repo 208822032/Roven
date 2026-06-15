@@ -1,9 +1,13 @@
 #ifndef KVS_COMMAND_TASK_H
 #define KVS_COMMAND_TASK_H
 
+#include <stdint.h>
+
 #include "kvs_command.h"
 #include "kvs_response_task.h"
 #include "kvs_vector.h"
+
+typedef struct net_session_s net_session_t;
 
 typedef enum kvs_command_task_prepared_kind_e {
 	KVS_COMMAND_TASK_PREPARED_NONE = 0,
@@ -12,6 +16,7 @@ typedef enum kvs_command_task_prepared_kind_e {
 } kvs_command_task_prepared_kind_t;
 
 typedef struct kvs_command_task_s {
+	struct kvs_command_task_s *queue_next;
 	const command_info *cmd;
 	int cmd_index;
 	int argc;
@@ -22,6 +27,7 @@ typedef struct kvs_command_task_s {
 	char *response;
 	size_t response_cap;
 	int status;
+	int build_status;
 	int command_committed;
 
 	/*
@@ -43,6 +49,17 @@ typedef struct kvs_command_task_s {
 	int has_expire_at;
 	int need_del_sync;
 	int need_persist_sync;
+
+	net_session_t *session;
+	void *session_owner;
+	void (*session_release)(void *session_owner);
+	int fd;
+	uint64_t session_id;
+	uint32_t generation;
+	uint64_t request_seq;
+	int owner_poller_id;
+	int sync_context;
+	int is_replication;
 
 	kvs_vector_set_prepared_t prepared_set;
 	kvs_vector_search_prepared_t prepared_search;

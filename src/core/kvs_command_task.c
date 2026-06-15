@@ -138,6 +138,8 @@ static void kvs_command_task_reset(kvs_command_task_t *task) {
 		return;
 	}
 	memset(task, 0, sizeof(*task));
+	task->cmd_index = -1;
+	task->fd = -1;
 	kvs_vector_set_prepared_reset(&task->prepared_set);
 	kvs_vector_search_prepared_reset(&task->prepared_search);
 }
@@ -241,14 +243,18 @@ int kvs_command_task_copy_argv(kvs_command_task_t *task) {
 		argv_copy[i][len] = '\0';
 	}
 
-	if (parse_command_argument(task->cmd_index, argv_copy, task->argc, lens_copy, &copied_ctx) < 0) {
-		goto fail;
+	if (task->cmd && task->cmd_index >= 0 && task->build_status <= 0) {
+		if (parse_command_argument(task->cmd_index, argv_copy, task->argc, lens_copy, &copied_ctx) < 0) {
+			goto fail;
+		}
 	}
 
 	task->argv = argv_copy;
 	task->argv_lens = lens_copy;
 	task->owns_argv = 1;
-	task->ctx = copied_ctx;
+	if (task->cmd && task->cmd_index >= 0 && task->build_status <= 0) {
+		task->ctx = copied_ctx;
+	}
 
 	return 0;
 
@@ -289,23 +295,27 @@ int kvs_command_task_build(
 
 	if (tokens[0] == NULL || count == 0) {
 		task->status = resp_generate_simple_string_n(response, '-', "Invalid command", sizeof("Invalid command") - 1);
+		task->build_status = task->status;
 		return -1;
 	}
 
 	task->cmd = lookup_command(tokens[0]);
 	if (task->cmd == NULL) {
 		task->status = resp_generate_simple_string_n(response, '-', "Unknown command", sizeof("Unknown command") - 1);
+		task->build_status = task->status;
 		return -1;
 	}
 
 	task->cmd_index = get_command_index(tokens[0]);
 	if (task->cmd_index == -1) {
 		task->status = resp_generate_simple_string_n(response, '-', "Unknown command", sizeof("Unknown command") - 1);
+		task->build_status = task->status;
 		return -1;
 	}
 
 	if (!check_arity(task->cmd, count)) {
 		task->status = resp_generate_simple_string_n(response, '-', "Wrong number of arguments", sizeof("Wrong number of arguments") - 1);
+		task->build_status = task->status;
 		return -1;
 	}
 
@@ -313,11 +323,13 @@ int kvs_command_task_build(
 	    global_dist_config.role == ROLE_SLAVE &&
 	    get_sync_context() == 0) {
 		task->status = resp_generate_simple_string_n(response, '-', "ERROR SLAVE READ ONLY", sizeof("ERROR SLAVE READ ONLY") - 1);
+		task->build_status = task->status;
 		return -1;
 	}
 
 	if (parse_command_argument(task->cmd_index, tokens, count, token_lens, &task->ctx) < 0) {
 		task->status = resp_generate_simple_string_n(response, '-', "Invalid arguments", sizeof("Invalid arguments") - 1);
+		task->build_status = task->status;
 		return -1;
 	}
 

@@ -23,6 +23,10 @@
 #include "resp_protocol.h"
 #include "distributed.h"
 #include "kvs_log.h"
+#include "kvs_memory.h"
+#include "kvs_command_executor.h"
+#include "kvs_command_task.h"
+#include "kvs_response_task.h"
 
 #include "net_session.h" //通用会话层
 
@@ -59,7 +63,7 @@ int epfd = 0;
 struct conn conn_list[CONNECTION_SIZE] = {0};
 
 //全局连接扩展数组
-static conn_extension_t conn_extensions[CONNECTION_SIZE] = {0};
+static conn_extension_t *conn_extensions[CONNECTION_SIZE] = {0};
 static uint64_t g_reactor_next_session_id = 1;
 static uint32_t g_reactor_fd_generation[CONNECTION_SIZE] = {0};
 
@@ -92,26 +96,55 @@ int set_tcp_buffer_size(int fd, int recv_size, int send_size) {
 int set_event(int fd, int event, int flag) {
 
 	struct epoll_event ev;
-	ev.events = event;
+	ev.events = event ? (event | EPOLLET) : 0;
 	ev.data.fd = fd;
 
 	if (flag) {  // non-zero add
-		epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
+		return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
 	} else {  // zero mod
-		epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
+		return epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
 	}
 
+}
+
+static void reactor_conn_release(void *owner) {
+    conn_extension_t *ext = (conn_extension_t *)owner;
+
+    if (!ext) {
+        return;
+    }
+
+    if (net_session_ref_dec(&ext->session) == 0 &&
+        net_session_is_closing(&ext->session)) {
+        net_session_free(&ext->session);
+        if (ext->iovecs) {
+            kvs_free(ext->iovecs);
+            ext->iovecs = NULL;
+        }
+        kvs_free(ext);
+    }
+}
+
+static void reactor_conn_ref_inc(conn_extension_t *ext) {
+    if (!ext) {
+        return;
+    }
+    net_session_ref_inc(&ext->session);
 }
 
 // 初始化连接扩展
 int init_conn_extension(int fd) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
     
-    conn_extension_t *ext = &conn_extensions[fd];
+    conn_extension_t *ext = (conn_extension_t *)kvs_malloc(sizeof(conn_extension_t));
+    if (!ext) {
+        return -1;
+    }
     memset(ext, 0, sizeof(conn_extension_t));
     
     // 初始化 net_session：这里直接给 16MB 初始缓冲，和原来的 large_buffer 一致
     if (net_session_init(&ext->session, 8 * 1024 * 1024, 8 * 1024 * 1024) < 0) {
+        kvs_free(ext);
         return -1;
     }
 
@@ -136,6 +169,7 @@ int init_conn_extension(int fd) {
     ext->iovec_count = 0;
     ext->send_offset = 0;
     ext->is_replication = 0;
+    conn_extensions[fd] = ext;
     
     return 0;
 }
@@ -144,18 +178,9 @@ int init_conn_extension(int fd) {
 void free_conn_extension(int fd) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return;
     
-    conn_extension_t *ext = &conn_extensions[fd];
-   
-    net_session_free(&ext->session);
-    
-    if (ext->iovecs) {
-        kvs_free(ext->iovecs);
-        ext->iovecs = NULL;
-    }
-    
-    ext->send_offset = 0;
-    ext->iovec_count = 0;
-    ext->is_replication = 0;
+    conn_extension_t *ext = conn_extensions[fd];
+    conn_extensions[fd] = NULL;
+    reactor_conn_release(ext);
 }
 
 //注册事件 + 初始化每一个连接状态
@@ -185,7 +210,11 @@ int event_register(int fd, int event) {
 void event_unregister(int fd) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return;
 
-    net_session_mark_closing(&conn_extensions[fd].session);
+    conn_extension_t *ext = conn_extensions[fd];
+    if (ext) {
+        net_session_mark_closing(&ext->session);
+    }
+    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
     free_conn_extension(fd);
 
     //关闭文件描述符
@@ -209,12 +238,24 @@ int accept_cb(int fd) {
 		return -1;
 	}
 
-	event_register(clientfd, EPOLLIN);  // | EPOLLET
+    if (clientfd >= CONNECTION_SIZE) {
+        KVS_LOG_WARN("net", "accepted fd %d exceeds connection table size", clientfd);
+        close(clientfd);
+        return -1;
+    }
+
+	if (event_register(clientfd, EPOLLIN) < 0) {
+        close(clientfd);
+        return -1;
+    }
 
 	return 0;
 }
 
 static long long g_total_cmd[CONNECTION_SIZE];
+
+static int reactor_submit_async_command(int fd, conn_extension_t *ext);
+static void reactor_process_executor_event(void);
 
 //net_session 的handler 
 //实现 REPLSYNC + is_replication + kvs_handler 调用
@@ -291,7 +332,8 @@ static int reactor_session_handler(resp_parser_t* parser,
 
 // 准备iovec结构用于分散写入
 int prepare_iovecs(int fd) {
-    conn_extension_t *ext = &conn_extensions[fd];
+    conn_extension_t *ext = conn_extensions[fd];
+    if (!ext) return -1;
     netbuf_t* send_buf = &ext->session.send_buf;
     
     if (send_buf->size <= 0) {
@@ -317,12 +359,282 @@ int prepare_iovecs(int fd) {
     return ext->iovec_count;
 }
 
+static int reactor_command_is_replsync(net_session_t *session) {
+    resp_parser_t *parser;
+
+    if (!session) {
+        return 0;
+    }
+    parser = &session->resp_parser;
+    return parser->arg_index > 0 &&
+           parser->tokens[0] &&
+           strcasecmp(parser->tokens[0], "REPLSYNC") == 0;
+}
+
+static void reactor_clear_inflight_and_release(kvs_response_task_t *resp) {
+    if (!resp) {
+        return;
+    }
+    if (resp->session) {
+        net_session_end_inflight(resp->session);
+    }
+    if (resp->session_release && resp->session_owner) {
+        void (*release_fn)(void *) = resp->session_release;
+        void *owner = resp->session_owner;
+        resp->session_release = NULL;
+        resp->session_owner = NULL;
+        resp->session = NULL;
+        release_fn(owner);
+    }
+}
+
+static void reactor_release_response_owner(kvs_response_task_t *resp) {
+    void (*release_fn)(void *) = NULL;
+    void *owner = NULL;
+
+    if (!resp) {
+        return;
+    }
+    release_fn = resp->session_release;
+    owner = resp->session_owner;
+    resp->session_release = NULL;
+    resp->session_owner = NULL;
+    resp->session = NULL;
+    if (release_fn && owner) {
+        release_fn(owner);
+    }
+}
+
+static void reactor_destroy_response(kvs_response_task_t *resp) {
+    if (!resp) {
+        return;
+    }
+    kvs_response_task_destroy(resp);
+    kvs_free(resp);
+}
+
+static void reactor_handle_executor_response(kvs_response_task_t *resp) {
+    conn_extension_t *ext = NULL;
+    net_session_t *session = NULL;
+    size_t len;
+    int fd;
+    int valid = 0;
+
+    if (!resp) {
+        return;
+    }
+
+    fd = resp->fd;
+    if (fd >= 0 && fd < CONNECTION_SIZE &&
+        conn_list[fd].fd == fd &&
+        conn_extensions[fd] == (conn_extension_t *)resp->session_owner) {
+        ext = conn_extensions[fd];
+        session = &ext->session;
+        if (session->session_id == resp->session_id &&
+            session->generation == resp->generation &&
+            !net_session_is_closing(session)) {
+            valid = 1;
+        }
+    }
+
+    if (!valid) {
+        reactor_clear_inflight_and_release(resp);
+        reactor_destroy_response(resp);
+        return;
+    }
+
+    len = kvs_response_task_length(resp);
+    if (len == 0 || len > KVS_MAX_RESPONSE_LENGTH || len > kvs_response_task_capacity(resp)) {
+        event_unregister(fd);
+        reactor_clear_inflight_and_release(resp);
+        reactor_destroy_response(resp);
+        return;
+    }
+
+    if (session->send_buf.capacity - session->send_buf.size < len &&
+        netbuf_reserve(&session->send_buf, session->send_buf.size + len) < 0) {
+        event_unregister(fd);
+        reactor_clear_inflight_and_release(resp);
+        reactor_destroy_response(resp);
+        return;
+    }
+
+    memcpy(session->send_buf.data + session->send_buf.size,
+           kvs_response_task_buffer(resp),
+           len);
+    session->send_buf.size += len;
+    net_session_end_inflight(session);
+    set_event(fd, EPOLLIN | EPOLLOUT, 0);
+
+    if (session->recv_buf.size > 0 && !net_session_is_closing(session)) {
+        int processed = reactor_submit_async_command(fd, ext);
+        if (processed < 0) {
+            event_unregister(fd);
+        }
+    }
+
+    reactor_release_response_owner(resp);
+    reactor_destroy_response(resp);
+}
+
+static void reactor_process_executor_event(void) {
+    int event_fd = kvs_command_executor_response_event_fd();
+    uint64_t value;
+
+    if (event_fd < 0) {
+        return;
+    }
+
+    for (;;) {
+        ssize_t n = read(event_fd, &value, sizeof(value));
+        if (n == (ssize_t)sizeof(value)) {
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            break;
+        }
+        break;
+    }
+
+    for (;;) {
+        kvs_response_task_t *resp = NULL;
+        int ret = kvs_command_executor_poll_response(&resp);
+        if (ret <= 0 || !resp) {
+            break;
+        }
+        reactor_handle_executor_response(resp);
+    }
+}
+
+static int reactor_submit_async_command(int fd, conn_extension_t *ext) {
+    net_session_t *session;
+    resp_parser_t *parser;
+    kvs_response_task_t *resp = NULL;
+    kvs_command_task_t *task = NULL;
+    size_t cmd_len = 0;
+    uint64_t request_seq;
+    int parse_ret;
+    int build_ret;
+
+    if (!ext) {
+        return -1;
+    }
+    session = &ext->session;
+    if (net_session_is_closing(session) || session->single_inflight) {
+        return 0;
+    }
+
+    parse_ret = net_session_parse_one_resp(fd, session, &cmd_len);
+    if (parse_ret <= 0) {
+        return parse_ret;
+    }
+
+    if (ext->is_replication || reactor_command_is_replsync(session)) {
+        int processed = net_session_process_resp(fd, session, reactor_session_handler, ext);
+        if (processed > 0) {
+            g_total_cmd[fd] += processed;
+        }
+        return processed < 0 ? -1 : processed;
+    }
+
+    parser = &session->resp_parser;
+    resp = (kvs_response_task_t *)kvs_malloc(sizeof(*resp));
+    task = (kvs_command_task_t *)kvs_malloc(sizeof(*task));
+    if (!resp || !task) {
+        if (resp) kvs_free(resp);
+        if (task) kvs_free(task);
+        resp_parser_reset(parser);
+        return -1;
+    }
+    memset(resp, 0, sizeof(*resp));
+    memset(task, 0, sizeof(*task));
+
+    if (kvs_response_task_init_owned(resp, KVS_MAX_RESPONSE_LENGTH) < 0) {
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return -1;
+    }
+
+    build_ret = kvs_command_task_build(task,
+                                       parser->tokens,
+                                       parser->arg_index,
+                                       parser->token_lens,
+                                       resp);
+    if (build_ret < 0 && task->status <= 0) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return -1;
+    }
+    if (kvs_command_task_copy_argv(task) < 0) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return -1;
+    }
+
+    request_seq = net_session_next_request_seq(session);
+    if (!net_session_try_begin_inflight(session)) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return 0;
+    }
+
+    reactor_conn_ref_inc(ext);
+    task->session = session;
+    task->session_owner = ext;
+    task->session_release = reactor_conn_release;
+    task->fd = fd;
+    task->session_id = session->session_id;
+    task->generation = session->generation;
+    task->request_seq = request_seq;
+    task->owner_poller_id = session->owner_poller_id;
+    task->sync_context = 0;
+    task->is_replication = 0;
+
+    netbuf_consume_front(&session->recv_buf, cmd_len);
+    resp_parser_reset(parser);
+
+    if (kvs_command_executor_submit(task) < 0) {
+        net_session_end_inflight(session);
+        reactor_conn_release(ext);
+        task->session = NULL;
+        task->session_owner = NULL;
+        task->session_release = NULL;
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        return -1;
+    }
+
+    g_total_cmd[fd]++;
+    if (session->send_buf.size > 0) {
+        set_event(fd, EPOLLOUT, 0);
+    } else {
+        set_event(fd, EPOLLIN, 0);
+    }
+    return 1;
+}
+
 
 int recv_cb(int fd) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
     if (conn_list[fd].fd < 0) return -1;   // 已经被 event_unregister
     
-    conn_extension_t *ext = &conn_extensions[fd];
+    conn_extension_t *ext = conn_extensions[fd];
+    if (!ext) return -1;
     netbuf_t* recv_buf = &ext->session.recv_buf;
 
     int total_recv = 0;  // 添加统计
@@ -373,27 +685,24 @@ int recv_cb(int fd) {
         
     }
 
-    //有数据 交给net_session 统一解析 生成响应
-    if(recv_buf->size > 0){
-        int processed = net_session_process_resp(
-            fd,
-            &ext->session,
-            reactor_session_handler,
-            ext
-        );
-        if(processed < 0){
-            //出错 关闭连接
+    if (recv_buf->size > 0 && !ext->session.single_inflight) {
+        int processed = reactor_submit_async_command(fd, ext);
+        if (processed < 0) {
             event_unregister(fd);
             return -1;
         }
-
-        g_total_cmd[fd] += processed;
     }
 
     //根据 send_buf 是否有数据 决定是否监听 EPOLLOUT
     netbuf_t* send_buf = &ext->session.send_buf;
     if(send_buf->size > 0){
-        set_event(fd, EPOLLIN | EPOLLOUT, 0);
+        if (ext->session.single_inflight) {
+            set_event(fd, EPOLLOUT, 0);
+        } else {
+            set_event(fd, EPOLLIN | EPOLLOUT, 0);
+        }
+    }else if(ext->session.single_inflight){
+        set_event(fd, EPOLLIN, 0);
     }else{
         set_event(fd, EPOLLIN, 0);
     }
@@ -410,14 +719,19 @@ int send_cb(int fd) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return -1;
     if (conn_list[fd].fd < 0) return -1;
     
-    conn_extension_t *ext = &conn_extensions[fd];
+    conn_extension_t *ext = conn_extensions[fd];
+    if (!ext) return -1;
     netbuf_t* send_buf = &ext->session.send_buf;
     
     if (send_buf->size <= 0 || ext->send_offset >= send_buf->size) {
         // 没有数据要发送或已发送完毕
         ext->send_offset = 0;
         send_buf->size = 0;
-        set_event(fd, EPOLLIN, 0);
+        if (ext->session.single_inflight) {
+            set_event(fd, EPOLLIN, 0);
+        } else {
+            set_event(fd, EPOLLIN, 0);
+        }
         return 0;
     }
 
@@ -456,7 +770,11 @@ int send_cb(int fd) {
     if(ext->send_offset >= send_buf->size){
         ext->send_offset = 0;
         send_buf->size = 0;
-        set_event(fd, EPOLLIN, 0);
+        if (ext->session.single_inflight) {
+            set_event(fd, EPOLLIN, 0);
+        } else {
+            set_event(fd, EPOLLIN, 0);
+        }
     }else{
         set_event(fd, EPOLLOUT | EPOLLIN, 0);
     }
@@ -522,9 +840,15 @@ int reactor_start(unsigned short port, msg_handler handler) {
 	//unsigned short port = 2000;
 	kvs_handler = handler;
 
+    if (kvs_command_executor_start() != 0) {
+        KVS_LOG_ERROR("core", "failed to start command executor");
+        return -1;
+    }
+
 	epfd = epoll_create(1);
 	if (epfd < 0) {
 		KVS_LOG_ERROR_ERRNO("net", "epoll_create1 failed");
+        kvs_command_executor_stop();
         return -1;
     }
 
@@ -542,6 +866,14 @@ int reactor_start(unsigned short port, msg_handler handler) {
 		set_event(sockfd, EPOLLIN, 1);
 	}
 
+    int executor_event_fd = kvs_command_executor_response_event_fd();
+    if (executor_event_fd < 0 || set_event(executor_event_fd, EPOLLIN, 1) != 0) {
+        KVS_LOG_ERROR_ERRNO("net", "failed to register executor response eventfd");
+        kvs_command_executor_stop();
+        close(epfd);
+        return -1;
+    }
+
 	struct epoll_event events[1024] = {0};
 	while (!g_shutdown_flag) { // mainloop
         if(g_shutdown_flag) break;
@@ -554,19 +886,28 @@ int reactor_start(unsigned short port, msg_handler handler) {
 
 		for (int i = 0;i < nready;i ++) {
 			int connfd = events[i].data.fd;
+            if (connfd == executor_event_fd) {
+                reactor_process_executor_event();
+                continue;
+            }
             if (conn_list[connfd].fd < 0) continue;  // 已关闭，忽略本次事件
+
+			if (events[i].events & (EPOLLERR | EPOLLHUP)) {
+                event_unregister(connfd);
+                continue;
+            }
 
 			if (events[i].events & EPOLLIN) {
 				conn_list[connfd].r_action.recv_callback(connfd);
 			} 
 
+            if (connfd >= 0 && connfd < CONNECTION_SIZE && conn_list[connfd].fd < 0) {
+                continue;
+            }
+
 			if (events[i].events & EPOLLOUT) {
 				conn_list[connfd].send_callback(connfd);
 			}
-
-			if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-                event_unregister(connfd);
-            }
 
 		}
 
@@ -578,7 +919,9 @@ int reactor_start(unsigned short port, msg_handler handler) {
         }
     }
 	
+    reactor_process_executor_event();
+    epoll_ctl(epfd, EPOLL_CTL_DEL, executor_event_fd, NULL);
 	close(epfd);
+    kvs_command_executor_stop();
 	return 0;
 }
-

@@ -104,3 +104,16 @@ executor 内仍保留：
 ## 11. 下一阶段前置条件
 
 进入后台任务 executor 化前，必须证明 reactor-only executor 下功能不变，session 生命周期稳定，shutdown drain 无死锁。
+
+## 实现状态：阶段 4B reactor-only single command executor MVP
+
+- 当前状态：已接入 reactor-only single command executor。
+- 支持范围：reactor 模式、single executor、每 session 单 in-flight。
+- command_task：async 路径使用 heap task + owned argv。
+- response_task：async 路径使用 owned response buffer。
+- response 回投：executor 通过 response queue + eventfd 唤醒 reactor，由 owner reactor append 到 send_buf。
+- session 安全：reactor 连接扩展改为每连接 heap owner，response 回投使用 fd 槽位、session_id、generation、closing 和 owner 指针校验；断连或 fd 复用时 drop response。
+- 保持不变：g_kv_data_rwlock、命令锁模型、RESP 格式、RDB/AOF 格式、主从协议。
+- 同步 fallback：REPLSYNC 和已标记 replication connection 继续走 reactor 同步旧路径。
+- 不支持范围：proactor/ntyco、多 poller、多 executor、pipeline 多 in-flight、response reorder、embedding worker pool。
+- 已知限制：单 executor 串行执行所有 async 命令，慢 VSET/VSEARCH 会造成 executor 队头阻塞。

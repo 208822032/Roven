@@ -269,3 +269,76 @@ int net_session_process_resp(int fd,
     return commands_count;
                                 
 }
+
+int net_session_parse_one_resp(int fd,
+                               net_session_t *session,
+                               size_t *cmd_len) {
+    resp_parser_t *parser;
+    int parsed;
+
+    if (!session || !cmd_len) {
+        return -1;
+    }
+    *cmd_len = 0;
+
+    if (session->processing) {
+        return 0;
+    }
+
+    parser = &session->resp_parser;
+    if (parser->state == RESP_PARSE_COMPLETE) {
+        resp_parser_reset(parser);
+    }
+
+    if (!session->first_packet_checked
+        && session->recv_buf.size > 0
+        && parser->state == RESP_PARSE_INIT) {
+        size_t i = 0;
+        while (i < session->recv_buf.size &&
+               (session->recv_buf.data[i] == ' ' ||
+                session->recv_buf.data[i] == '\r' ||
+                session->recv_buf.data[i] == '\n' ||
+                session->recv_buf.data[i] == '\t')) {
+            i++;
+        }
+
+        if (i >= session->recv_buf.size) {
+            return 0;
+        }
+
+        if (session->recv_buf.data[i] != '*') {
+            KVS_LOG_ERROR("net", "fd=%d protocol error: first non-whitespace byte is not '*'", fd);
+            return -1;
+        }
+
+        if (i > 0) {
+            netbuf_consume_front(&session->recv_buf, i);
+        }
+
+        session->first_packet_checked = 1;
+    }
+
+    parsed = resp_peek_command(session->recv_buf.data,
+                               session->recv_buf.size,
+                               0);
+    if (parsed < 0) {
+        KVS_LOG_ERROR("net", "fd=%d incomplete command or protocol error detected by resp_peek_command", fd);
+        return -1;
+    }
+    if (parsed == 0) {
+        return 0;
+    }
+
+    resp_parser_reset(parser);
+    session->processing = 1;
+    if (resp_parser(parser, session->recv_buf.data, (size_t)parsed) != parsed ||
+        parser->state != RESP_PARSE_COMPLETE) {
+        KVS_LOG_ERROR("net", "fd=%d protocol error: resp_parser did not consume expected bytes or did not complete", fd);
+        session->processing = 0;
+        return -1;
+    }
+    session->processing = 0;
+
+    *cmd_len = (size_t)parsed;
+    return 1;
+}

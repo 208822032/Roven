@@ -73,4 +73,14 @@ int net_session_process_resp(int fd,
                              net_session_handler_fn handler,
                              void* user_data);
 
+/*
+ * Reactor async path helper: parse exactly one complete RESP command and leave
+ * parser tokens available for the caller. Returns 1 when a command is ready,
+ * 0 when more bytes are needed, and <0 on protocol error. The caller must
+ * consume *cmd_len bytes and reset the parser after copying/handling tokens.
+ */
+int net_session_parse_one_resp(int fd,
+                               net_session_t *session,
+                               size_t *cmd_len);
+
 #endif
