@@ -3,6 +3,7 @@
 #define NET_SESSION_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "resp_protocol.h"
 #include "netbuf.h"
@@ -15,6 +16,18 @@ typedef struct net_session_s {
 
     int processing; //是否正在处理请求 避免重复调度
     int first_packet_checked; //是否已经检查过首包
+
+    /*
+     * Route C stage 4A: executor 前置生命周期字段。
+     * 当前同步路径只初始化和维护这些元数据，不改变网络执行模型。
+     */
+    uint64_t session_id;
+    uint32_t generation;
+    int closing;
+    int refcount;
+    int owner_poller_id;
+    uint64_t next_request_seq;
+    int single_inflight;
 } net_session_t;
 
 //上层回调 给一条完整命令 生成响应
@@ -33,6 +46,18 @@ int net_session_init(net_session_t* session,
 //释放会话资源
 void net_session_free(net_session_t* session);
 
+void net_session_set_identity(net_session_t *session,
+                              uint64_t session_id,
+                              uint32_t generation,
+                              int owner_poller_id);
+void net_session_mark_closing(net_session_t *session);
+int net_session_is_closing(const net_session_t *session);
+void net_session_ref_inc(net_session_t *session);
+int net_session_ref_dec(net_session_t *session);
+uint64_t net_session_next_request_seq(net_session_t *session);
+int net_session_try_begin_inflight(net_session_t *session);
+void net_session_end_inflight(net_session_t *session);
+
 //处理当前recv_buf中的数据
 /*
 做一次协议对齐检查 首个非空白必须是 *
@@ -48,4 +73,4 @@ int net_session_process_resp(int fd,
                              net_session_handler_fn handler,
                              void* user_data);
 
-#endif 
+#endif

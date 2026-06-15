@@ -31,6 +31,13 @@ int net_session_init(net_session_t* session,
     resp_parser_init(&session->resp_parser);
     session->processing = 0;
     session->first_packet_checked = 0;
+    session->session_id = 0;
+    session->generation = 0;
+    session->closing = 0;
+    session->refcount = 1;
+    session->owner_poller_id = -1;
+    session->next_request_seq = 0;
+    session->single_inflight = 0;
     return 0;
 }
 
@@ -45,6 +52,72 @@ void net_session_free(net_session_t* session){
     resp_parser_free(&session->resp_parser);
 
     memset(session, 0, sizeof(net_session_t));
+}
+
+void net_session_set_identity(net_session_t *session,
+                              uint64_t session_id,
+                              uint32_t generation,
+                              int owner_poller_id) {
+    if (!session) {
+        return;
+    }
+    session->session_id = session_id;
+    session->generation = generation;
+    session->owner_poller_id = owner_poller_id;
+    session->closing = 0;
+    session->refcount = 1;
+    session->next_request_seq = 0;
+    session->single_inflight = 0;
+}
+
+void net_session_mark_closing(net_session_t *session) {
+    if (!session) {
+        return;
+    }
+    session->closing = 1;
+}
+
+int net_session_is_closing(const net_session_t *session) {
+    return session ? session->closing : 1;
+}
+
+void net_session_ref_inc(net_session_t *session) {
+    if (!session) {
+        return;
+    }
+    session->refcount++;
+}
+
+int net_session_ref_dec(net_session_t *session) {
+    if (!session) {
+        return 0;
+    }
+    if (session->refcount > 0) {
+        session->refcount--;
+    }
+    return session->refcount;
+}
+
+uint64_t net_session_next_request_seq(net_session_t *session) {
+    if (!session) {
+        return 0;
+    }
+    return ++session->next_request_seq;
+}
+
+int net_session_try_begin_inflight(net_session_t *session) {
+    if (!session || session->closing || session->single_inflight) {
+        return 0;
+    }
+    session->single_inflight = 1;
+    return 1;
+}
+
+void net_session_end_inflight(net_session_t *session) {
+    if (!session) {
+        return;
+    }
+    session->single_inflight = 0;
 }
 
 //处理当前recv_buf中的数据

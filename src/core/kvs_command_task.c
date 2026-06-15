@@ -12,6 +12,7 @@
 #include "kvs_vector.h"
 #include "kvs_aof.h"
 
+#include <string.h>
 #include <strings.h>
 
 static int kvs_vector_status_to_resp(int status, char *response) {
@@ -141,6 +142,31 @@ static void kvs_command_task_reset(kvs_command_task_t *task) {
 	kvs_vector_search_prepared_reset(&task->prepared_search);
 }
 
+static void kvs_command_task_free_owned_argv(kvs_command_task_t *task) {
+	int i;
+
+	if (!task || !task->owns_argv) {
+		return;
+	}
+
+	if (task->argv) {
+		for (i = 0; i < task->argc; ++i) {
+			if (task->argv[i]) {
+				kvs_free(task->argv[i]);
+			}
+		}
+		kvs_free(task->argv);
+	}
+	if (task->argv_lens) {
+		kvs_free(task->argv_lens);
+	}
+
+	task->argv = NULL;
+	task->argv_lens = NULL;
+	task->argc = 0;
+	task->owns_argv = 0;
+}
+
 void kvs_command_task_destroy(kvs_command_task_t *task) {
 	if (!task) {
 		return;
@@ -158,11 +184,87 @@ void kvs_command_task_destroy(kvs_command_task_t *task) {
 	}
 
 	/*
-	 * Future async stages may set owns_argv after deep-copying argv. Stage-2
-	 * never does, so no argv free is needed here.
+	 * Stage-4A adds optional owned argv for future executor use. The current
+	 * synchronous path still leaves owns_argv=0 and remains zero-copy.
 	 */
+	kvs_command_task_free_owned_argv(task);
 	task->prepared = NULL;
 	task->is_prepared = 0;
+}
+
+int kvs_command_task_copy_argv(kvs_command_task_t *task) {
+	char **argv_copy = NULL;
+	size_t *lens_copy = NULL;
+	command_context_t copied_ctx;
+	int i;
+
+	if (!task || task->argc <= 0 || !task->argv || !task->argv_lens) {
+		return -1;
+	}
+	if (task->owns_argv) {
+		return 0;
+	}
+	if ((size_t)task->argc > ((size_t)-1) / sizeof(char *)) {
+		return -1;
+	}
+
+	argv_copy = (char **)kvs_malloc((size_t)task->argc * sizeof(char *));
+	if (!argv_copy) {
+		return -1;
+	}
+	memset(argv_copy, 0, (size_t)task->argc * sizeof(char *));
+
+	lens_copy = (size_t *)kvs_malloc((size_t)task->argc * sizeof(size_t));
+	if (!lens_copy) {
+		kvs_free(argv_copy);
+		return -1;
+	}
+	memset(lens_copy, 0, (size_t)task->argc * sizeof(size_t));
+
+	for (i = 0; i < task->argc; ++i) {
+		size_t len = task->argv_lens[i];
+
+		if (!task->argv[i] && len > 0) {
+			goto fail;
+		}
+		if (len == (size_t)-1) {
+			goto fail;
+		}
+		lens_copy[i] = len;
+		argv_copy[i] = (char *)kvs_malloc(len + 1);
+		if (!argv_copy[i]) {
+			goto fail;
+		}
+		if (len > 0) {
+			memcpy(argv_copy[i], task->argv[i], len);
+		}
+		argv_copy[i][len] = '\0';
+	}
+
+	if (parse_command_argument(task->cmd_index, argv_copy, task->argc, lens_copy, &copied_ctx) < 0) {
+		goto fail;
+	}
+
+	task->argv = argv_copy;
+	task->argv_lens = lens_copy;
+	task->owns_argv = 1;
+	task->ctx = copied_ctx;
+
+	return 0;
+
+fail:
+	if (argv_copy) {
+		for (i = 0; i < task->argc; ++i) {
+			if (argv_copy[i]) {
+				kvs_free(argv_copy[i]);
+			}
+		}
+		kvs_free(argv_copy);
+	}
+	if (lens_copy) {
+		kvs_free(lens_copy);
+	}
+	return -1;
 }
 
 int kvs_command_task_build(

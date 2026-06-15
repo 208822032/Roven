@@ -16,6 +16,7 @@
 #include <sys/uio.h> // 用于writev
 #include <fcntl.h>   // 用于fcntl
 #include <netinet/tcp.h>
+#include <stdint.h>
 
 #include "server.h"
 #include "kvs_api.h"
@@ -59,6 +60,8 @@ struct conn conn_list[CONNECTION_SIZE] = {0};
 
 //全局连接扩展数组
 static conn_extension_t conn_extensions[CONNECTION_SIZE] = {0};
+static uint64_t g_reactor_next_session_id = 1;
+static uint32_t g_reactor_fd_generation[CONNECTION_SIZE] = {0};
 
 extern kvs_config_t g_cfg;
 
@@ -111,6 +114,17 @@ int init_conn_extension(int fd) {
     if (net_session_init(&ext->session, 8 * 1024 * 1024, 8 * 1024 * 1024) < 0) {
         return -1;
     }
+
+    g_reactor_fd_generation[fd]++;
+    if (g_reactor_fd_generation[fd] == 0) {
+        g_reactor_fd_generation[fd] = 1;
+    }
+    net_session_set_identity(
+        &ext->session,
+        g_reactor_next_session_id++,
+        g_reactor_fd_generation[fd],
+        0
+    );
     
     // 分配iovec数组
     ext->iovecs = kvs_malloc(MAX_IOVEC_COUNT * sizeof(struct iovec));
@@ -171,6 +185,7 @@ int event_register(int fd, int event) {
 void event_unregister(int fd) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return;
 
+    net_session_mark_closing(&conn_extensions[fd].session);
     free_conn_extension(fd);
 
     //关闭文件描述符
@@ -566,5 +581,4 @@ int reactor_start(unsigned short port, msg_handler handler) {
 	close(epfd);
 	return 0;
 }
-
 

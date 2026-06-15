@@ -20,6 +20,18 @@ void kvs_response_task_init_borrowed(
 	size_t cap
 );
 
+int kvs_response_task_init_owned(kvs_response_task_t *resp, size_t cap);
+
+int kvs_response_task_ensure_capacity(kvs_response_task_t *resp, size_t need);
+
+int kvs_response_task_is_owned(const kvs_response_task_t *resp);
+
+char *kvs_response_task_detach_buffer(
+	kvs_response_task_t *resp,
+	size_t *len,
+	size_t *cap
+);
+
 void kvs_response_task_destroy(kvs_response_task_t *resp);
 
 char *kvs_response_task_buffer(kvs_response_task_t *resp);
