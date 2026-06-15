@@ -45,6 +45,124 @@ int get_sync_context() {
 	return sync_context;
 }
 
+static int kvs_vector_status_to_resp(int status, char *response) {
+	switch (status) {
+		case KVS_VECTOR_OK:
+			return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
+		case KVS_VECTOR_ERR_INVALID_ARG:
+			return resp_generate_simple_string_n(response, '-', "ERR invalid vector argument", sizeof("ERR invalid vector argument") - 1);
+		case KVS_VECTOR_ERR_NOT_FOUND:
+			return resp_generate_simple_string_n(response, '+', "NO EXIST", sizeof("NO EXIST") - 1);
+		case KVS_VECTOR_ERR_NOT_INITIALIZED:
+			return resp_generate_simple_string_n(response, '-', "ERR vector index not initialized", sizeof("ERR vector index not initialized") - 1);
+		case KVS_VECTOR_ERR_NOT_IMPLEMENTED:
+			return resp_generate_simple_string_n(response, '-', "ERR vector command not implemented", sizeof("ERR vector command not implemented") - 1);
+		default:
+			return resp_generate_simple_string_n(response, '-', "ERR vector operation failed", sizeof("ERR vector operation failed") - 1);
+	}
+}
+
+static int kvs_vector_search_prepared_to_resp(
+	const command_context_t *ctx,
+	const kvs_vector_search_prepared_t *prepared,
+	char *response
+) {
+	int topk;
+	size_t results_capacity;
+	kvs_vector_search_result_t *results = NULL;
+	size_t results_count = 0;
+	size_t i;
+	int status;
+	int off = 0;
+
+	if (!ctx || !prepared) {
+		return kvs_vector_status_to_resp(KVS_VECTOR_ERR_INVALID_ARG, response);
+	}
+
+	topk = ctx->topk;
+	if (topk <= 0) {
+		topk = 1;
+	}
+	if (topk > 1024) {
+		return kvs_vector_status_to_resp(KVS_VECTOR_ERR_INVALID_ARG, response);
+	}
+
+	results_capacity = (size_t)topk;
+	results = (kvs_vector_search_result_t *)kvs_malloc(
+		results_capacity * sizeof(kvs_vector_search_result_t)
+	);
+	if (!results) {
+		return kvs_vector_status_to_resp(KVS_VECTOR_ERR, response);
+	}
+
+	kvs_vector_search_results_reset(results, results_capacity);
+	status = kvs_vector_search_with_prepared(
+		prepared,
+		topk,
+		ctx->has_threshold ? ctx->threshold : g_cfg.vector_score_threshold,
+		results,
+		results_capacity,
+		&results_count
+	);
+	if (status != KVS_VECTOR_OK) {
+		kvs_free(results);
+		return kvs_vector_status_to_resp(status, response);
+	}
+
+	off += resp_generate_array_start(response + off, (int)results_count);
+	for (i = 0; i < results_count; ++i) {
+		char *item = NULL;
+		int item_cap;
+		int n;
+
+		item_cap = snprintf(
+			NULL, 0,
+			"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+			results[i].score,
+			(int)results[i].scope_len,
+			results[i].scope ? results[i].scope : "",
+			(int)results[i].question_len,
+			results[i].question ? results[i].question : "",
+			(int)results[i].answer_len,
+			results[i].answer ? results[i].answer : ""
+		);
+		if (item_cap < 0) {
+			kvs_free(results);
+			return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+		}
+
+		item_cap += 1;
+		item = (char *)kvs_malloc((size_t)item_cap);
+		if (!item) {
+			kvs_free(results);
+			return resp_generate_simple_string_n(response, '-', "ERR out of memory", sizeof("ERR out of memory") - 1);
+		}
+
+		n = snprintf(
+			item, (size_t)item_cap,
+			"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+			results[i].score,
+			(int)results[i].scope_len,
+			results[i].scope ? results[i].scope : "",
+			(int)results[i].question_len,
+			results[i].question ? results[i].question : "",
+			(int)results[i].answer_len,
+			results[i].answer ? results[i].answer : ""
+		);
+		if (n < 0 || n >= item_cap) {
+			kvs_free(item);
+			kvs_free(results);
+			return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+		}
+
+		off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+		kvs_free(item);
+	}
+
+	kvs_free(results);
+	return off;
+}
+
 
 int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *response){
 
@@ -77,6 +195,13 @@ int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *resp
 	int use_read_lock = 0;
 	int use_write_lock = 0;
 	int lock_held = 0;
+	int vector_prepared_path = 0;
+	int command_committed = 0;
+	kvs_vector_set_prepared_t prepared_set;
+	kvs_vector_search_prepared_t prepared_search;
+
+	kvs_vector_set_prepared_reset(&prepared_set);
+	kvs_vector_search_prepared_reset(&prepared_search);
 
 	switch (cmd->lock_mode)
 	{
@@ -91,37 +216,83 @@ int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *resp
 			break;
 	}
 
+	if (strcmp(cmd->name, "VSET") == 0) {
+		int status = kvs_vector_set_prepare(
+			ctx.query_text,
+			ctx.query_text_len,
+			ctx.value,
+			ctx.value ? strlen(ctx.value) : 0,
+			ctx.scope,
+			ctx.scope_len,
+			&prepared_set
+		);
+		vector_prepared_path = 1;
+		if (status != KVS_VECTOR_OK) {
+			return kvs_vector_status_to_resp(status, response);
+		}
+	} else if (strcmp(cmd->name, "VSEARCH") == 0) {
+		int status = kvs_vector_search_prepare(
+			ctx.query_text,
+			ctx.query_text_len,
+			ctx.scope,
+			ctx.scope_len,
+			&prepared_search
+		);
+		vector_prepared_path = 1;
+		if (status != KVS_VECTOR_OK) {
+			return kvs_vector_status_to_resp(status, response);
+		}
+	}
+
 	if (use_read_lock) {
 		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+			kvs_vector_set_prepared_destroy(&prepared_set);
+			kvs_vector_search_prepared_destroy(&prepared_search);
 			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 		}
 		lock_held = 1;
 		ctx.lock_mode = KVS_LOCK_MODE_READ;
 	}else if(use_write_lock){
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+			kvs_vector_set_prepared_destroy(&prepared_set);
+			kvs_vector_search_prepared_destroy(&prepared_search);
 			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 		}
 		lock_held = 1;
 		ctx.lock_mode = KVS_LOCK_MODE_WRITE;
 	}
 
-    int ret = cmd->handler(&ctx, response);
+	int ret;
+	if (strcmp(cmd->name, "VSET") == 0) {
+		int status = kvs_vector_set_commit_prepared(&prepared_set);
+		command_committed = (status == KVS_VECTOR_OK);
+		ret = kvs_vector_status_to_resp(status, response);
+	} else if (strcmp(cmd->name, "VSEARCH") == 0) {
+		ret = kvs_vector_search_prepared_to_resp(&ctx, &prepared_search, response);
+		command_committed = (ret >= 0);
+	} else {
+		ret = cmd->handler(&ctx, response);
+		command_committed = (ret >= 0);
+	}
 	if (use_read_lock && ret == KVS_CMD_RETRY_WITH_WRITE_LOCK) {
 		pthread_rwlock_unlock(&g_kv_data_rwlock);
 		lock_held = 0;
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+			kvs_vector_set_prepared_destroy(&prepared_set);
+			kvs_vector_search_prepared_destroy(&prepared_search);
 			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 		}
 		lock_held = 1;
 		ctx.lock_mode = KVS_LOCK_MODE_WRITE;
 		ret = cmd->handler(&ctx, response);
+		command_committed = (ret >= 0);
 	}
 
 	int64_t expire_at_ms = 0;
 	int has_expire_at = 0;
 	int need_del_sync = 0;
 	int need_persist_sync = 0;
-	if (ret >= 0 && cmd->write_command) {
+	if (command_committed && cmd->write_command) {
 		if (strcmp(cmd->name, "EXPIRE") == 0 || strcmp(cmd->name, "PEXPIREAT") == 0) {
 			if (ttl_get_any_key_expire_at_ms(ctx.key, ctx.key_len, &expire_at_ms) > 0 && expire_at_ms >= 0) {
 				has_expire_at = 1;
@@ -136,9 +307,13 @@ int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *resp
 	if (lock_held) {
 		pthread_rwlock_unlock(&g_kv_data_rwlock);
 	}
+	if (vector_prepared_path) {
+		kvs_vector_set_prepared_destroy(&prepared_set);
+		kvs_vector_search_prepared_destroy(&prepared_search);
+	}
 
 	//命令执行成功后记录写命令
-	if(ret >= 0 && cmd->write_command){
+	if(command_committed && cmd->write_command){
 		#if ENABLE_AOF// 添加日志打印命令
 			if(!aof_is_loading()){
 				if (strcmp(cmd->name, "EXPIRE") == 0) {
@@ -441,5 +616,4 @@ int main(int argc, char *argv[]) {
     
 }
 #endif
-
 

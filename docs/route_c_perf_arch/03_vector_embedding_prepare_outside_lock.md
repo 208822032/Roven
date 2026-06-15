@@ -1,5 +1,13 @@
 # Vector Embedding Prepare Outside Lock
 
+## 实现状态
+
+- VSET：已将 embedding prepare 移到 g_kv_data_rwlock 写锁外。
+- VSEARCH：已将 query embedding prepare 移到 g_kv_data_rwlock 读锁外。
+- 锁内仍保留：vector store/id_map/HNSW insert/search、record 过滤、scope 过滤。
+- VSET commit 前二次检查 question+scope。
+- 已知限制：reactor 下 handler 仍串行，max_inflight 可能仍为 1；后续路线 C 通过 embedding prepare worker pool 才能真正提升并发。
+
 ## 1. 本阶段目标
 
 阶段 1 的目标是把 `VSET` 和 `VSEARCH` 的 ONNX embedding 生成从 `g_kv_data_rwlock` 临界区中移出，先缩短锁持有时间，不改网络模型，不引入 worker pool。

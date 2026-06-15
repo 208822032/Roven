@@ -140,6 +140,70 @@ int kvs_vector_set(
 	size_t scope_len
 );
 
+/*
+ * Stage-1 prepared vector APIs.
+ *
+ * prepare runs without touching vector store/id_map/HNSW. The caller owns the
+ * copied strings and embedding returned by *_prepare and must either pass them
+ * to commit/search or destroy/free them on failure.
+ */
+typedef struct kvs_vector_set_prepared_s {
+	char *question;
+	size_t question_len;
+	char *answer;
+	size_t answer_len;
+	char *scope;
+	size_t scope_len;
+	float *embedding;
+	int embedding_dim;
+} kvs_vector_set_prepared_t;
+
+typedef struct kvs_vector_search_prepared_s {
+	char *query;
+	size_t query_len;
+	char *scope;
+	size_t scope_len;
+	float *embedding;
+	int embedding_dim;
+} kvs_vector_search_prepared_t;
+
+void kvs_vector_set_prepared_reset(kvs_vector_set_prepared_t *prepared);
+
+void kvs_vector_set_prepared_destroy(kvs_vector_set_prepared_t *prepared);
+
+int kvs_vector_set_prepare(
+	const char *question,
+	size_t question_len,
+	const char *answer,
+	size_t answer_len,
+	const char *scope,
+	size_t scope_len,
+	kvs_vector_set_prepared_t *prepared
+);
+
+int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared);
+
+void kvs_vector_search_prepared_reset(kvs_vector_search_prepared_t *prepared);
+
+void kvs_vector_search_prepared_destroy(kvs_vector_search_prepared_t *prepared);
+
+int kvs_vector_search_prepare(
+	const char *query,
+	size_t query_len,
+	const char *scope,
+	size_t scope_len,
+	kvs_vector_search_prepared_t *prepared
+);
+
+int kvs_vector_search_with_prepared(
+	const kvs_vector_search_prepared_t *prepared,
+	int topk,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity,
+	size_t *results_count
+);
+
 int kvs_vector_get(
 	const char *question,
 	size_t question_len,
