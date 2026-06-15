@@ -119,9 +119,24 @@ void* slave_sync_thread(void *arg){
                  inet_ntoa(slave->addr.sin_addr),
                  ntohs(slave->addr.sin_port));
 
-    // 全量同步：遍历本地所有数据结构，对每个 key 调用 master_sync_command()
     int64_t now_ms = kv_now_ms();
 
+    /*
+     * Route C phase 0.5 stability fix:
+     * master full sync still streams records while traversing the live store.
+     * Holding the global read lock here prevents concurrent writers/TTL cleanup
+     * from freeing nodes during traversal. This may block write commands for the
+     * duration of the full sync. The long-term Route C plan is an executor
+     * snapshot_task: executor builds a consistent snapshot and the sync thread
+     * only sends that snapshot without touching live store.
+     */
+    int lock_ret = pthread_rwlock_rdlock(&g_kv_data_rwlock);
+    if (lock_ret != 0) {
+        KVS_LOG_ERROR("dist", "failed to acquire data read lock for master full sync: ret=%d", lock_ret);
+        goto cleanup_slave;
+    }
+
+    // 全量同步：遍历本地所有数据结构，对每个 key 调用 master_sync_command()
 #if ENABLE_ARRAY
     for (int i = 0; i < global_array.total; i++) {
         if (global_array.table[i].key && global_array.table[i].value &&
@@ -178,6 +193,8 @@ void* slave_sync_thread(void *arg){
     }
 #endif
 
+    pthread_rwlock_unlock(&g_kv_data_rwlock);
+
     char tmp[16];
     while (1) {
         ssize_t n = recv(sockfd, tmp, sizeof(tmp), 0);
@@ -186,6 +203,7 @@ void* slave_sync_thread(void *arg){
         }
     }
 
+cleanup_slave:
     close(sockfd);
 
     // 从全局 slave 列表中移除

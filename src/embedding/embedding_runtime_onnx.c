@@ -63,6 +63,9 @@ struct EmbeddingHandle {
 	uint64_t profile_tensor_us;
 	uint64_t profile_ort_us;
 	uint64_t profile_output_us;
+	uint64_t profile_enter_count;
+	uint64_t profile_inflight;
+	uint64_t profile_max_inflight;
 };
 
 static uint64_t embedding_now_us(void) {
@@ -501,15 +504,46 @@ static void embedding_profile_record(
 	if (count % 100 == 0) {
 		fprintf(
 			stderr,
-			"[kvlite][embedding][profile] count=%llu success_count=%llu avg_total_us=%llu avg_tokenize_us=%llu avg_tensor_us=%llu avg_ort_us=%llu avg_output_us=%llu\n",
+			"[kvlite][embedding][profile] count=%llu success_count=%llu avg_total_us=%llu avg_tokenize_us=%llu avg_tensor_us=%llu avg_ort_us=%llu avg_output_us=%llu enter_count=%llu max_inflight=%llu current_inflight=%llu\n",
 			(unsigned long long)handle->profile_count,
 			(unsigned long long)handle->profile_success_count,
 			(unsigned long long)(handle->profile_total_us / handle->profile_count),
 			(unsigned long long)(handle->profile_tokenize_us / handle->profile_count),
 			(unsigned long long)(handle->profile_tensor_us / handle->profile_count),
 			(unsigned long long)(handle->profile_ort_us / handle->profile_count),
-			(unsigned long long)(handle->profile_output_us / handle->profile_count)
+			(unsigned long long)(handle->profile_output_us / handle->profile_count),
+			(unsigned long long)handle->profile_enter_count,
+			(unsigned long long)handle->profile_max_inflight,
+			(unsigned long long)handle->profile_inflight
 		);
+	}
+	pthread_mutex_unlock(&handle->profile_mutex);
+}
+
+static void embedding_profile_enter(EmbeddingHandle *handle) {
+	if (!handle || !handle->profile_enabled ||
+	    !handle->profile_mutex_initialized) {
+		return;
+	}
+
+	pthread_mutex_lock(&handle->profile_mutex);
+	handle->profile_enter_count++;
+	handle->profile_inflight++;
+	if (handle->profile_inflight > handle->profile_max_inflight) {
+		handle->profile_max_inflight = handle->profile_inflight;
+	}
+	pthread_mutex_unlock(&handle->profile_mutex);
+}
+
+static void embedding_profile_leave(EmbeddingHandle *handle) {
+	if (!handle || !handle->profile_enabled ||
+	    !handle->profile_mutex_initialized) {
+		return;
+	}
+
+	pthread_mutex_lock(&handle->profile_mutex);
+	if (handle->profile_inflight > 0) {
+		handle->profile_inflight--;
 	}
 	pthread_mutex_unlock(&handle->profile_mutex);
 }
@@ -1527,22 +1561,26 @@ EmbeddingErrorCode embedding_encode(
 
 	profile_enabled = handle->profile_enabled;
 	if (profile_enabled) {
+		embedding_profile_enter(handle);
 		total_start_us = embedding_now_us();
 	}
 
 	if (!text || text_len == 0 || !output) {
 		embedding_set_error(handle, "invalid text or output buffer");
-		return EMBEDDING_ERR_INVALID_ARGUMENT;
+		result = EMBEDDING_ERR_INVALID_ARGUMENT;
+		goto cleanup;
 	}
 
 	if (text_len > (size_t)handle->max_text_len) {
 		embedding_set_error(handle, "text exceeds max_text_len");
-		return EMBEDDING_ERR_TEXT_TOO_LONG;
+		result = EMBEDDING_ERR_TEXT_TOO_LONG;
+		goto cleanup;
 	}
 
 	if (output_dim != handle->embedding_dim) {
 		embedding_set_error(handle, "output dimension mismatch");
-		return EMBEDDING_ERR_DIM_MISMATCH;
+		result = EMBEDDING_ERR_DIM_MISMATCH;
+		goto cleanup;
 	}
 
 	input_ids = (int64_t *)calloc((size_t)handle->max_tokens, sizeof(*input_ids));
@@ -1675,6 +1713,7 @@ cleanup:
 			ort_us,
 			output_us
 		);
+		embedding_profile_leave(handle);
 	}
 	if (output_values[0]) {
 		handle->ort->ReleaseValue(output_values[0]);
