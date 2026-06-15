@@ -10,6 +10,7 @@
 #include "kvs_log.h"
 #include "kvs_vector.h"
 #include "kvs_command_task.h"
+#include "kvs_response_task.h"
 
 #include <strings.h>
 
@@ -47,26 +48,35 @@ int get_sync_context() {
 
 
 int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *response){
+	kvs_response_task_t response_task;
 	kvs_command_task_t task;
 	int ret;
 	int prep_ret;
 
-	if (kvs_command_task_build(&task, tokens, count, token_lens, response) < 0) {
+	kvs_response_task_init_borrowed(&response_task, response, KVS_MAX_RESPONSE_LENGTH);
+
+	if (kvs_command_task_build(&task, tokens, count, token_lens, &response_task) < 0) {
 		ret = task.status;
+		kvs_response_task_finalize(&response_task, ret);
 		kvs_command_task_destroy(&task);
+		kvs_response_task_destroy(&response_task);
 		return ret;
 	}
 
 	prep_ret = kvs_command_task_prepare(&task);
 	if (prep_ret != 0) {
 		ret = prep_ret;
+		kvs_response_task_finalize(&response_task, ret);
 		kvs_command_task_destroy(&task);
+		kvs_response_task_destroy(&response_task);
 		return ret;
 	}
 
 	ret = kvs_command_task_execute_sync(&task);
 	kvs_command_task_post_commit(&task, ret);
+	kvs_response_task_finalize(&response_task, ret);
 	kvs_command_task_destroy(&task);
+	kvs_response_task_destroy(&response_task);
 	return ret;
 }
 

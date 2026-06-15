@@ -170,15 +170,19 @@ int kvs_command_task_build(
 	char **tokens,
 	int count,
 	size_t *token_lens,
-	char *response
+	kvs_response_task_t *response_task
 ) {
+	char *response;
+
 	kvs_command_task_reset(task);
 
 	task->argc = count;
 	task->argv = tokens;
 	task->argv_lens = token_lens;
+	task->response_task = response_task;
+	response = kvs_response_task_buffer(response_task);
 	task->response = response;
-	task->response_cap = KVS_MAX_RESPONSE_LENGTH;
+	task->response_cap = kvs_response_task_capacity(response_task);
 	task->owns_argv = 0;
 
 	if (tokens[0] == NULL || count == 0) {
@@ -232,10 +236,12 @@ int kvs_command_task_build(
 
 int kvs_command_task_prepare(kvs_command_task_t *task) {
 	int status;
+	char *response = task ? kvs_response_task_buffer(task->response_task) : NULL;
 
 	if (!task || !task->cmd) {
-		return resp_generate_simple_string_n(task ? task->response : NULL, '-', "Invalid command", sizeof("Invalid command") - 1);
+		return resp_generate_simple_string_n(response, '-', "Invalid command", sizeof("Invalid command") - 1);
 	}
+	task->response = response;
 
 	if (strcmp(task->cmd->name, "VSET") == 0) {
 		task->prepared_kind = KVS_COMMAND_TASK_PREPARED_VSET;
@@ -279,6 +285,8 @@ int kvs_command_task_prepare(kvs_command_task_t *task) {
 }
 
 static int kvs_command_task_lock(kvs_command_task_t *task) {
+	task->response = kvs_response_task_buffer(task->response_task);
+
 	if (task->use_read_lock) {
 		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
 			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
@@ -318,6 +326,8 @@ static void kvs_command_task_capture_post_state(kvs_command_task_t *task, int re
 
 static int kvs_command_task_execute_handler(kvs_command_task_t *task) {
 	int ret;
+
+	task->response = kvs_response_task_buffer(task->response_task);
 
 	if (strcmp(task->cmd->name, "VSET") == 0) {
 		int status = kvs_vector_set_commit_prepared(&task->prepared_set);

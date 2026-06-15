@@ -2,6 +2,7 @@
 #define KVS_COMMAND_TASK_H
 
 #include "kvs_command.h"
+#include "kvs_response_task.h"
 #include "kvs_vector.h"
 
 typedef enum kvs_command_task_prepared_kind_e {
@@ -17,6 +18,7 @@ typedef struct kvs_command_task_s {
 	char **argv;
 	size_t *argv_lens;
 
+	kvs_response_task_t *response_task;
 	char *response;
 	size_t response_cap;
 	int status;
@@ -46,7 +48,7 @@ typedef struct kvs_command_task_s {
 	kvs_vector_search_prepared_t prepared_search;
 } kvs_command_task_t;
 
-int kvs_command_task_build(kvs_command_task_t *task, char **tokens, int count, size_t *token_lens, char *response);
+int kvs_command_task_build(kvs_command_task_t *task, char **tokens, int count, size_t *token_lens, kvs_response_task_t *response_task);
 int kvs_command_task_prepare(kvs_command_task_t *task);
 int kvs_command_task_execute_sync(kvs_command_task_t *task);
 void kvs_command_task_post_commit(kvs_command_task_t *task, int ret);

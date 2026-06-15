@@ -1,5 +1,17 @@
 # Response Task Design
 
+## 实现状态
+
+- 当前状态：已引入 response_task 抽象，但仍保持同步回写。
+- 新增文件：
+  - include/kvs_response_task.h
+  - src/core/kvs_response_task.c
+- response_task 生命周期：由 kvs_filter_protocol 栈上创建，不逃逸调用栈。
+- buffer ownership：当前借用原 response buffer，owns_buf=0，destroy 不释放。
+- 执行方式：handler 仍同步写入原 response buffer，net_session 发送逻辑不变。
+- 未引入内容：未引入 response queue、异步 response、session refcount、owner poller、动态 response buffer。
+- 已知限制：response_task 当前不是跨线程安全对象，后续 executor 阶段需要补 session refcount 和 response queue。
+
 ## 1. 本阶段目标
 
 阶段 3 的目标是引入 `response_task` 抽象，但仍同步回写。该阶段为异步 executor 和多 poller 的 response 回投做准备。
