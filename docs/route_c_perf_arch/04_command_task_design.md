@@ -1,5 +1,14 @@
 # Command Task Design
 
+## 实现状态
+
+- 当前状态：已引入 command_task 抽象，但仍保持同步执行。
+- 执行方式：kvs_filter_protocol 构造 command_task 后立即同步 prepare/execute/destroy。
+- argv 生命周期：普通命令仍零拷贝引用当前 RESP parse 结果，不逃逸当前调用栈；VSET/VSEARCH prepared 数据继续深拷贝。
+- prepared data：VSET/VSEARCH 的 prepared 结构纳入 command_task 统一管理。
+- 未引入内容：未引入 command queue、executor、异步 response、多线程执行。
+- 已知限制：command_task 当前还不是跨线程安全对象，后续阶段需要继续补 session ref、response_task、argv 全量 ownership。
+
 ## 1. 本阶段目标
 
 阶段 2 的目标是引入 `command_task` 抽象，但仍同步执行。该阶段只整理命令入口接口，为后续 executor 做准备。

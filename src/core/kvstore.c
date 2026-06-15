@@ -163,202 +163,366 @@ static int kvs_vector_search_prepared_to_resp(
 	return off;
 }
 
+typedef enum kvs_command_task_prepared_kind_e {
+	KVS_COMMAND_TASK_PREPARED_NONE = 0,
+	KVS_COMMAND_TASK_PREPARED_VSET,
+	KVS_COMMAND_TASK_PREPARED_VSEARCH,
+} kvs_command_task_prepared_kind_t;
 
-int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *response){
+typedef struct kvs_command_task_s {
+	const command_info *cmd;
+	int cmd_index;
+	int argc;
+	char **argv;
+	size_t *argv_lens;
 
-	if (tokens[0] == NULL || count == 0) {
-        return resp_generate_simple_string_n(response, '-', "Invalid command", sizeof("Invalid command") - 1);
-    }
+	char *response;
+	size_t response_cap;
+	int status;
+	int command_committed;
 
-	//查找命令
-	const command_info *cmd = lookup_command(tokens[0]);
-	if(cmd == NULL) return resp_generate_simple_string_n(response, '-', "Unknown command", sizeof("Unknown command") - 1);
+	/*
+	 * Stage-2 remains synchronous. owns_argv is intentionally 0 for normal
+	 * commands: argv points into the current RESP parse buffer and must not
+	 * escape this kvs_filter_protocol call.
+	 */
+	int owns_argv;
+	int is_prepared;
+	kvs_command_task_prepared_kind_t prepared_kind;
+	void *prepared;
 
-	int cmd_index = get_command_index(tokens[0]);
-	if(cmd_index == -1) return resp_generate_simple_string_n(response, '-', "Unknown command", sizeof("Unknown command") - 1);
-	//检查参数数量
-	if(!check_arity(cmd, count)) return resp_generate_simple_string_n(response, '-', "Wrong number of arguments", sizeof("Wrong number of arguments") - 1);
-	
-	if (cmd->write_command && global_dist_config.role == ROLE_SLAVE && get_sync_context() == 0){
-		return resp_generate_simple_string_n(response, '-', "ERROR SLAVE READ ONLY", sizeof("ERROR SLAVE READ ONLY") - 1);
-	}
-	
-	//解析命令参数
 	command_context_t ctx;
-	memset(&ctx, 0, sizeof(ctx));
-	if(parse_command_argument(cmd_index, tokens, count, token_lens, &ctx) < 0){
-		return resp_generate_simple_string_n(response, '-', "Invalid arguments", sizeof("Invalid arguments") - 1);
-	}
+	int use_read_lock;
+	int use_write_lock;
+	int lock_held;
 
-	// int use_read_lock = (cmd->handler == handle_get || cmd->handler == handle_exist);
-	// int lock_held = 0;
-	int use_read_lock = 0;
-	int use_write_lock = 0;
-	int lock_held = 0;
-	int vector_prepared_path = 0;
-	int command_committed = 0;
+	int64_t expire_at_ms;
+	int has_expire_at;
+	int need_del_sync;
+	int need_persist_sync;
+
 	kvs_vector_set_prepared_t prepared_set;
 	kvs_vector_search_prepared_t prepared_search;
+} kvs_command_task_t;
 
-	kvs_vector_set_prepared_reset(&prepared_set);
-	kvs_vector_search_prepared_reset(&prepared_search);
+static void kvs_command_task_reset(kvs_command_task_t *task) {
+	if (!task) {
+		return;
+	}
+	memset(task, 0, sizeof(*task));
+	kvs_vector_set_prepared_reset(&task->prepared_set);
+	kvs_vector_search_prepared_reset(&task->prepared_search);
+}
 
-	switch (cmd->lock_mode)
-	{
+static void kvs_command_task_destroy(kvs_command_task_t *task) {
+	if (!task) {
+		return;
+	}
+
+	if (task->lock_held) {
+		pthread_rwlock_unlock(&g_kv_data_rwlock);
+		task->lock_held = 0;
+	}
+
+	if (task->prepared_kind == KVS_COMMAND_TASK_PREPARED_VSET) {
+		kvs_vector_set_prepared_destroy(&task->prepared_set);
+	} else if (task->prepared_kind == KVS_COMMAND_TASK_PREPARED_VSEARCH) {
+		kvs_vector_search_prepared_destroy(&task->prepared_search);
+	}
+
+	/*
+	 * Future async stages may set owns_argv after deep-copying argv. Stage-2
+	 * never does, so no argv free is needed here.
+	 */
+	task->prepared = NULL;
+	task->is_prepared = 0;
+}
+
+static int kvs_command_task_build(
+	kvs_command_task_t *task,
+	char **tokens,
+	int count,
+	size_t *token_lens,
+	char *response
+) {
+	kvs_command_task_reset(task);
+
+	task->argc = count;
+	task->argv = tokens;
+	task->argv_lens = token_lens;
+	task->response = response;
+	task->response_cap = KVS_MAX_RESPONSE_LENGTH;
+	task->owns_argv = 0;
+
+	if (tokens[0] == NULL || count == 0) {
+		task->status = resp_generate_simple_string_n(response, '-', "Invalid command", sizeof("Invalid command") - 1);
+		return -1;
+	}
+
+	task->cmd = lookup_command(tokens[0]);
+	if (task->cmd == NULL) {
+		task->status = resp_generate_simple_string_n(response, '-', "Unknown command", sizeof("Unknown command") - 1);
+		return -1;
+	}
+
+	task->cmd_index = get_command_index(tokens[0]);
+	if (task->cmd_index == -1) {
+		task->status = resp_generate_simple_string_n(response, '-', "Unknown command", sizeof("Unknown command") - 1);
+		return -1;
+	}
+
+	if (!check_arity(task->cmd, count)) {
+		task->status = resp_generate_simple_string_n(response, '-', "Wrong number of arguments", sizeof("Wrong number of arguments") - 1);
+		return -1;
+	}
+
+	if (task->cmd->write_command &&
+	    global_dist_config.role == ROLE_SLAVE &&
+	    get_sync_context() == 0) {
+		task->status = resp_generate_simple_string_n(response, '-', "ERROR SLAVE READ ONLY", sizeof("ERROR SLAVE READ ONLY") - 1);
+		return -1;
+	}
+
+	if (parse_command_argument(task->cmd_index, tokens, count, token_lens, &task->ctx) < 0) {
+		task->status = resp_generate_simple_string_n(response, '-', "Invalid arguments", sizeof("Invalid arguments") - 1);
+		return -1;
+	}
+
+	switch (task->cmd->lock_mode) {
 		case KVS_CMD_LOCK_READ:
-			use_read_lock = 1;
+			task->use_read_lock = 1;
 			break;
 		case KVS_CMD_LOCK_WRITE:
 		default:
-			use_write_lock = 1;
+			task->use_write_lock = 1;
 			break;
 		case KVS_CMD_LOCK_NONE:
 			break;
 	}
 
-	if (strcmp(cmd->name, "VSET") == 0) {
-		int status = kvs_vector_set_prepare(
-			ctx.query_text,
-			ctx.query_text_len,
-			ctx.value,
-			ctx.value ? strlen(ctx.value) : 0,
-			ctx.scope,
-			ctx.scope_len,
-			&prepared_set
-		);
-		vector_prepared_path = 1;
-		if (status != KVS_VECTOR_OK) {
-			return kvs_vector_status_to_resp(status, response);
-		}
-	} else if (strcmp(cmd->name, "VSEARCH") == 0) {
-		int status = kvs_vector_search_prepare(
-			ctx.query_text,
-			ctx.query_text_len,
-			ctx.scope,
-			ctx.scope_len,
-			&prepared_search
-		);
-		vector_prepared_path = 1;
-		if (status != KVS_VECTOR_OK) {
-			return kvs_vector_status_to_resp(status, response);
-		}
+	return 0;
+}
+
+static int kvs_command_task_prepare(kvs_command_task_t *task) {
+	int status;
+
+	if (!task || !task->cmd) {
+		return resp_generate_simple_string_n(task ? task->response : NULL, '-', "Invalid command", sizeof("Invalid command") - 1);
 	}
 
-	if (use_read_lock) {
+	if (strcmp(task->cmd->name, "VSET") == 0) {
+		task->prepared_kind = KVS_COMMAND_TASK_PREPARED_VSET;
+		task->prepared = &task->prepared_set;
+		status = kvs_vector_set_prepare(
+			task->ctx.query_text,
+			task->ctx.query_text_len,
+			task->ctx.value,
+			task->ctx.value ? strlen(task->ctx.value) : 0,
+			task->ctx.scope,
+			task->ctx.scope_len,
+			&task->prepared_set
+		);
+		if (status != KVS_VECTOR_OK) {
+			task->status = kvs_vector_status_to_resp(status, task->response);
+			return task->status;
+		}
+		task->is_prepared = 1;
+		return 0;
+	}
+
+	if (strcmp(task->cmd->name, "VSEARCH") == 0) {
+		task->prepared_kind = KVS_COMMAND_TASK_PREPARED_VSEARCH;
+		task->prepared = &task->prepared_search;
+		status = kvs_vector_search_prepare(
+			task->ctx.query_text,
+			task->ctx.query_text_len,
+			task->ctx.scope,
+			task->ctx.scope_len,
+			&task->prepared_search
+		);
+		if (status != KVS_VECTOR_OK) {
+			task->status = kvs_vector_status_to_resp(status, task->response);
+			return task->status;
+		}
+		task->is_prepared = 1;
+		return 0;
+	}
+
+	return 0;
+}
+
+static int kvs_command_task_lock(kvs_command_task_t *task) {
+	if (task->use_read_lock) {
 		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
-			kvs_vector_set_prepared_destroy(&prepared_set);
-			kvs_vector_search_prepared_destroy(&prepared_search);
-			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+			return -1;
 		}
-		lock_held = 1;
-		ctx.lock_mode = KVS_LOCK_MODE_READ;
-	}else if(use_write_lock){
+		task->lock_held = 1;
+		task->ctx.lock_mode = KVS_LOCK_MODE_READ;
+	} else if (task->use_write_lock) {
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
-			kvs_vector_set_prepared_destroy(&prepared_set);
-			kvs_vector_search_prepared_destroy(&prepared_search);
-			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+			return -1;
 		}
-		lock_held = 1;
-		ctx.lock_mode = KVS_LOCK_MODE_WRITE;
+		task->lock_held = 1;
+		task->ctx.lock_mode = KVS_LOCK_MODE_WRITE;
 	}
 
+	return 0;
+}
+
+static void kvs_command_task_capture_post_state(kvs_command_task_t *task, int ret) {
+	if (!task->command_committed || !task->cmd->write_command) {
+		return;
+	}
+
+	if (strcmp(task->cmd->name, "EXPIRE") == 0 ||
+	    strcmp(task->cmd->name, "PEXPIREAT") == 0) {
+		if (ttl_get_any_key_expire_at_ms(task->ctx.key, task->ctx.key_len, &task->expire_at_ms) > 0 &&
+		    task->expire_at_ms >= 0) {
+			task->has_expire_at = 1;
+		} else {
+			task->need_del_sync = (ret > 0);
+		}
+	} else if (strcmp(task->cmd->name, "PERSIST") == 0) {
+		task->need_persist_sync = (ret > 0);
+	}
+}
+
+static int kvs_command_task_execute_handler(kvs_command_task_t *task) {
 	int ret;
-	if (strcmp(cmd->name, "VSET") == 0) {
-		int status = kvs_vector_set_commit_prepared(&prepared_set);
-		command_committed = (status == KVS_VECTOR_OK);
-		ret = kvs_vector_status_to_resp(status, response);
-	} else if (strcmp(cmd->name, "VSEARCH") == 0) {
-		ret = kvs_vector_search_prepared_to_resp(&ctx, &prepared_search, response);
-		command_committed = (ret >= 0);
+
+	if (strcmp(task->cmd->name, "VSET") == 0) {
+		int status = kvs_vector_set_commit_prepared(&task->prepared_set);
+		task->command_committed = (status == KVS_VECTOR_OK);
+		ret = kvs_vector_status_to_resp(status, task->response);
+	} else if (strcmp(task->cmd->name, "VSEARCH") == 0) {
+		ret = kvs_vector_search_prepared_to_resp(
+			&task->ctx,
+			&task->prepared_search,
+			task->response
+		);
+		task->command_committed = (ret >= 0);
 	} else {
-		ret = cmd->handler(&ctx, response);
-		command_committed = (ret >= 0);
-	}
-	if (use_read_lock && ret == KVS_CMD_RETRY_WITH_WRITE_LOCK) {
-		pthread_rwlock_unlock(&g_kv_data_rwlock);
-		lock_held = 0;
-		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
-			kvs_vector_set_prepared_destroy(&prepared_set);
-			kvs_vector_search_prepared_destroy(&prepared_search);
-			return resp_generate_simple_string_n(response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
-		}
-		lock_held = 1;
-		ctx.lock_mode = KVS_LOCK_MODE_WRITE;
-		ret = cmd->handler(&ctx, response);
-		command_committed = (ret >= 0);
+		ret = task->cmd->handler(&task->ctx, task->response);
+		task->command_committed = (ret >= 0);
 	}
 
-	int64_t expire_at_ms = 0;
-	int has_expire_at = 0;
-	int need_del_sync = 0;
-	int need_persist_sync = 0;
-	if (command_committed && cmd->write_command) {
-		if (strcmp(cmd->name, "EXPIRE") == 0 || strcmp(cmd->name, "PEXPIREAT") == 0) {
-			if (ttl_get_any_key_expire_at_ms(ctx.key, ctx.key_len, &expire_at_ms) > 0 && expire_at_ms >= 0) {
-				has_expire_at = 1;
-			} else {
-				need_del_sync = (ret > 0);
-			}
-		} else if (strcmp(cmd->name, "PERSIST") == 0) {
-			need_persist_sync = (ret > 0);
-		}
-	}
-
-	if (lock_held) {
-		pthread_rwlock_unlock(&g_kv_data_rwlock);
-	}
-	if (vector_prepared_path) {
-		kvs_vector_set_prepared_destroy(&prepared_set);
-		kvs_vector_search_prepared_destroy(&prepared_search);
-	}
-
-	//命令执行成功后记录写命令
-	if(command_committed && cmd->write_command){
-		#if ENABLE_AOF// 添加日志打印命令
-			if(!aof_is_loading()){
-				if (strcmp(cmd->name, "EXPIRE") == 0) {
-					if (has_expire_at) {
-						char expire_buf[32];
-						snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
-						char *aof_tokens[] = {"PEXPIREAT", ctx.key, expire_buf};
-						aof_append(3, aof_tokens, NULL);
-					} else if (need_del_sync) {
-						char *aof_tokens[] = {"DEL", ctx.key};
-						aof_append(2, aof_tokens, NULL);
-					}
-				} else {
-					aof_append(count, tokens, token_lens);//正在加载AOF时不记录
-				}
-			}
-		#endif
-
-		if(get_sync_context() != 2){
-			// 主节点需要将命令分发给从节点 仅在TCP同步模式下
-			if (global_dist_config.role == ROLE_MASTER && g_cfg.sync_mode == KVS_SYNC_TCP) {
-				if (strcmp(cmd->name, "EXPIRE") == 0 || strcmp(cmd->name, "PEXPIREAT") == 0) {
-					if (ret > 0) {
-						if (has_expire_at) {
-							char expire_buf[32];
-							snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
-							master_sync_command("PEXPIREAT", ctx.key, ctx.key_len, expire_buf, strlen(expire_buf));
-						} else {
-							master_sync_command("DEL", ctx.key, ctx.key_len, NULL, 0);
-						}
-					}
-				} else if (strcmp(cmd->name, "PERSIST") == 0) {
-					if (need_persist_sync) {
-						master_sync_command("PERSIST", ctx.key, ctx.key_len, NULL, 0);
-					}
-				} else {
-					// 其他写命令保持原样广播
-					master_sync_command(tokens[0], tokens[1], token_lens[1], (count > 2) ? tokens[2] : NULL, (count > 2) ? token_lens[2] : 0);
-				}
-			}
-		}
-		
-	}
 	return ret;
+}
 
+static int kvs_command_task_execute_sync(kvs_command_task_t *task) {
+	int ret;
+
+	if (kvs_command_task_lock(task) < 0) {
+		return task->status;
+	}
+
+	ret = kvs_command_task_execute_handler(task);
+	if (task->use_read_lock && ret == KVS_CMD_RETRY_WITH_WRITE_LOCK) {
+		pthread_rwlock_unlock(&g_kv_data_rwlock);
+		task->lock_held = 0;
+		task->use_read_lock = 0;
+		task->use_write_lock = 1;
+
+		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+			return task->status;
+		}
+		task->lock_held = 1;
+		task->ctx.lock_mode = KVS_LOCK_MODE_WRITE;
+		ret = task->cmd->handler(&task->ctx, task->response);
+		task->command_committed = (ret >= 0);
+	}
+
+	kvs_command_task_capture_post_state(task, ret);
+
+	if (task->lock_held) {
+		pthread_rwlock_unlock(&g_kv_data_rwlock);
+		task->lock_held = 0;
+	}
+
+	task->status = ret;
+	return ret;
+}
+
+static void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
+	if (!task->command_committed || !task->cmd->write_command) {
+		return;
+	}
+
+#if ENABLE_AOF
+	if (!aof_is_loading()) {
+		if (strcmp(task->cmd->name, "EXPIRE") == 0) {
+			if (task->has_expire_at) {
+				char expire_buf[32];
+				snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)task->expire_at_ms);
+				char *aof_tokens[] = {"PEXPIREAT", task->ctx.key, expire_buf};
+				aof_append(3, aof_tokens, NULL);
+			} else if (task->need_del_sync) {
+				char *aof_tokens[] = {"DEL", task->ctx.key};
+				aof_append(2, aof_tokens, NULL);
+			}
+		} else {
+			aof_append(task->argc, task->argv, task->argv_lens);
+		}
+	}
+#endif
+
+	if (get_sync_context() == 2) {
+		return;
+	}
+
+	if (global_dist_config.role == ROLE_MASTER && g_cfg.sync_mode == KVS_SYNC_TCP) {
+		if (strcmp(task->cmd->name, "EXPIRE") == 0 ||
+		    strcmp(task->cmd->name, "PEXPIREAT") == 0) {
+			if (ret > 0) {
+				if (task->has_expire_at) {
+					char expire_buf[32];
+					snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)task->expire_at_ms);
+					master_sync_command("PEXPIREAT", task->ctx.key, task->ctx.key_len, expire_buf, strlen(expire_buf));
+				} else {
+					master_sync_command("DEL", task->ctx.key, task->ctx.key_len, NULL, 0);
+				}
+			}
+		} else if (strcmp(task->cmd->name, "PERSIST") == 0) {
+			if (task->need_persist_sync) {
+				master_sync_command("PERSIST", task->ctx.key, task->ctx.key_len, NULL, 0);
+			}
+		} else {
+			master_sync_command(
+				task->argv[0],
+				task->argv[1],
+				task->argv_lens[1],
+				(task->argc > 2) ? task->argv[2] : NULL,
+				(task->argc > 2) ? task->argv_lens[2] : 0
+			);
+		}
+	}
+}
+
+int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *response){
+	kvs_command_task_t task;
+	int ret;
+	int prep_ret;
+
+	if (kvs_command_task_build(&task, tokens, count, token_lens, response) < 0) {
+		ret = task.status;
+		kvs_command_task_destroy(&task);
+		return ret;
+	}
+
+	prep_ret = kvs_command_task_prepare(&task);
+	if (prep_ret != 0) {
+		ret = prep_ret;
+		kvs_command_task_destroy(&task);
+		return ret;
+	}
+
+	ret = kvs_command_task_execute_sync(&task);
+	kvs_command_task_post_commit(&task, ret);
+	kvs_command_task_destroy(&task);
+	return ret;
 }
 
 
@@ -616,4 +780,3 @@ int main(int argc, char *argv[]) {
     
 }
 #endif
-
