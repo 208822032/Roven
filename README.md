@@ -277,6 +277,8 @@ make test-embedding
 
 脚本会写入几组中文问答，用 `0.0 / 0.70 / 0.75 / 0.80 / 0.85` 多个 threshold 查询，并打印每次返回的 score，方便标定 `vector_score_threshold`。
 
+ONNX embedding 性能可通过 `tests/vector_benchmark` 或 `make test-embedding` 验证，具体结果因硬件和模型而异。
+
 ## 7. 向量索引设计
 
 ### 7.1 Flat — 全量精确搜索
@@ -334,6 +336,9 @@ embedding_model_path = models/bge-small-zh-v1.5/model.onnx
 embedding_dim = 512
 embedding_num_threads = 4
 embedding_max_text_len = 512
+embedding_ort_graph_opt_level = basic
+embedding_inter_threads = 0
+embedding_ort_execution_mode = sequential
 
 vector_index_type = hnsw
 vector_metric = ip
@@ -346,6 +351,7 @@ vector_score_threshold = 0.75
 - ONNX Runtime 是 `local_c` runtime 的一种编译实现
 - `embedding_dim` 必须和模型输出 `sentence_embedding` 维度一致
 - bge-small-zh-v1.5 ONNX 当前输出 `sentence_embedding [1,512]`
+- `embedding_ort_*` 和 `embedding_inter_threads` 是 ONNX Runtime 实验参数，默认保持保守配置
 - 向量由 KVLite adapter 层统一 L2 normalize
 - HNSW 使用 `ip`，归一化后 score 可以按 cosine similarity 理解
 

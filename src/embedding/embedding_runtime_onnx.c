@@ -1,21 +1,34 @@
 #include "embedding_c_api.h"
+#include "kvs_config.h"
 
 #include <onnxruntime_c_api.h>
 
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <time.h>
 
 #define EMBEDDING_ONNX_DEFAULT_MAX_TEXT_LEN 512
 #define EMBEDDING_ONNX_MAX_ERROR 512
 #define EMBEDDING_ONNX_MAX_TOKENS 512
 #define EMBEDDING_ONNX_WORDPIECE_MAX_CHARS 256
 
+extern kvs_config_t g_cfg;
+
+typedef struct EmbeddingVocabHashEntry {
+	const char *token;
+	int64_t id;
+} EmbeddingVocabHashEntry;
+
 typedef struct EmbeddingVocab {
 	char **tokens;
 	size_t count;
 	size_t capacity;
+	EmbeddingVocabHashEntry *hash_entries;
+	size_t hash_capacity;
 } EmbeddingVocab;
 
 struct EmbeddingHandle {
@@ -39,7 +52,36 @@ struct EmbeddingHandle {
 	int64_t unk_id;
 	int64_t cls_id;
 	int64_t sep_id;
+
+	int profile_enabled;
+	pthread_mutex_t profile_mutex;
+	int profile_mutex_initialized;
+	uint64_t profile_count;
+	uint64_t profile_success_count;
+	uint64_t profile_total_us;
+	uint64_t profile_tokenize_us;
+	uint64_t profile_tensor_us;
+	uint64_t profile_ort_us;
+	uint64_t profile_output_us;
 };
+
+static uint64_t embedding_now_us(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return 0;
+	}
+
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+static uint64_t embedding_elapsed_us(uint64_t start, uint64_t end) {
+	if (end < start) {
+		return 0;
+	}
+
+	return end - start;
+}
 
 static void embedding_set_error(EmbeddingHandle *handle, const char *message) {
 	if (!handle || !message) {
@@ -139,13 +181,16 @@ static void embedding_vocab_destroy(EmbeddingVocab *vocab) {
 		return;
 	}
 
+	free(vocab->hash_entries);
 	for (i = 0; i < vocab->count; ++i) {
 		free(vocab->tokens[i]);
 	}
+	vocab->hash_entries = NULL;
 	free(vocab->tokens);
 	vocab->tokens = NULL;
 	vocab->count = 0;
 	vocab->capacity = 0;
+	vocab->hash_capacity = 0;
 }
 
 static int embedding_vocab_add(EmbeddingVocab *vocab, const char *token) {
@@ -180,6 +225,70 @@ static int embedding_vocab_add(EmbeddingVocab *vocab, const char *token) {
 	return 1;
 }
 
+static uint64_t embedding_vocab_hash(const char *token) {
+	const unsigned char *p = (const unsigned char *)token;
+	uint64_t hash = 1469598103934665603ull;
+
+	while (*p) {
+		hash ^= (uint64_t)(*p++);
+		hash *= 1099511628211ull;
+	}
+
+	return hash;
+}
+
+static size_t embedding_next_power_of_two(size_t value) {
+	size_t result = 1;
+
+	while (result < value && result <= ((size_t)-1 / 2)) {
+		result <<= 1;
+	}
+
+	return result;
+}
+
+static int embedding_vocab_build_hash(EmbeddingVocab *vocab) {
+	size_t min_capacity;
+	size_t i;
+
+	if (!vocab) {
+		return 0;
+	}
+
+	free(vocab->hash_entries);
+	vocab->hash_entries = NULL;
+	vocab->hash_capacity = 0;
+
+	min_capacity = vocab->count > 0 ? vocab->count * 2 : 1;
+	vocab->hash_capacity = embedding_next_power_of_two(min_capacity);
+	if (vocab->hash_capacity < min_capacity) {
+		return 0;
+	}
+
+	vocab->hash_entries = (EmbeddingVocabHashEntry *)calloc(
+		vocab->hash_capacity,
+		sizeof(*vocab->hash_entries)
+	);
+	if (!vocab->hash_entries) {
+		vocab->hash_capacity = 0;
+		return 0;
+	}
+
+	for (i = 0; i < vocab->count; ++i) {
+		size_t mask = vocab->hash_capacity - 1;
+		size_t pos = (size_t)embedding_vocab_hash(vocab->tokens[i]) & mask;
+
+		while (vocab->hash_entries[pos].token) {
+			pos = (pos + 1) & mask;
+		}
+
+		vocab->hash_entries[pos].token = vocab->tokens[i];
+		vocab->hash_entries[pos].id = (int64_t)i;
+	}
+
+	return 1;
+}
+
 static int64_t embedding_vocab_lookup(
 	const EmbeddingVocab *vocab,
 	const char *token
@@ -190,7 +299,20 @@ static int64_t embedding_vocab_lookup(
 		return -1;
 	}
 
-	/* Linear lookup is enough for the first ONNX smoke-test path. */
+	if (vocab->hash_entries && vocab->hash_capacity > 0) {
+		size_t mask = vocab->hash_capacity - 1;
+		size_t pos = (size_t)embedding_vocab_hash(token) & mask;
+
+		while (vocab->hash_entries[pos].token) {
+			if (strcmp(vocab->hash_entries[pos].token, token) == 0) {
+				return vocab->hash_entries[pos].id;
+			}
+			pos = (pos + 1) & mask;
+		}
+
+		return -1;
+	}
+
 	for (i = 0; i < vocab->count; ++i) {
 		if (strcmp(vocab->tokens[i], token) == 0) {
 			return (int64_t)i;
@@ -234,6 +356,11 @@ static EmbeddingErrorCode embedding_load_vocab(EmbeddingHandle *handle) {
 	}
 
 	fclose(fp);
+
+	if (!embedding_vocab_build_hash(&handle->vocab)) {
+		embedding_set_error(handle, "failed to allocate vocab hash table");
+		return EMBEDDING_ERR_OUT_OF_MEMORY;
+	}
 
 	handle->pad_id = embedding_vocab_lookup(&handle->vocab, "[PAD]");
 	handle->unk_id = embedding_vocab_lookup(&handle->vocab, "[UNK]");
@@ -297,6 +424,94 @@ static EmbeddingErrorCode embedding_set_ort_error(
 	}
 
 	return code;
+}
+
+static int embedding_parse_graph_opt_level(
+	const char *value,
+	GraphOptimizationLevel *level
+) {
+	if (!value || !level) {
+		return 0;
+	}
+
+	if (strcasecmp(value, "basic") == 0) {
+		*level = ORT_ENABLE_BASIC;
+		return 1;
+	}
+	if (strcasecmp(value, "extended") == 0) {
+		*level = ORT_ENABLE_EXTENDED;
+		return 1;
+	}
+	if (strcasecmp(value, "all") == 0) {
+		*level = ORT_ENABLE_ALL;
+		return 1;
+	}
+
+	return 0;
+}
+
+static int embedding_parse_execution_mode(
+	const char *value,
+	ExecutionMode *mode
+) {
+	if (!value || !mode) {
+		return 0;
+	}
+
+	if (strcasecmp(value, "sequential") == 0) {
+		*mode = ORT_SEQUENTIAL;
+		return 1;
+	}
+	if (strcasecmp(value, "parallel") == 0) {
+		*mode = ORT_PARALLEL;
+		return 1;
+	}
+
+	return 0;
+}
+
+static void embedding_profile_record(
+	EmbeddingHandle *handle,
+	int success,
+	uint64_t total_us,
+	uint64_t tokenize_us,
+	uint64_t tensor_us,
+	uint64_t ort_us,
+	uint64_t output_us
+) {
+	uint64_t count;
+
+	if (!handle || !handle->profile_enabled ||
+	    !handle->profile_mutex_initialized) {
+		return;
+	}
+
+	pthread_mutex_lock(&handle->profile_mutex);
+	handle->profile_count++;
+	if (success) {
+		handle->profile_success_count++;
+	}
+	handle->profile_total_us += total_us;
+	handle->profile_tokenize_us += tokenize_us;
+	handle->profile_tensor_us += tensor_us;
+	handle->profile_ort_us += ort_us;
+	handle->profile_output_us += output_us;
+	count = handle->profile_count;
+
+	if (count % 100 == 0) {
+		fprintf(
+			stderr,
+			"[kvlite][embedding][profile] count=%llu success_count=%llu avg_total_us=%llu avg_tokenize_us=%llu avg_tensor_us=%llu avg_ort_us=%llu avg_output_us=%llu\n",
+			(unsigned long long)handle->profile_count,
+			(unsigned long long)handle->profile_success_count,
+			(unsigned long long)(handle->profile_total_us / handle->profile_count),
+			(unsigned long long)(handle->profile_tokenize_us / handle->profile_count),
+			(unsigned long long)(handle->profile_tensor_us / handle->profile_count),
+			(unsigned long long)(handle->profile_ort_us / handle->profile_count),
+			(unsigned long long)(handle->profile_output_us / handle->profile_count)
+		);
+	}
+	pthread_mutex_unlock(&handle->profile_mutex);
 }
 
 static void embedding_release_ort_resources(EmbeddingHandle *handle) {
@@ -993,6 +1208,8 @@ EmbeddingErrorCode embedding_create(
 	OrtStatus *status;
 	EmbeddingErrorCode inspect_result;
 	EmbeddingErrorCode vocab_result;
+	GraphOptimizationLevel graph_opt_level;
+	ExecutionMode execution_mode;
 
 	if (!config || !handle) {
 		return EMBEDDING_ERR_INVALID_ARGUMENT;
@@ -1025,13 +1242,27 @@ EmbeddingErrorCode embedding_create(
 		created->max_tokens = EMBEDDING_ONNX_MAX_TOKENS;
 	}
 	created->normalize = config->normalize ? 1 : 0;
+	if (getenv("KVLITE_EMBEDDING_PROFILE") &&
+	    strcmp(getenv("KVLITE_EMBEDDING_PROFILE"), "0") != 0) {
+		created->profile_enabled = 1;
+	}
+	if (created->profile_enabled &&
+	    pthread_mutex_init(&created->profile_mutex, NULL) == 0) {
+		created->profile_mutex_initialized = 1;
+	}
 	created->model_path = embedding_strdup_or_null(config->model_path);
 	if (!created->model_path) {
+		if (created->profile_mutex_initialized) {
+			pthread_mutex_destroy(&created->profile_mutex);
+		}
 		free(created);
 		return EMBEDDING_ERR_OUT_OF_MEMORY;
 	}
 	created->vocab_path = embedding_join_dir_file(created->model_path, "vocab.txt");
 	if (!created->vocab_path) {
+		if (created->profile_mutex_initialized) {
+			pthread_mutex_destroy(&created->profile_mutex);
+		}
 		free(created->model_path);
 		free(created);
 		return EMBEDDING_ERR_OUT_OF_MEMORY;
@@ -1104,9 +1335,65 @@ EmbeddingErrorCode embedding_create(
 		}
 	}
 
+	if (g_cfg.embedding_inter_threads > 0) {
+		status = created->ort->SetInterOpNumThreads(
+			created->session_options,
+			g_cfg.embedding_inter_threads
+		);
+		if (status) {
+			embedding_set_ort_error(
+				created,
+				status,
+				"failed to set ONNX Runtime inter op threads",
+				EMBEDDING_ERR_MODEL_LOAD_FAILED
+			);
+			goto fail_model_load;
+		}
+	}
+
+	if (!embedding_parse_execution_mode(
+		g_cfg.embedding_ort_execution_mode,
+		&execution_mode
+	)) {
+		snprintf(
+			created->last_error,
+			sizeof(created->last_error),
+			"invalid embedding_ort_execution_mode: %s",
+			g_cfg.embedding_ort_execution_mode
+		);
+		goto fail_invalid_config;
+	}
+
+	status = created->ort->SetSessionExecutionMode(
+		created->session_options,
+		execution_mode
+	);
+	if (status) {
+		embedding_set_ort_error(
+			created,
+			status,
+			"failed to set ONNX Runtime execution mode",
+			EMBEDDING_ERR_MODEL_LOAD_FAILED
+		);
+		goto fail_model_load;
+	}
+
+	if (!embedding_parse_graph_opt_level(
+		g_cfg.embedding_ort_graph_opt_level,
+		&graph_opt_level
+	)) {
+		snprintf(
+			created->last_error,
+			sizeof(created->last_error),
+			"invalid embedding_ort_graph_opt_level: %s",
+			g_cfg.embedding_ort_graph_opt_level
+		);
+		goto fail_invalid_config;
+	}
+
 	status = created->ort->SetSessionGraphOptimizationLevel(
 		created->session_options,
-		ORT_ENABLE_BASIC
+		graph_opt_level
 	);
 	if (status) {
 		embedding_set_ort_error(
@@ -1117,6 +1404,15 @@ EmbeddingErrorCode embedding_create(
 		);
 		goto fail_model_load;
 	}
+
+	fprintf(
+		stderr,
+		"[kvlite][embedding][onnx] ort config: intra_threads=%d inter_threads=%d graph_opt=%s execution_mode=%s\n",
+		created->num_threads,
+		g_cfg.embedding_inter_threads,
+		g_cfg.embedding_ort_graph_opt_level,
+		g_cfg.embedding_ort_execution_mode
+	);
 
 	status = created->ort->CreateSession(
 		created->env,
@@ -1152,6 +1448,9 @@ EmbeddingErrorCode embedding_create(
 fail_inspect:
 	embedding_release_ort_resources(created);
 	embedding_vocab_destroy(&created->vocab);
+	if (created->profile_mutex_initialized) {
+		pthread_mutex_destroy(&created->profile_mutex);
+	}
 	free(created->vocab_path);
 	free(created->model_path);
 	free(created);
@@ -1160,13 +1459,30 @@ fail_inspect:
 fail_model_load:
 	embedding_release_ort_resources(created);
 	embedding_vocab_destroy(&created->vocab);
+	if (created->profile_mutex_initialized) {
+		pthread_mutex_destroy(&created->profile_mutex);
+	}
 	free(created->vocab_path);
 	free(created->model_path);
 	free(created);
 	return EMBEDDING_ERR_MODEL_LOAD_FAILED;
 
+fail_invalid_config:
+	embedding_release_ort_resources(created);
+	embedding_vocab_destroy(&created->vocab);
+	if (created->profile_mutex_initialized) {
+		pthread_mutex_destroy(&created->profile_mutex);
+	}
+	free(created->vocab_path);
+	free(created->model_path);
+	free(created);
+	return EMBEDDING_ERR_INVALID_ARGUMENT;
+
 fail_before_ort:
 	embedding_vocab_destroy(&created->vocab);
+	if (created->profile_mutex_initialized) {
+		pthread_mutex_destroy(&created->profile_mutex);
+	}
 	free(created->vocab_path);
 	free(created->model_path);
 	free(created);
@@ -1194,9 +1510,24 @@ EmbeddingErrorCode embedding_encode(
 	int seq_len = 0;
 	OrtStatus *status;
 	EmbeddingErrorCode result = EMBEDDING_OK;
+	int profile_enabled;
+	uint64_t total_start_us = 0;
+	uint64_t tokenize_start_us = 0;
+	uint64_t tensor_start_us = 0;
+	uint64_t ort_start_us = 0;
+	uint64_t output_start_us = 0;
+	uint64_t tokenize_us = 0;
+	uint64_t tensor_us = 0;
+	uint64_t ort_us = 0;
+	uint64_t output_us = 0;
 
 	if (!handle) {
 		return EMBEDDING_ERR_NOT_INITIALIZED;
+	}
+
+	profile_enabled = handle->profile_enabled;
+	if (profile_enabled) {
+		total_start_us = embedding_now_us();
 	}
 
 	if (!text || text_len == 0 || !output) {
@@ -1229,6 +1560,9 @@ EmbeddingErrorCode embedding_encode(
 		goto cleanup;
 	}
 
+	if (profile_enabled) {
+		tokenize_start_us = embedding_now_us();
+	}
 	result = bert_tokenize(
 		handle,
 		text,
@@ -1239,11 +1573,17 @@ EmbeddingErrorCode embedding_encode(
 		handle->max_tokens,
 		&seq_len
 	);
+	if (profile_enabled) {
+		tokenize_us = embedding_elapsed_us(tokenize_start_us, embedding_now_us());
+	}
 	if (result != EMBEDDING_OK) {
 		embedding_set_error(handle, "tokenization failed");
 		goto cleanup;
 	}
 
+	if (profile_enabled) {
+		tensor_start_us = embedding_now_us();
+	}
 	result = embedding_create_int64_tensor(
 		handle,
 		input_ids,
@@ -1273,7 +1613,13 @@ EmbeddingErrorCode embedding_encode(
 	if (result != EMBEDDING_OK) {
 		goto cleanup;
 	}
+	if (profile_enabled) {
+		tensor_us = embedding_elapsed_us(tensor_start_us, embedding_now_us());
+	}
 
+	if (profile_enabled) {
+		ort_start_us = embedding_now_us();
+	}
 	status = handle->ort->Run(
 		handle->session,
 		NULL,
@@ -1284,6 +1630,9 @@ EmbeddingErrorCode embedding_encode(
 		1,
 		output_values
 	);
+	if (profile_enabled) {
+		ort_us = embedding_elapsed_us(ort_start_us, embedding_now_us());
+	}
 	if (status) {
 		result = embedding_set_ort_error(
 			handle,
@@ -1299,17 +1648,34 @@ EmbeddingErrorCode embedding_encode(
 		goto cleanup;
 	}
 
+	if (profile_enabled) {
+		output_start_us = embedding_now_us();
+	}
 	result = embedding_copy_sentence_embedding(
 		handle,
 		output_values[0],
 		output,
 		output_dim
 	);
+	if (profile_enabled) {
+		output_us = embedding_elapsed_us(output_start_us, embedding_now_us());
+	}
 	if (result == EMBEDDING_OK) {
 		snprintf(handle->last_error, sizeof(handle->last_error), "%s", "OK");
 	}
 
 cleanup:
+	if (profile_enabled) {
+		embedding_profile_record(
+			handle,
+			result == EMBEDDING_OK,
+			embedding_elapsed_us(total_start_us, embedding_now_us()),
+			tokenize_us,
+			tensor_us,
+			ort_us,
+			output_us
+		);
+	}
 	if (output_values[0]) {
 		handle->ort->ReleaseValue(output_values[0]);
 	}
@@ -1351,6 +1717,9 @@ void embedding_destroy(EmbeddingHandle *handle) {
 
 	embedding_release_ort_resources(handle);
 	embedding_vocab_destroy(&handle->vocab);
+	if (handle->profile_mutex_initialized) {
+		pthread_mutex_destroy(&handle->profile_mutex);
+	}
 	free(handle->vocab_path);
 	free(handle->model_path);
 	free(handle);

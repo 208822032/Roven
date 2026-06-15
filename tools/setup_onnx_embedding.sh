@@ -99,7 +99,11 @@ hf_download() {
 	local file="$3"
 	local target_dir="$4"
 
-	"$hf_cmd" download "$repo" "$file" --local-dir "$target_dir" --local-dir-use-symlinks False
+	if "$hf_cmd" download --help 2>&1 | grep -q -- "--local-dir-use-symlinks"; then
+		"$hf_cmd" download "$repo" "$file" --local-dir "$target_dir" --local-dir-use-symlinks False
+	else
+		"$hf_cmd" download "$repo" "$file" --local-dir "$target_dir"
+	fi
 }
 
 copy_onnx_to_root() {

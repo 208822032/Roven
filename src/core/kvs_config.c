@@ -58,6 +58,9 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     cfg->embedding_dim = 64;
     cfg->embedding_num_threads = 1;
     cfg->embedding_max_text_len = 4096;
+    snprintf(cfg->embedding_ort_graph_opt_level, sizeof(cfg->embedding_ort_graph_opt_level), "%s", "basic");
+    cfg->embedding_inter_threads = 0;
+    snprintf(cfg->embedding_ort_execution_mode, sizeof(cfg->embedding_ort_execution_mode), "%s", "sequential");
 
     // 语义缓存主路径固定为 L2-normalized embedding + HNSW + inner product。
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
@@ -201,6 +204,15 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             if (v > 0) {
                 cfg->embedding_max_text_len = v;
             }
+        } else if (strcasecmp(key, "embedding_ort_graph_opt_level") == 0) {
+            snprintf(cfg->embedding_ort_graph_opt_level, sizeof(cfg->embedding_ort_graph_opt_level), "%s", val);
+        } else if (strcasecmp(key, "embedding_inter_threads") == 0) {
+            int v = atoi(val);
+            if (v >= 0) {
+                cfg->embedding_inter_threads = v;
+            }
+        } else if (strcasecmp(key, "embedding_ort_execution_mode") == 0) {
+            snprintf(cfg->embedding_ort_execution_mode, sizeof(cfg->embedding_ort_execution_mode), "%s", val);
         } else if (strcasecmp(key, "vector_index_type") == 0) {
             if (strcasecmp(val, "flat") == 0 ||
                 strcasecmp(val, "hnsw") == 0 ||
@@ -328,6 +340,21 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                 if (v > 0) {
                     cfg->embedding_max_text_len = v;
                 }
+            }
+        } else if (strcmp(argv[i], "--embedding_ort_graph_opt_level") == 0) {
+            if (i + 1 < argc) {
+                snprintf(cfg->embedding_ort_graph_opt_level, sizeof(cfg->embedding_ort_graph_opt_level), "%s", argv[++i]);
+            }
+        } else if (strcmp(argv[i], "--embedding_inter_threads") == 0) {
+            if (i + 1 < argc) {
+                int v = atoi(argv[++i]);
+                if (v >= 0) {
+                    cfg->embedding_inter_threads = v;
+                }
+            }
+        } else if (strcmp(argv[i], "--embedding_ort_execution_mode") == 0) {
+            if (i + 1 < argc) {
+                snprintf(cfg->embedding_ort_execution_mode, sizeof(cfg->embedding_ort_execution_mode), "%s", argv[++i]);
             }
         } else if (strcmp(argv[i], "--vector_metric") == 0) {
             if (i + 1 < argc) {
