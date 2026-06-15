@@ -460,7 +460,6 @@ static int reactor_async_append_response(const kvs_async_net_response_target_t *
     len = target->response_len;
     if (session->send_buf.capacity - session->send_buf.size < len &&
         netbuf_reserve(&session->send_buf, session->send_buf.size + len) < 0) {
-        event_unregister(target->fd);
         return -1;
     }
 
@@ -481,6 +480,11 @@ static void reactor_async_drop_response(
         executor_reason = KVS_COMMAND_EXECUTOR_DROP_SESSION_CLOSING;
     } else if (reason == KVS_ASYNC_NET_DROP_APPEND_FAILED) {
         executor_reason = KVS_COMMAND_EXECUTOR_DROP_APPEND_FAILED;
+        /*
+         * APPEND_FAILED connection cleanup is centralized here. append_response
+         * only reports reserve/copy failure; drop_response owns the decision to
+         * unregister the still-current reactor fd.
+         */
         if (reactor_target_is_current(target)) {
             event_unregister(target->fd);
         }
@@ -524,6 +528,14 @@ static int reactor_async_restore_read(const kvs_async_net_response_target_t *tar
 
     ext = (conn_extension_t *)target->owner;
     session = &ext->session;
+    /*
+     * After one async response is appended, a pipelined request may already be
+     * buffered in recv_buf. Submitting it can fail and unregister the fd, which
+     * releases the reactor-owned session reference. dispatch_response will then
+     * release the executor response target's reference. These are distinct
+     * refs, and net_session's atomic refcount is the ownership boundary.
+     * single_inflight cleanup must remain idempotent across this path.
+     */
     if (session->recv_buf.size > 0 && !net_session_is_closing(session)) {
         int processed = reactor_submit_async_command(target->fd, ext);
         if (processed < 0) {

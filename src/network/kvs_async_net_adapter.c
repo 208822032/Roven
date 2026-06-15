@@ -101,7 +101,17 @@ int kvs_async_net_dispatch_response(
 	kvs_async_net_drop_reason_t reason = KVS_ASYNC_NET_DROP_SESSION_MISMATCH;
 	int valid;
 
-	if (!ops || !target || !ops->validate_owner || !ops->append_response) {
+	if (!target) {
+		return KVS_ASYNC_NET_DISPATCH_APPEND_FAILED;
+	}
+	if (!ops || !ops->validate_owner || !ops->append_response) {
+		/*
+		 * The reactor caller always passes g_reactor_async_net_ops. Missing
+		 * mandatory ops means a broken adapter registration, not an expected
+		 * runtime condition. Still release the response target's session ref
+		 * when possible so the programming error does not leak ownership.
+		 */
+		kvs_async_net_finish_target(ops, target);
 		return KVS_ASYNC_NET_DISPATCH_APPEND_FAILED;
 	}
 
