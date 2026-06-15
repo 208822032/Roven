@@ -94,3 +94,10 @@
 - 锁范围：覆盖 `global_array/global_rbtree/global_hash/global_skiptable` 遍历。
 - 已知限制：当前实现边遍历边发送，读锁持有时间可能较长，会阻塞写命令。
 - 后续路线 C：改为 executor `snapshot_task`，sync thread 只发送快照。
+
+## 实现状态：slave apply
+
+- 当前状态：已在 slave apply 修改 live store 时通过 `g_kv_data_rwlock` 写锁保护。
+- 锁范围：覆盖 replicated set/del/mod 以及同一复制消息内的 TTL/expire_at 修改。
+- 已知限制：当前仍是阶段 0.5 的临时锁修复，长期路线 C 会改为 `replicated_command_task` 进入 single commit executor。
+- 边界：socket recv 和协议解析在锁外完成，不在写锁内阻塞网络 IO。

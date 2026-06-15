@@ -508,113 +508,167 @@ void slave_connect_master(){
                 val[vlen] = '\0';
             }
 
-            set_sync_context(1); // 标记这是主从同步写，避免回写 master
+            int should_apply = 1;
+            int64_t parsed_expire_at = 0;
 
-            // printf("[SLAVE] decoded msg: op=%d key_len=%zu val_len=%zu\n",
-    //    op, klen, vlen);
-
-            switch(op){
-                case MS_OP_ARRAY_SET:
-#if ENABLE_ARRAY
-                    kvs_array_set(&global_array, key, val ? val : "");
-#endif
-                    break;
-                case MS_OP_RBTREE_RSET:
-#if ENABLE_RBTREE
-                    kvs_rbtree_set(&global_rbtree, key, val ? val : "");
-#endif
-                    break;
-                case MS_OP_HASH_HSET:
-#if ENABLE_HASH
-                    kvs_hash_set(&global_hash, key, val ? val : "");
-#endif
-                    break;
-                case MS_OP_SKIPTABLE_SSET:
-#if ENABLE_SKIPTABLE
-                    kvs_skiptable_set(&global_skiptable, key, val ? val : "");
-#endif
-                    break; 
-                case MS_OP_ARRAY_DEL:
-#if ENABLE_ARRAY
-                    kvs_array_del(&global_array, key);
-#endif
-                    break;
-                case MS_OP_RBTREE_RDEL:
-#if ENABLE_RBTREE
-                    kvs_rbtree_del(&global_rbtree, key);
-#endif
-                    break;  
-                case MS_OP_HASH_HDEL:
-#if ENABLE_HASH
-                    kvs_hash_del(&global_hash, key);
-#endif
-                    break;
-                case MS_OP_SKIPTABLE_SDEL:
-#if ENABLE_SKIPTABLE
-                    kvs_skiptable_del(&global_skiptable, key);
-#endif
-                    break;
-                case MS_OP_ARRAY_MOD:
-#if ENABLE_ARRAY
-                    kvs_array_mod(&global_array, key, val ? val : "");
-#endif  
-                    break;
-                case MS_OP_RBTREE_RMOD:
-#if ENABLE_RBTREE
-                    kvs_rbtree_mod(&global_rbtree, key, val ? val : "");
-#endif
-                    break;
-                case MS_OP_HASH_HMOD:
-#if ENABLE_HASH
-                    kvs_hash_mod(&global_hash, key, val ? val : "");
-#endif
-                    break;
-                case MS_OP_SKIPTABLE_SMOD:
-#if ENABLE_SKIPTABLE
-                    kvs_skiptable_mod(&global_skiptable, key, val ? val : "");
-#endif
-                    break;
-                case MS_OP_PAPERSET:
-                    kvs_rbtree_set(&global_rbtree, key, val ? val : "");
-                    break;
-                case MS_OP_PAPERDEL:
-                    kvs_rbtree_del(&global_rbtree, key);
-                    break;
-                case MS_OP_PAPERMOD:
-                    kvs_rbtree_mod(&global_rbtree, key, val ? val : "");
-                    break;
-                case MS_OP_TTL_PEXPIREAT:
-                {
-                    char *endptr = NULL;
-                    errno = 0;
-                    long long parsed_expire = 0;
-                    if (!val) {
-                        KVS_LOG_ERROR("dist", "missing PEXPIREAT payload for key=%s", key);
-                        break;
-                    }
+            if (op == MS_OP_TTL_PEXPIREAT) {
+                char *endptr = NULL;
+                errno = 0;
+                long long parsed_expire = 0;
+                if (!val) {
+                    KVS_LOG_ERROR("dist", "missing PEXPIREAT payload for key=%s", key);
+                    should_apply = 0;
+                } else {
                     parsed_expire = strtoll(val, &endptr, 10);
                     if (endptr == val || *endptr != '\0' || errno == ERANGE) {
                         KVS_LOG_ERROR("dist", "invalid PEXPIREAT payload for key=%s", key);
-                        break;
+                        should_apply = 0;
+                    } else {
+                        parsed_expire_at = (int64_t)parsed_expire;
                     }
-                    if (ttl_set_any_key_expire_at_ms(key, klen, (int64_t)parsed_expire) < 0) {
-                        KVS_LOG_ERROR("dist", "apply PEXPIREAT failed for key=%s", key);
-                    }
-                    break;
                 }
+            }
+
+            switch (op) {
+                case MS_OP_ARRAY_SET:
+                case MS_OP_RBTREE_RSET:
+                case MS_OP_HASH_HSET:
+                case MS_OP_SKIPTABLE_SSET:
+                case MS_OP_ARRAY_DEL:
+                case MS_OP_RBTREE_RDEL:
+                case MS_OP_HASH_HDEL:
+                case MS_OP_SKIPTABLE_SDEL:
+                case MS_OP_ARRAY_MOD:
+                case MS_OP_RBTREE_RMOD:
+                case MS_OP_HASH_HMOD:
+                case MS_OP_SKIPTABLE_SMOD:
+                case MS_OP_PAPERSET:
+                case MS_OP_PAPERDEL:
+                case MS_OP_PAPERMOD:
+                case MS_OP_TTL_PEXPIREAT:
                 case MS_OP_TTL_PERSIST:
-                    if (ttl_set_any_key_expire_at_ms(key, klen, KV_TTL_NO_EXPIRE) < 0) {
-                        KVS_LOG_ERROR("dist", "apply PERSIST failed for key=%s", key);
-                    }
                     break;
                 default:
                     KVS_LOG_WARN("dist", "unknown operation %d on slave sync thread", op);
+                    should_apply = 0;
                     break;
+            }
+
+            /*
+             * Route C phase 0.5 stability fix:
+             * recv/protocol parsing stays outside the lock. Hold the global
+             * write lock only while applying one decoded replication message
+             * to live store, including TTL/expire_at mutations.
+             * Long-term Route C will route this through replicated_command_task
+             * in the single commit executor.
+             */
+            int apply_locked = 0;
+            if (should_apply) {
+                int apply_lock_ret = pthread_rwlock_wrlock(&g_kv_data_rwlock);
+                apply_locked = (apply_lock_ret == 0);
+                if (!apply_locked) {
+                    KVS_LOG_ERROR("dist", "failed to acquire data write lock for slave apply: ret=%d", apply_lock_ret);
+                }
+            }
+
+            set_sync_context(1); // 标记这是主从同步写，避免回写 master
+
+            if (apply_locked) {
+                // printf("[SLAVE] decoded msg: op=%d key_len=%zu val_len=%zu\n",
+        //    op, klen, vlen);
+
+                switch(op){
+                    case MS_OP_ARRAY_SET:
+#if ENABLE_ARRAY
+                        kvs_array_set(&global_array, key, val ? val : "");
+#endif
+                        break;
+                    case MS_OP_RBTREE_RSET:
+#if ENABLE_RBTREE
+                        kvs_rbtree_set(&global_rbtree, key, val ? val : "");
+#endif
+                        break;
+                    case MS_OP_HASH_HSET:
+#if ENABLE_HASH
+                        kvs_hash_set(&global_hash, key, val ? val : "");
+#endif
+                        break;
+                    case MS_OP_SKIPTABLE_SSET:
+#if ENABLE_SKIPTABLE
+                        kvs_skiptable_set(&global_skiptable, key, val ? val : "");
+#endif
+                        break;
+                    case MS_OP_ARRAY_DEL:
+#if ENABLE_ARRAY
+                        kvs_array_del(&global_array, key);
+#endif
+                        break;
+                    case MS_OP_RBTREE_RDEL:
+#if ENABLE_RBTREE
+                        kvs_rbtree_del(&global_rbtree, key);
+#endif
+                        break;
+                    case MS_OP_HASH_HDEL:
+#if ENABLE_HASH
+                        kvs_hash_del(&global_hash, key);
+#endif
+                        break;
+                    case MS_OP_SKIPTABLE_SDEL:
+#if ENABLE_SKIPTABLE
+                        kvs_skiptable_del(&global_skiptable, key);
+#endif
+                        break;
+                    case MS_OP_ARRAY_MOD:
+#if ENABLE_ARRAY
+                        kvs_array_mod(&global_array, key, val ? val : "");
+#endif  
+                        break;
+                    case MS_OP_RBTREE_RMOD:
+#if ENABLE_RBTREE
+                        kvs_rbtree_mod(&global_rbtree, key, val ? val : "");
+#endif
+                        break;
+                    case MS_OP_HASH_HMOD:
+#if ENABLE_HASH
+                        kvs_hash_mod(&global_hash, key, val ? val : "");
+#endif
+                        break;
+                    case MS_OP_SKIPTABLE_SMOD:
+#if ENABLE_SKIPTABLE
+                        kvs_skiptable_mod(&global_skiptable, key, val ? val : "");
+#endif
+                        break;
+                    case MS_OP_PAPERSET:
+                        kvs_rbtree_set(&global_rbtree, key, val ? val : "");
+                        break;
+                    case MS_OP_PAPERDEL:
+                        kvs_rbtree_del(&global_rbtree, key);
+                        break;
+                    case MS_OP_PAPERMOD:
+                        kvs_rbtree_mod(&global_rbtree, key, val ? val : "");
+                        break;
+                    case MS_OP_TTL_PEXPIREAT:
+                        if (ttl_set_any_key_expire_at_ms(key, klen, parsed_expire_at) < 0) {
+                            KVS_LOG_ERROR("dist", "apply PEXPIREAT failed for key=%s", key);
+                        }
+                        break;
+                    case MS_OP_TTL_PERSIST:
+                        if (ttl_set_any_key_expire_at_ms(key, klen, KV_TTL_NO_EXPIRE) < 0) {
+                            KVS_LOG_ERROR("dist", "apply PERSIST failed for key=%s", key);
+                        }
+                        break;
+                    default:
+                        break;
+                }
+
+                pthread_rwlock_unlock(&g_kv_data_rwlock);
             }
 
 #if ENABLE_AOF
             // 写入 AOF（RESP 格式）
-            slave_append_aof_from_op(op, key, val);
+            if (apply_locked) {
+                slave_append_aof_from_op(op, key, val);
+            }
 #endif
 
             set_sync_context(0);
