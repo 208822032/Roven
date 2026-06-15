@@ -1,5 +1,6 @@
 #define KVS_VECTOR_INTERNAL
 #include "kvstore.h"
+#include "kvs_globals.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -413,8 +414,11 @@ static int file_exists(const char *filename){
 
 }
 
-//保存rdb文件
-int kvs_rdb_save(const char *filename){
+/*
+ * Caller must provide a stable traversal boundary for live store data.
+ * Today kvs_rdb_save() does that with g_kv_data_rwlock read lock.
+ */
+static int kvs_rdb_save_unlocked(const char *filename){
     char tmpname[1024];
 
     // 构造临时文件名：<filename>.tmp
@@ -500,6 +504,30 @@ write_error:
 write_error_no_close:
     unlink(tmpname); // 写失败时删除半成品
     return RDB_ERR;
+}
+
+//保存rdb文件
+int kvs_rdb_save(const char *filename){
+    int lock_ret;
+    int ret;
+
+    /*
+     * 阶段 0.5 临时一致性修复：RDB save 会遍历普通 KV 和 vector
+     * live store，因此外层持全局读锁覆盖整个保存过程。这样会在
+     * save 期间阻塞写命令，并且当前仍在读锁内执行文件 IO。
+     * 长期路线 C 会改为 executor 生成一致性 snapshot，RDB IO 线程
+     * 只负责锁外写 snapshot。
+     */
+    lock_ret = pthread_rwlock_rdlock(&g_kv_data_rwlock);
+    if (lock_ret != 0) {
+        KVS_LOG_ERROR("persistence", "failed to acquire RDB save read lock: %d", lock_ret);
+        return RDB_ERR;
+    }
+
+    ret = kvs_rdb_save_unlocked(filename);
+
+    pthread_rwlock_unlock(&g_kv_data_rwlock);
+    return ret;
 }
 
 //加载rdb文件
@@ -1088,8 +1116,6 @@ static int rdb_load_skiptable(FILE *fp, uint8_t version, int64_t now_ms){
 
     return RDB_OK;
 }
-
-
 
 
 

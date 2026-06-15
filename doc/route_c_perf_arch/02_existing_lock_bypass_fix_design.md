@@ -101,3 +101,11 @@
 - 锁范围：覆盖 replicated set/del/mod 以及同一复制消息内的 TTL/expire_at 修改。
 - 已知限制：当前仍是阶段 0.5 的临时锁修复，长期路线 C 会改为 `replicated_command_task` 进入 single commit executor。
 - 边界：socket recv 和协议解析在锁外完成，不在写锁内阻塞网络 IO。
+
+## 实现状态：RDB save
+
+- 当前状态：已通过 `g_kv_data_rwlock` 读锁保护 RDB save 遍历 live store。
+- 锁范围：覆盖普通 KV array/rbtree/hash/skiptable 以及 vector section 的保存遍历。
+- 实现方式：`kvs_rdb_save()` 外层加读锁，实际保存逻辑下沉到 unlocked helper，避免后续 executor/snapshot 场景复用困难。
+- 已知限制：RDB save 期间会阻塞写命令，且当前仍可能在读锁内做文件 IO。
+- 后续路线 C：改为 executor `snapshot_task`，IO 线程只负责写 snapshot。
