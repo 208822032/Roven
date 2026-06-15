@@ -215,7 +215,7 @@ static int write_vset_command(int fd, kvs_vector_record_t *rec) {
     char header[32];
     int n;
     int scope_argc = (rec->scope_len > 0) ? 1 : 0;
-    size_t argc = (size_t)(2 + scope_argc);
+    size_t argc = (size_t)(3 + scope_argc); /* VSET question answer [scope] */
 
     n = snprintf(header, sizeof(header), "*%zu\r\n", argc);
     if (n < 0 || (size_t)n >= sizeof(header)) return -1;
