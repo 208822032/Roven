@@ -2,12 +2,40 @@
 
 ## 实现状态
 
-- 当前状态：已引入 command_task 抽象，但仍保持同步执行。
-- 执行方式：kvs_filter_protocol 构造 command_task 后立即同步 prepare/execute/destroy。
+- 当前状态：已引入 command_task 抽象，但仍保持同步执行。已完成模块化抽取。
+- 模块结构（阶段 2.1 后）：
+  - `include/kvs_command_task.h` — command_task 类型定义和公开 API
+  - `src/core/kvs_command_task.c` — command_task 全部生命周期函数
+  - `src/core/kvstore.c` — kvs_filter_protocol 协议入口 + glue 代码
+- 执行方式：kvs_filter_protocol 构造 command_task（栈对象）后立即同步 build/prepare/execute_sync/post_commit/destroy。
 - argv 生命周期：普通命令仍零拷贝引用当前 RESP parse 结果，不逃逸当前调用栈；VSET/VSEARCH prepared 数据继续深拷贝。
 - prepared data：VSET/VSEARCH 的 prepared 结构纳入 command_task 统一管理。
 - 未引入内容：未引入 command queue、executor、异步 response、多线程执行。
 - 已知限制：command_task 当前还不是跨线程安全对象，后续阶段需要继续补 session ref、response_task、argv 全量 ownership。
+
+### 模块边界（阶段 2.1 后）
+
+`kvs_command_task.c` 承担：
+- kvs_command_task_t 全部生命周期（build/prepare/execute_sync/post_commit/destroy）
+- prepared data 分发释放（VSET/VSEARCH destroy）
+- read-then-write retry 处理（KVS_CMD_RETRY_WITH_WRITE_LOCK）
+- post_state capture（EXPIRE/PEXPIREAT/PERSIST 状态快照）
+- AOF append / TCP replication 后置辅助逻辑
+- kvs_vector_status_to_resp（vector 状态码到 RESP 转换）
+- kvs_vector_search_prepared_to_resp（VSEARCH 结果 RESP 格式化）
+
+`kvstore.c` 保留：
+- kvs_filter_protocol（协议入口，创建栈 task 并编排五阶段流程）
+- g_kv_data_rwlock 定义
+- sync_context 和 get/set_sync_context
+- init_kvengine / dest_kvengine / main 等模块初始化
+
+公开 API（`kvs_command_task.h`）：
+- kvs_command_task_build
+- kvs_command_task_prepare
+- kvs_command_task_execute_sync
+- kvs_command_task_post_commit
+- kvs_command_task_destroy
 
 ## 1. 本阶段目标
 
