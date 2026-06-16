@@ -64,10 +64,32 @@ static int proactor_pending_conn_ops = 0;
 static io_uring_op_t *proactor_executor_event_op = NULL;
 static int proactor_executor_event_pending = 0;
 
+typedef struct proactor_executor_stats_s {
+    uint64_t executor_eventfd_rearm_failed;
+    uint64_t executor_eventfd_cqe_count;
+    uint64_t executor_eventfd_drain_count;
+    uint64_t executor_responses_polled;
+    uint64_t executor_dispatch_failed;
+    uint64_t enable_write_failed;
+    uint64_t async_submit_failed;
+    uint64_t async_fallback_count;
+    uint64_t pipeline_restore_submit_count;
+} proactor_executor_stats_t;
+
+static proactor_executor_stats_t proactor_executor_stats;
+
 static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t *ext);
 int set_event_send(struct io_uring *ring, conn_extension_t *ctx);
 static void post_recv_if_needed(struct io_uring *ring, conn_extension_t *ctx);
 static void post_send_if_needed(struct io_uring *ring, conn_extension_t *ctx);
+
+static uint64_t proactor_stats_add(uint64_t *field, uint64_t value) {
+    return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
+}
+
+static uint64_t proactor_stats_load(const uint64_t *field) {
+    return __atomic_load_n(field, __ATOMIC_RELAXED);
+}
 
 static int proactor_fd_valid(int fd) {
     return fd >= 0 && fd < PROACTOR_CONNECTION_SIZE;
@@ -229,6 +251,7 @@ static void proactor_drain_executor_eventfd(void) {
     for (;;) {
         ssize_t n = read(event_fd, &value, sizeof(value));
         if (n == (ssize_t)sizeof(value)) {
+            proactor_stats_add(&proactor_executor_stats.executor_eventfd_drain_count, 1);
             continue;
         }
         if (n < 0 && errno == EINTR) {
@@ -272,6 +295,43 @@ static int proactor_arm_executor_eventfd(struct io_uring *ring) {
     proactor_executor_event_op = op;
     proactor_executor_event_pending = 1;
     return 0;
+}
+
+static void proactor_log_executor_stats(void) {
+    kvs_command_executor_stats_t executor_stats;
+
+    memset(&executor_stats, 0, sizeof(executor_stats));
+    kvs_command_executor_get_stats(&executor_stats);
+
+    KVS_LOG_INFO("network",
+                 "proactor executor stats: submitted=%llu completed=%llu submit_failed=%llu cmd_depth=%llu cmd_max=%llu resp_depth=%llu resp_max=%llu pushed=%llu polled=%llu eventfd_wakeup=%llu eventfd_write_fail=%llu dropped=%llu mismatch_drop=%llu closing_drop=%llu append_failed=%llu",
+                 (unsigned long long)executor_stats.submitted_tasks,
+                 (unsigned long long)executor_stats.completed_tasks,
+                 (unsigned long long)executor_stats.submit_failed,
+                 (unsigned long long)executor_stats.command_queue_depth,
+                 (unsigned long long)executor_stats.command_queue_max_depth,
+                 (unsigned long long)executor_stats.response_queue_depth,
+                 (unsigned long long)executor_stats.response_queue_max_depth,
+                 (unsigned long long)executor_stats.pushed_responses,
+                 (unsigned long long)executor_stats.polled_responses,
+                 (unsigned long long)executor_stats.eventfd_wakeup_count,
+                 (unsigned long long)executor_stats.eventfd_write_fail_count,
+                 (unsigned long long)executor_stats.dropped_responses,
+                 (unsigned long long)executor_stats.session_mismatch_drop,
+                 (unsigned long long)executor_stats.session_closing_drop,
+                 (unsigned long long)executor_stats.response_append_failed);
+
+    KVS_LOG_INFO("network",
+                 "proactor executor local stats: eventfd_cqe=%llu eventfd_drain=%llu eventfd_rearm_failed=%llu responses_polled=%llu dispatch_failed=%llu enable_write_failed=%llu async_submit_failed=%llu async_fallback=%llu pipeline_restore_submit=%llu",
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.executor_eventfd_cqe_count),
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.executor_eventfd_drain_count),
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.executor_eventfd_rearm_failed),
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.executor_responses_polled),
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.executor_dispatch_failed),
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.enable_write_failed),
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.async_submit_failed),
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.async_fallback_count),
+                 (unsigned long long)proactor_stats_load(&proactor_executor_stats.pipeline_restore_submit_count));
 }
 
 static void proactor_cancel_executor_eventfd(struct io_uring *ring) {
@@ -584,6 +644,7 @@ static void proactor_async_release_session(kvs_async_net_response_target_t *targ
 
 static int proactor_async_enable_write(const kvs_async_net_response_target_t *target) {
     conn_extension_t *ext;
+    int ret;
 
     if (!target || target->owner_type != KVS_ASYNC_NET_OWNER_PROACTOR) {
         return -1;
@@ -592,7 +653,20 @@ static int proactor_async_enable_write(const kvs_async_net_response_target_t *ta
     if (!proactor_target_is_current(ext)) {
         return -1;
     }
-    return set_event_send(ext->ring, ext);
+    ret = set_event_send(ext->ring, ext);
+    if (ret < 0) {
+        proactor_stats_add(&proactor_executor_stats.enable_write_failed, 1);
+        KVS_LOG_ERROR("network",
+                      "proactor executor enable_write failed: fd=%d session_id=%llu generation=%u request_seq=%llu send_size=%zu send_offset=%zu write_in_flight=%d",
+                      ext->fd,
+                      (unsigned long long)ext->session.session_id,
+                      ext->session.generation,
+                      (unsigned long long)target->request_seq,
+                      ext->session.send_buf.size,
+                      ext->send_offset,
+                      ext->write_in_flight);
+    }
+    return ret;
 }
 
 static int proactor_async_restore_read(const kvs_async_net_response_target_t *target) {
@@ -610,6 +684,9 @@ static int proactor_async_restore_read(const kvs_async_net_response_target_t *ta
         if (processed < 0) {
             proactor_conn_request_close(ext);
             return -1;
+        }
+        if (processed > 0) {
+            proactor_stats_add(&proactor_executor_stats.pipeline_restore_submit_count, 1);
         }
     }
     return 0;
@@ -632,12 +709,16 @@ static const kvs_async_net_ops_t g_proactor_async_net_ops = {
 
 static void proactor_handle_executor_response(kvs_response_task_t *resp) {
     kvs_async_net_response_target_t target;
+    int dispatch_ret;
 
     if (!resp) {
         return;
     }
     kvs_async_net_response_target_from_task(&target, resp);
-    kvs_async_net_dispatch_response(&g_proactor_async_net_ops, &target);
+    dispatch_ret = kvs_async_net_dispatch_response(&g_proactor_async_net_ops, &target);
+    if (dispatch_ret == KVS_ASYNC_NET_DISPATCH_APPEND_FAILED) {
+        proactor_stats_add(&proactor_executor_stats.executor_dispatch_failed, 1);
+    }
     proactor_response_destroy(resp);
 }
 
@@ -652,6 +733,7 @@ static void proactor_process_executor_responses(struct io_uring *ring) {
         if (ret <= 0 || !resp) {
             break;
         }
+        proactor_stats_add(&proactor_executor_stats.executor_responses_polled, 1);
         proactor_handle_executor_response(resp);
     }
 
@@ -704,6 +786,7 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
     if (!resp || !task) {
         if (resp) kvs_free(resp);
         if (task) kvs_free(task);
+        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
         return p_process_received_data(ext) < 0 ? -1 : 1;
     }
     memset(resp, 0, sizeof(*resp));
@@ -712,6 +795,7 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
     if (kvs_response_task_init_owned(resp, KVS_MAX_RESPONSE_LENGTH) < 0) {
         kvs_free(resp);
         kvs_free(task);
+        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
         return p_process_received_data(ext) < 0 ? -1 : 1;
     }
 
@@ -725,6 +809,7 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
         kvs_response_task_destroy(resp);
         kvs_free(resp);
         kvs_free(task);
+        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
         return p_process_received_data(ext) < 0 ? -1 : 1;
     }
     if (kvs_command_task_copy_argv(task) < 0) {
@@ -732,6 +817,7 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
         kvs_response_task_destroy(resp);
         kvs_free(resp);
         kvs_free(task);
+        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
         return p_process_received_data(ext) < 0 ? -1 : 1;
     }
 
@@ -768,6 +854,8 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
         kvs_response_task_destroy(resp);
         kvs_free(resp);
         kvs_free(task);
+        proactor_stats_add(&proactor_executor_stats.async_submit_failed, 1);
+        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
         return p_process_received_data(ext) < 0 ? -1 : 1;
     }
 
@@ -1111,6 +1199,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
                 post_recv_if_needed(&ring, ctx);
             }
         } else if (op->op == EVENT_EXECUTOR_EVENTFD) {
+            proactor_stats_add(&proactor_executor_stats.executor_eventfd_cqe_count, 1);
             if (proactor_executor_event_op == op) {
                 proactor_executor_event_op = NULL;
                 proactor_executor_event_pending = 0;
@@ -1118,9 +1207,17 @@ int proactor_start(unsigned short port, msg_handler handler) {
             if (cqe->res >= 0) {
                 proactor_drain_executor_eventfd();
                 proactor_process_executor_responses(&ring);
+            } else {
+                KVS_LOG_ERROR("network",
+                              "proactor executor eventfd poll CQE failed: res=%d",
+                              cqe->res);
             }
             if (!g_shutdown_flag) {
-                proactor_arm_executor_eventfd(&ring);
+                if (proactor_arm_executor_eventfd(&ring) < 0) {
+                    proactor_stats_add(&proactor_executor_stats.executor_eventfd_rearm_failed, 1);
+                    KVS_LOG_ERROR("network",
+                                  "failed to rearm executor eventfd poll in proactor; executor responses may stop waking owner loop");
+                }
             }
         }
 
@@ -1136,6 +1233,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
     proactor_drain_pending_ops(&ring);
 	close(sockfd);
 	io_uring_queue_exit(&ring);
+    proactor_log_executor_stats();
     kvs_command_executor_stop();
     KVS_LOG_INFO("network", "Proactor network exited");
 
