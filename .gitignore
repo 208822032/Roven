@@ -62,9 +62,12 @@ core.*
 # Logs and benchmark outputs generated locally.
 # Some historical logs/results are already tracked; this prevents new ones.
 /logs/**/*.log
-/results/**/*.csv
-/results/**/*.txt
-/results/**/*.md
+
+# Ignore everything in results/ except designated summary files.
+# Historically-tracked files are NOT affected by these rules.
+/results/**
+!/results/summary.md
+!/results/vector_rw_summary.md
 
 # Vendored/generated dependency outputs
 /third_party/onnxruntime/
@@ -83,6 +86,8 @@ core.*
 /jemalloc/config.status
 /jemalloc/jemalloc.pc
 /jemalloc/include/jemalloc/jemalloc.h
+
+
 
 # Project-local scratch files
 paper.txt
