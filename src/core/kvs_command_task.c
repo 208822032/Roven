@@ -244,6 +244,7 @@ int kvs_command_task_copy_argv(kvs_command_task_t *task) {
 	}
 
 	if (task->cmd && task->cmd_index >= 0 && task->build_status <= 0) {
+		memset(&copied_ctx, 0, sizeof(copied_ctx));
 		if (parse_command_argument(task->cmd_index, argv_copy, task->argc, lens_copy, &copied_ctx) < 0) {
 			goto fail;
 		}
@@ -271,6 +272,14 @@ fail:
 		kvs_free(lens_copy);
 	}
 	return -1;
+}
+
+int kvs_command_task_requires_embedding_prepare(const kvs_command_task_t *task) {
+	if (!task || !task->cmd || task->build_status > 0) {
+		return 0;
+	}
+	return strcmp(task->cmd->name, "VSET") == 0 ||
+	       strcmp(task->cmd->name, "VSEARCH") == 0;
 }
 
 int kvs_command_task_build(
@@ -356,6 +365,7 @@ int kvs_command_task_prepare(kvs_command_task_t *task) {
 		return resp_generate_simple_string_n(response, '-', "Invalid command", sizeof("Invalid command") - 1);
 	}
 	task->response = response;
+	task->prepare_completed = 1;
 
 	if (strcmp(task->cmd->name, "VSET") == 0) {
 		task->prepared_kind = KVS_COMMAND_TASK_PREPARED_VSET;
@@ -371,9 +381,11 @@ int kvs_command_task_prepare(kvs_command_task_t *task) {
 		);
 		if (status != KVS_VECTOR_OK) {
 			task->status = kvs_vector_status_to_resp(status, task->response);
+			task->prepare_status = task->status;
 			return task->status;
 		}
 		task->is_prepared = 1;
+		task->prepare_status = 0;
 		return 0;
 	}
 
@@ -389,12 +401,15 @@ int kvs_command_task_prepare(kvs_command_task_t *task) {
 		);
 		if (status != KVS_VECTOR_OK) {
 			task->status = kvs_vector_status_to_resp(status, task->response);
+			task->prepare_status = task->status;
 			return task->status;
 		}
 		task->is_prepared = 1;
+		task->prepare_status = 0;
 		return 0;
 	}
 
+	task->prepare_status = 0;
 	return 0;
 }
 

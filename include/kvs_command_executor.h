@@ -22,6 +22,12 @@ typedef struct kvs_command_executor_stats_s {
 	uint64_t session_mismatch_drop;
 	uint64_t session_closing_drop;
 	uint64_t response_append_failed;
+	uint64_t prepared_queue_depth;
+	uint64_t prepared_queue_max_depth;
+	uint64_t prepared_tasks;
+	uint64_t embedding_prepare_dispatched;
+	uint64_t embedding_prepare_inline;
+	uint64_t embedding_prepare_submit_failed;
 } kvs_command_executor_stats_t;
 
 typedef enum kvs_command_executor_drop_reason_e {
@@ -34,6 +40,7 @@ int kvs_command_executor_start(void);
 void kvs_command_executor_stop(void);
 
 int kvs_command_executor_submit(kvs_command_task_t *task);
+int kvs_command_executor_submit_prepared(kvs_command_task_t *task);
 int kvs_command_executor_poll_response(kvs_response_task_t **resp);
 int kvs_command_executor_poll_response_for(int owner_type,
                                            int owner_poller_id,

@@ -3,6 +3,8 @@
 
 #include <math.h>
 
+static pthread_mutex_t g_embedding_provider_encode_mu = PTHREAD_MUTEX_INITIALIZER;
+
 static int kvs_vector_embedding_l2_normalize(float *embedding, int dim) {
 	double norm_sq = 0.0;
 	double inv_norm;
@@ -389,6 +391,7 @@ static int kvs_vector_local_c_embedding_generate(
 		return KVS_VECTOR_ERR;
 	}
 
+	pthread_mutex_lock(&g_embedding_provider_encode_mu);
 	err = embedding_encode(
 		provider->runtime_handle,
 		text,
@@ -404,9 +407,11 @@ static int kvs_vector_local_c_embedding_generate(
 			embedding_last_error(provider->runtime_handle),
 			text_len
 		);
+		pthread_mutex_unlock(&g_embedding_provider_encode_mu);
 		kvs_free(embedding);
 		return kvs_vector_embedding_error_to_status(err);
 	}
+	pthread_mutex_unlock(&g_embedding_provider_encode_mu);
 
 	*out_embedding = embedding;
 	*out_dim = (int)dim;
@@ -513,6 +518,7 @@ int kvs_vector_embedding_generate_batch(
 			return KVS_VECTOR_ERR;
 		}
 
+		pthread_mutex_lock(&g_embedding_provider_encode_mu);
 		for (i = 0; i < text_count; ++i) {
 			EmbeddingErrorCode err = embedding_encode(
 				provider->runtime_handle,
@@ -530,10 +536,12 @@ int kvs_vector_embedding_generate_batch(
 					i,
 					text_lens[i]
 				);
+				pthread_mutex_unlock(&g_embedding_provider_encode_mu);
 				kvs_free(embeddings);
 				return kvs_vector_embedding_error_to_status(err);
 			}
 		}
+		pthread_mutex_unlock(&g_embedding_provider_encode_mu);
 
 		dim = (int)provider_dim;
 	} else {

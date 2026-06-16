@@ -37,6 +37,9 @@ typedef struct kvs_command_task_s {
 	 */
 	int owns_argv;
 	int is_prepared;
+	int prepare_dispatched;
+	int prepare_completed;
+	int prepare_status;
 	kvs_command_task_prepared_kind_t prepared_kind;
 	void *prepared;
 
@@ -68,6 +71,7 @@ typedef struct kvs_command_task_s {
 
 int kvs_command_task_build(kvs_command_task_t *task, char **tokens, int count, size_t *token_lens, kvs_response_task_t *response_task);
 int kvs_command_task_copy_argv(kvs_command_task_t *task);
+int kvs_command_task_requires_embedding_prepare(const kvs_command_task_t *task);
 int kvs_command_task_prepare(kvs_command_task_t *task);
 int kvs_command_task_execute_sync(kvs_command_task_t *task);
 void kvs_command_task_post_commit(kvs_command_task_t *task, int ret);

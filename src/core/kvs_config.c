@@ -61,6 +61,9 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     snprintf(cfg->embedding_ort_graph_opt_level, sizeof(cfg->embedding_ort_graph_opt_level), "%s", "basic");
     cfg->embedding_inter_threads = 0;
     snprintf(cfg->embedding_ort_execution_mode, sizeof(cfg->embedding_ort_execution_mode), "%s", "sequential");
+    cfg->embedding_worker_pool_enabled = 0;
+    cfg->embedding_worker_threads = 4;
+    cfg->embedding_worker_queue_capacity = 1024;
 
     // 语义缓存主路径固定为 L2-normalized embedding + HNSW + inner product。
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
@@ -213,6 +216,22 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             }
         } else if (strcasecmp(key, "embedding_ort_execution_mode") == 0) {
             snprintf(cfg->embedding_ort_execution_mode, sizeof(cfg->embedding_ort_execution_mode), "%s", val);
+        } else if (strcasecmp(key, "embedding_worker_pool_enabled") == 0) {
+            cfg->embedding_worker_pool_enabled = parse_bool(val, cfg->embedding_worker_pool_enabled);
+        } else if (strcasecmp(key, "embedding_worker_threads") == 0) {
+            cfg->embedding_worker_threads = parse_int_range(
+                val,
+                cfg->embedding_worker_threads,
+                1,
+                64
+            );
+        } else if (strcasecmp(key, "embedding_worker_queue_capacity") == 0) {
+            cfg->embedding_worker_queue_capacity = parse_int_range(
+                val,
+                cfg->embedding_worker_queue_capacity,
+                1,
+                1048576
+            );
         } else if (strcasecmp(key, "vector_index_type") == 0) {
             if (strcasecmp(val, "flat") == 0 ||
                 strcasecmp(val, "hnsw") == 0 ||
@@ -355,6 +374,28 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
         } else if (strcmp(argv[i], "--embedding_ort_execution_mode") == 0) {
             if (i + 1 < argc) {
                 snprintf(cfg->embedding_ort_execution_mode, sizeof(cfg->embedding_ort_execution_mode), "%s", argv[++i]);
+            }
+        } else if (strcmp(argv[i], "--embedding_worker_pool_enabled") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_worker_pool_enabled = parse_bool(argv[++i], cfg->embedding_worker_pool_enabled);
+            }
+        } else if (strcmp(argv[i], "--embedding_worker_threads") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_worker_threads = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_worker_threads,
+                    1,
+                    64
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_worker_queue_capacity") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_worker_queue_capacity = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_worker_queue_capacity,
+                    1,
+                    1048576
+                );
             }
         } else if (strcmp(argv[i], "--vector_metric") == 0) {
             if (i + 1 < argc) {
