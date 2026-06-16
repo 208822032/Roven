@@ -109,7 +109,7 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 
 	KVS_LOG_INFO(
 		"core",
-		"embedding worker pool stats: submitted=%llu completed=%llu failed=%llu queue_depth=%llu queue_max=%llu worker_threads=%llu submit_failed=%llu dispatch_failed=%llu prepare_count=%llu prepare_avg_us=%llu prepare_max_us=%llu",
+		"embedding worker pool stats: submitted=%llu completed=%llu failed=%llu queue_depth=%llu queue_max=%llu worker_threads=%llu submit_failed=%llu dispatch_failed=%llu prepare_count=%llu prepare_avg_us=%llu prepare_max_us=%llu per_thread_enabled=%llu contexts_created=%llu contexts_destroyed=%llu context_create_failed=%llu context_fallback=%llu encode_global_mutex=%llu encode_thread_context=%llu encode_current_inflight=%llu encode_max_inflight=%llu encode_avg_us=%llu encode_max_us=%llu",
 		(unsigned long long)stats.submitted_prepare_tasks,
 		(unsigned long long)stats.completed_prepare_tasks,
 		(unsigned long long)stats.failed_prepare_tasks,
@@ -120,7 +120,20 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		(unsigned long long)stats.prepare_dispatch_failed,
 		(unsigned long long)stats.prepare_count,
 		(unsigned long long)avg_us,
-		(unsigned long long)stats.prepare_max_us
+		(unsigned long long)stats.prepare_max_us,
+		(unsigned long long)stats.per_thread_context_enabled,
+		(unsigned long long)stats.per_thread_context_created,
+		(unsigned long long)stats.per_thread_context_destroyed,
+		(unsigned long long)stats.per_thread_context_create_failed,
+		(unsigned long long)stats.per_thread_context_fallback_count,
+		(unsigned long long)stats.encode_global_mutex_count,
+		(unsigned long long)stats.encode_thread_context_count,
+		(unsigned long long)stats.encode_current_inflight,
+		(unsigned long long)stats.encode_max_inflight,
+		(unsigned long long)(stats.encode_thread_context_count + stats.encode_global_mutex_count > 0 ?
+			stats.encode_total_us / (stats.encode_thread_context_count + stats.encode_global_mutex_count) :
+			0),
+		(unsigned long long)stats.encode_max_us
 	);
 }
 

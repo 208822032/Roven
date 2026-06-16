@@ -242,6 +242,30 @@ void kvs_vector_search_results_reset(
 	size_t count
 );
 
+typedef struct kvs_vector_embedding_runtime_stats_s {
+	uint64_t per_thread_context_enabled;
+	uint64_t per_thread_context_created;
+	uint64_t per_thread_context_destroyed;
+	uint64_t per_thread_context_create_failed;
+	uint64_t per_thread_context_fallback_count;
+	uint64_t encode_global_mutex_count;
+	uint64_t encode_thread_context_count;
+	uint64_t encode_current_inflight;
+	uint64_t encode_max_inflight;
+	uint64_t encode_total_us;
+	uint64_t encode_max_us;
+} kvs_vector_embedding_runtime_stats_t;
+
+void kvs_vector_embedding_runtime_get_stats(
+	kvs_vector_embedding_runtime_stats_t *out
+);
+
+int kvs_vector_embedding_thread_context_init(void);
+
+void kvs_vector_embedding_thread_context_destroy(void);
+
+int kvs_vector_embedding_thread_context_available(void);
+
 /*
  * 以下内容只给 V 族内部实现文件使用。
  *

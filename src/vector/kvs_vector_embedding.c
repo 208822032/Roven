@@ -2,8 +2,84 @@
 #include "kvs_vector.h"
 
 #include <math.h>
+#include <stdint.h>
+#include <time.h>
 
 static pthread_mutex_t g_embedding_provider_encode_mu = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct kvs_vector_embedding_thread_context_s {
+	EmbeddingHandle *runtime_handle;
+	kvs_vector_embedding_provider_type_t provider_type;
+	size_t dimension;
+	int initialized;
+	int fallback_to_global;
+} kvs_vector_embedding_thread_context_t;
+
+static __thread kvs_vector_embedding_thread_context_t *g_embedding_thread_ctx;
+static kvs_vector_embedding_runtime_stats_t g_embedding_runtime_stats;
+
+static uint64_t embedding_stats_add(uint64_t *field, uint64_t value) {
+	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
+}
+
+static uint64_t embedding_stats_sub(uint64_t *field, uint64_t value) {
+	return __atomic_sub_fetch(field, value, __ATOMIC_RELAXED);
+}
+
+static uint64_t embedding_stats_load(const uint64_t *field) {
+	return __atomic_load_n(field, __ATOMIC_RELAXED);
+}
+
+static void embedding_stats_store(uint64_t *field, uint64_t value) {
+	__atomic_store_n(field, value, __ATOMIC_RELAXED);
+}
+
+static void embedding_stats_update_max(uint64_t *field, uint64_t value) {
+	uint64_t old_value = __atomic_load_n(field, __ATOMIC_RELAXED);
+
+	while (value > old_value) {
+		if (__atomic_compare_exchange_n(field,
+		                                &old_value,
+		                                value,
+		                                0,
+		                                __ATOMIC_RELAXED,
+		                                __ATOMIC_RELAXED)) {
+			break;
+		}
+	}
+}
+
+static uint64_t embedding_now_us(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return 0;
+	}
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+static void embedding_record_encode_time(uint64_t elapsed_us) {
+	embedding_stats_add(&g_embedding_runtime_stats.encode_total_us, elapsed_us);
+	embedding_stats_update_max(&g_embedding_runtime_stats.encode_max_us, elapsed_us);
+}
+
+static uint64_t embedding_encode_enter(void) {
+	uint64_t inflight = embedding_stats_add(
+		&g_embedding_runtime_stats.encode_current_inflight,
+		1
+	);
+	embedding_stats_update_max(&g_embedding_runtime_stats.encode_max_inflight, inflight);
+	return embedding_now_us();
+}
+
+static void embedding_encode_leave(uint64_t start_us) {
+	uint64_t end_us = embedding_now_us();
+
+	if (end_us >= start_us) {
+		embedding_record_encode_time(end_us - start_us);
+	}
+	embedding_stats_sub(&g_embedding_runtime_stats.encode_current_inflight, 1);
+}
 
 static int kvs_vector_embedding_l2_normalize(float *embedding, int dim) {
 	double norm_sq = 0.0;
@@ -74,6 +150,158 @@ static int kvs_vector_embedding_error_to_status(EmbeddingErrorCode code) {
 	}
 }
 
+static void kvs_vector_embedding_build_config(EmbeddingConfig *config) {
+	if (!config) {
+		return;
+	}
+	memset(config, 0, sizeof(*config));
+	config->model_path = g_cfg.embedding_model_path[0] != '\0' ?
+		g_cfg.embedding_model_path :
+		NULL;
+	config->embedding_dim = g_cfg.embedding_dim;
+	config->num_threads = g_cfg.embedding_num_threads;
+	config->max_text_len = g_cfg.embedding_max_text_len;
+	config->normalize = 0;
+}
+
+static int kvs_vector_embedding_create_runtime_handle(
+	EmbeddingHandle **out_handle,
+	size_t *out_dimension
+) {
+	EmbeddingConfig config;
+	EmbeddingHandle *handle = NULL;
+	EmbeddingErrorCode err;
+	int dimension;
+
+	if (!out_handle || !out_dimension) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	*out_handle = NULL;
+	*out_dimension = 0;
+
+	kvs_vector_embedding_build_config(&config);
+	err = embedding_create(&config, &handle);
+	if (err != EMBEDDING_OK) {
+		return kvs_vector_embedding_error_to_status(err);
+	}
+
+	dimension = embedding_dimension(handle);
+	if (dimension <= 0) {
+		embedding_destroy(handle);
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	*out_handle = handle;
+	*out_dimension = (size_t)dimension;
+	return KVS_VECTOR_OK;
+}
+
+void kvs_vector_embedding_runtime_get_stats(
+	kvs_vector_embedding_runtime_stats_t *out
+) {
+	if (!out) {
+		return;
+	}
+	out->per_thread_context_enabled = embedding_stats_load(&g_embedding_runtime_stats.per_thread_context_enabled);
+	out->per_thread_context_created = embedding_stats_load(&g_embedding_runtime_stats.per_thread_context_created);
+	out->per_thread_context_destroyed = embedding_stats_load(&g_embedding_runtime_stats.per_thread_context_destroyed);
+	out->per_thread_context_create_failed = embedding_stats_load(&g_embedding_runtime_stats.per_thread_context_create_failed);
+	out->per_thread_context_fallback_count = embedding_stats_load(&g_embedding_runtime_stats.per_thread_context_fallback_count);
+	out->encode_global_mutex_count = embedding_stats_load(&g_embedding_runtime_stats.encode_global_mutex_count);
+	out->encode_thread_context_count = embedding_stats_load(&g_embedding_runtime_stats.encode_thread_context_count);
+	out->encode_current_inflight = embedding_stats_load(&g_embedding_runtime_stats.encode_current_inflight);
+	out->encode_max_inflight = embedding_stats_load(&g_embedding_runtime_stats.encode_max_inflight);
+	out->encode_total_us = embedding_stats_load(&g_embedding_runtime_stats.encode_total_us);
+	out->encode_max_us = embedding_stats_load(&g_embedding_runtime_stats.encode_max_us);
+}
+
+int kvs_vector_embedding_thread_context_init(void) {
+	kvs_vector_embedding_provider_t *provider = &g_vector_state.embedding_provider;
+	kvs_vector_embedding_thread_context_t *ctx;
+	EmbeddingHandle *handle = NULL;
+	size_t dimension = 0;
+	int ret;
+
+	if (g_embedding_thread_ctx) {
+		return 0;
+	}
+	if (!g_cfg.embedding_per_thread_runtime_enabled) {
+		return 0;
+	}
+	embedding_stats_store(&g_embedding_runtime_stats.per_thread_context_enabled, 1);
+
+	if (!provider->initialized ||
+	    provider->type != KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C) {
+		return 0;
+	}
+
+	ctx = (kvs_vector_embedding_thread_context_t *)malloc(sizeof(*ctx));
+	if (!ctx) {
+		embedding_stats_add(&g_embedding_runtime_stats.per_thread_context_create_failed, 1);
+		if (g_cfg.embedding_per_thread_runtime_fallback_mutex) {
+			embedding_stats_add(&g_embedding_runtime_stats.per_thread_context_fallback_count, 1);
+			return 0;
+		}
+		return -1;
+	}
+	memset(ctx, 0, sizeof(*ctx));
+
+	ret = kvs_vector_embedding_create_runtime_handle(&handle, &dimension);
+	if (ret != KVS_VECTOR_OK) {
+		free(ctx);
+		embedding_stats_add(&g_embedding_runtime_stats.per_thread_context_create_failed, 1);
+		if (g_cfg.embedding_per_thread_runtime_fallback_mutex) {
+			embedding_stats_add(&g_embedding_runtime_stats.per_thread_context_fallback_count, 1);
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"per-thread embedding runtime init failed; falling back to global mutex ret=%d",
+				ret
+			);
+			return 0;
+		}
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"per-thread embedding runtime init failed ret=%d",
+			ret
+		);
+		return -1;
+	}
+
+	ctx->runtime_handle = handle;
+	ctx->provider_type = provider->type;
+	ctx->dimension = dimension;
+	ctx->initialized = 1;
+	g_embedding_thread_ctx = ctx;
+	embedding_stats_add(&g_embedding_runtime_stats.per_thread_context_created, 1);
+	KVS_LOG_INFO(
+		KVS_VECTOR_LOG_MODULE,
+		"per-thread embedding runtime ready dimension=%zu",
+		dimension
+	);
+	return 0;
+}
+
+void kvs_vector_embedding_thread_context_destroy(void) {
+	kvs_vector_embedding_thread_context_t *ctx = g_embedding_thread_ctx;
+
+	if (!ctx) {
+		return;
+	}
+	g_embedding_thread_ctx = NULL;
+	if (ctx->runtime_handle) {
+		embedding_destroy(ctx->runtime_handle);
+		ctx->runtime_handle = NULL;
+	}
+	embedding_stats_add(&g_embedding_runtime_stats.per_thread_context_destroyed, 1);
+	free(ctx);
+}
+
+int kvs_vector_embedding_thread_context_available(void) {
+	return g_embedding_thread_ctx &&
+	       g_embedding_thread_ctx->initialized &&
+	       g_embedding_thread_ctx->runtime_handle != NULL;
+}
+
 /*
  * 初始化 embedding provider。
  *
@@ -96,44 +324,25 @@ int kvs_vector_embedding_provider_init(
 		strcasecmp(g_cfg.embedding_provider, "c_api") == 0;
 
 	if (use_local_c) {
-		EmbeddingConfig config;
-		EmbeddingErrorCode err;
-		int dimension;
+		size_t dimension;
+		int ret;
 
-		memset(&config, 0, sizeof(config));
-		config.model_path = g_cfg.embedding_model_path[0] != '\0' ?
-			g_cfg.embedding_model_path :
-			NULL;
-		config.embedding_dim = g_cfg.embedding_dim;
-		config.num_threads = g_cfg.embedding_num_threads;
-		config.max_text_len = g_cfg.embedding_max_text_len;
-		config.normalize = 0;
-
-		err = embedding_create(&config, &provider->runtime_handle);
-		if (err != EMBEDDING_OK) {
+		ret = kvs_vector_embedding_create_runtime_handle(
+			&provider->runtime_handle,
+			&dimension
+		);
+		if (ret != KVS_VECTOR_OK) {
 			KVS_LOG_ERROR(
 				KVS_VECTOR_LOG_MODULE,
-				"local_c embedding provider init failed err=%d",
-				(int)err
+				"local_c embedding provider init failed ret=%d",
+				ret
 			);
-			return kvs_vector_embedding_error_to_status(err);
-		}
-
-		dimension = embedding_dimension(provider->runtime_handle);
-		if (dimension <= 0) {
-			KVS_LOG_ERROR(
-				KVS_VECTOR_LOG_MODULE,
-				"local_c embedding provider returned invalid dimension=%d",
-				dimension
-			);
-			embedding_destroy(provider->runtime_handle);
-			memset(provider, 0, sizeof(*provider));
-			return KVS_VECTOR_ERR_INVALID_ARG;
+			return ret;
 		}
 
 		provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C;
 		provider->name = "local_c";
-		provider->dimension = (size_t)dimension;
+		provider->dimension = dimension;
 		provider->initialized = 1;
 
 		KVS_LOG_INFO(
@@ -373,6 +582,9 @@ static int kvs_vector_local_c_embedding_generate(
 	float *embedding;
 	size_t dim;
 	EmbeddingErrorCode err;
+	EmbeddingHandle *handle;
+	int use_thread_context = 0;
+	uint64_t start_us;
 
 	if (!provider || !provider->runtime_handle || !out_embedding || !out_dim) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
@@ -391,9 +603,26 @@ static int kvs_vector_local_c_embedding_generate(
 		return KVS_VECTOR_ERR;
 	}
 
-	pthread_mutex_lock(&g_embedding_provider_encode_mu);
+	handle = provider->runtime_handle;
+	if (g_embedding_thread_ctx &&
+	    g_embedding_thread_ctx->initialized &&
+	    g_embedding_thread_ctx->runtime_handle &&
+	    g_embedding_thread_ctx->provider_type == provider->type &&
+	    g_embedding_thread_ctx->dimension == dim) {
+		handle = g_embedding_thread_ctx->runtime_handle;
+		use_thread_context = 1;
+	}
+
+	if (use_thread_context) {
+		embedding_stats_add(&g_embedding_runtime_stats.encode_thread_context_count, 1);
+		start_us = embedding_encode_enter();
+	} else {
+		embedding_stats_add(&g_embedding_runtime_stats.encode_global_mutex_count, 1);
+		pthread_mutex_lock(&g_embedding_provider_encode_mu);
+		start_us = embedding_encode_enter();
+	}
 	err = embedding_encode(
-		provider->runtime_handle,
+		handle,
 		text,
 		text_len,
 		embedding,
@@ -402,16 +631,23 @@ static int kvs_vector_local_c_embedding_generate(
 	if (err != EMBEDDING_OK) {
 		KVS_LOG_ERROR(
 			KVS_VECTOR_LOG_MODULE,
-			"local_c embedding encode failed err=%d message=%s text_len=%zu",
+			"local_c embedding encode failed err=%d message=%s text_len=%zu thread_context=%d",
 			(int)err,
-			embedding_last_error(provider->runtime_handle),
-			text_len
+			embedding_last_error(handle),
+			text_len,
+			use_thread_context
 		);
-		pthread_mutex_unlock(&g_embedding_provider_encode_mu);
+		embedding_encode_leave(start_us);
+		if (!use_thread_context) {
+			pthread_mutex_unlock(&g_embedding_provider_encode_mu);
+		}
 		kvs_free(embedding);
 		return kvs_vector_embedding_error_to_status(err);
 	}
-	pthread_mutex_unlock(&g_embedding_provider_encode_mu);
+	embedding_encode_leave(start_us);
+	if (!use_thread_context) {
+		pthread_mutex_unlock(&g_embedding_provider_encode_mu);
+	}
 
 	*out_embedding = embedding;
 	*out_dim = (int)dim;
@@ -506,6 +742,9 @@ int kvs_vector_embedding_generate_batch(
 		size_t provider_dim = provider->dimension;
 		size_t i;
 		size_t bytes;
+		EmbeddingHandle *handle = provider->runtime_handle;
+		int use_thread_context = 0;
+		uint64_t start_us;
 
 		if (provider_dim == 0 ||
 		    text_count > ((size_t)-1 / provider_dim / sizeof(float))) {
@@ -518,10 +757,26 @@ int kvs_vector_embedding_generate_batch(
 			return KVS_VECTOR_ERR;
 		}
 
-		pthread_mutex_lock(&g_embedding_provider_encode_mu);
+		if (g_embedding_thread_ctx &&
+		    g_embedding_thread_ctx->initialized &&
+		    g_embedding_thread_ctx->runtime_handle &&
+		    g_embedding_thread_ctx->provider_type == provider->type &&
+		    g_embedding_thread_ctx->dimension == provider_dim) {
+			handle = g_embedding_thread_ctx->runtime_handle;
+			use_thread_context = 1;
+		}
+
+		if (use_thread_context) {
+			embedding_stats_add(&g_embedding_runtime_stats.encode_thread_context_count, text_count);
+			start_us = embedding_encode_enter();
+		} else {
+			embedding_stats_add(&g_embedding_runtime_stats.encode_global_mutex_count, text_count);
+			pthread_mutex_lock(&g_embedding_provider_encode_mu);
+			start_us = embedding_encode_enter();
+		}
 		for (i = 0; i < text_count; ++i) {
 			EmbeddingErrorCode err = embedding_encode(
-				provider->runtime_handle,
+				handle,
 				texts[i],
 				text_lens[i],
 				embeddings + (i * provider_dim),
@@ -530,18 +785,25 @@ int kvs_vector_embedding_generate_batch(
 			if (err != EMBEDDING_OK) {
 				KVS_LOG_ERROR(
 					KVS_VECTOR_LOG_MODULE,
-					"local_c embedding batch encode failed err=%d message=%s index=%zu text_len=%zu",
+					"local_c embedding batch encode failed err=%d message=%s index=%zu text_len=%zu thread_context=%d",
 					(int)err,
-					embedding_last_error(provider->runtime_handle),
+					embedding_last_error(handle),
 					i,
-					text_lens[i]
+					text_lens[i],
+					use_thread_context
 				);
-				pthread_mutex_unlock(&g_embedding_provider_encode_mu);
+				embedding_encode_leave(start_us);
+				if (!use_thread_context) {
+					pthread_mutex_unlock(&g_embedding_provider_encode_mu);
+				}
 				kvs_free(embeddings);
 				return kvs_vector_embedding_error_to_status(err);
 			}
 		}
-		pthread_mutex_unlock(&g_embedding_provider_encode_mu);
+		embedding_encode_leave(start_us);
+		if (!use_thread_context) {
+			pthread_mutex_unlock(&g_embedding_provider_encode_mu);
+		}
 
 		dim = (int)provider_dim;
 	} else {
