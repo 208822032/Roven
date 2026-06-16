@@ -1,3 +1,4 @@
+#define KVS_VECTOR_INTERNAL
 #include "kvstore.h"
 #include "distributed.h"
 #include "resp_protocol.h"
