@@ -4,6 +4,7 @@
 #define KVS_VECTOR_INTERNAL
 #include "kvs_api.h"
 #include "kvs_aof_internal.h"
+#include "kvs_command_executor.h"
 #include "kvs_globals.h"
 #include "kvs_log.h"
 #include <sys/stat.h>
@@ -22,22 +23,6 @@ Redis通过fork子进程+写时复制(COW)机制来解决父子进程同时操�
 
 
 extern aof_state_t aof_state;
-
-#if ENABLE_ARRAY
-extern kvs_array_t global_array;
-#endif
-
-#if ENABLE_RBTREE
-extern kvs_rbtree_t global_rbtree;
-#endif
-
-#if ENABLE_HASH
-extern kvs_hash_t global_hash;
-#endif
-
-#if ENABLE_SKIPTABLE
-extern kvs_skiptable_t global_skiptable;
-#endif
 
 //COW快照保护 在fork前调用
 static int acquire_cow_snapshot(void){
@@ -211,7 +196,10 @@ static int write_bulk_len(int fd, const char *data, size_t len) {
     return 0;
 }
 
-static int write_vset_command(int fd, kvs_vector_record_t *rec) {
+static int write_vset_command_snapshot(
+    int fd,
+    const kvs_aof_rewrite_snapshot_vector_entry_t *rec
+) {
     char header[32];
     int n;
     int scope_argc = (rec->scope_len > 0) ? 1 : 0;
@@ -232,25 +220,23 @@ static int write_vset_command(int fd, kvs_vector_record_t *rec) {
     return 0;
 }
 
-static int write_vector_data_to_tempfile(int fd) {
-    kvs_vector_store_t *store;
+static int write_vector_snapshot_to_tempfile(
+    int fd,
+    const kvs_aof_rewrite_snapshot_t *snapshot
+) {
     size_t total_commands = 0;
     size_t i;
 
-    if (!g_vector_state.initialized) {
+    if (!snapshot) {
+        return -1;
+    }
+
+    if (snapshot->vector_count == 0) {
         return 0;
     }
 
-    store = &g_vector_state.store;
-
-    for (i = 0; i < store->capacity; ++i) {
-        kvs_vector_record_t *rec = &store->records[i];
-
-        if (rec->state != KVS_VECTOR_RECORD_ACTIVE || rec->deleted) {
-            continue;
-        }
-
-        if (write_vset_command(fd, rec) == -1) {
+    for (i = 0; i < snapshot->vector_count; ++i) {
+        if (write_vset_command_snapshot(fd, &snapshot->vector_entries[i]) == -1) {
             return -1;
         }
         total_commands++;
@@ -261,52 +247,40 @@ static int write_vector_data_to_tempfile(int fd) {
     return (int)total_commands;
 }
 
-typedef struct {
-    int fd;
-    int total_commands;
-    time_t start_time;
-    int64_t now_ms;
-    int error;
-} rbtree_rewrite_ctx_t;
+static int write_kv_snapshot_entries(
+    int fd,
+    const char *cmd,
+    size_t cmd_len,
+    const kvs_rdb_snapshot_kv_entry_t *entries,
+    size_t count
+) {
+    size_t i;
 
-static void rbtree_rewrite_callback(rbtree_node *node, void *userdata) {
-    rbtree_rewrite_ctx_t *ctx = (rbtree_rewrite_ctx_t *)userdata;
-    if (!ctx || ctx->error) {
-        return;
+    if (!entries && count > 0) {
+        return -1;
     }
-
-    if (time(NULL) - ctx->start_time > 290) {
-        KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during rbtree processing");
-        ctx->error = 1;
-        return;
-    }
-
-    char *key_ptr = __atomic_load_n(&node->key, __ATOMIC_ACQUIRE);
-    char *value_ptr = __atomic_load_n(&node->value, __ATOMIC_ACQUIRE);
-    uint32_t key_len = __atomic_load_n(&node->key_len, __ATOMIC_ACQUIRE);
-    uint32_t value_len = __atomic_load_n(&node->value_len, __ATOMIC_ACQUIRE);
-    int64_t expire_at_ms = __atomic_load_n(&node->expire_at_ms, __ATOMIC_ACQUIRE);
-
-    if (key_ptr && value_ptr && !kv_is_expired(expire_at_ms, ctx->now_ms)) {
-        if (write_command_parts_len(ctx->fd, "RSET", 4, key_ptr, key_len, value_ptr, value_len) == -1) {
-            KVS_LOG_ERROR_ERRNO("aof", "failed to write rbtree data to temp file");
-            ctx->error = 1;
-            return;
+    for (i = 0; i < count; ++i) {
+        if (write_command_parts_len(
+                fd,
+                cmd,
+                cmd_len,
+                entries[i].key,
+                entries[i].key_len,
+                entries[i].value,
+                entries[i].value_len) == -1) {
+            return -1;
         }
-
-        if (write_ttl_command_if_needed(ctx->fd, key_ptr, expire_at_ms) == -1) {
-            KVS_LOG_ERROR_ERRNO("aof", "failed to write rbtree TTL command to temp file");
-            ctx->error = 1;
-            return;
+        if (write_ttl_command_if_needed(fd, entries[i].key, entries[i].expire_at_ms) == -1) {
+            return -1;
         }
-
-        ctx->total_commands++;
     }
+    return 0;
 }
 
-
-//写入数据结构到文件 子进程专用
-static int write_data_to_tempfile(int fd) {
+static int write_snapshot_to_tempfile(
+    int fd,
+    const kvs_aof_rewrite_snapshot_t *snapshot
+) {
     // 设置子进程信号处理
     struct sigaction sa;
     sa.sa_handler = child_signal_handler;
@@ -316,193 +290,28 @@ static int write_data_to_tempfile(int fd) {
     sigaction(SIGINT, &sa, NULL);
 
     int total_commands = 0;
-    time_t start_time = time(NULL);
-    int64_t now_ms = kv_now_ms();
 
     // 检查文件描述符有效性
-    if (fd < 0) {
+    if (fd < 0 || !snapshot) {
         KVS_LOG_ERROR("aof", "invalid file descriptor in child process");
         return -1;
     }
 
-#if ENABLE_ARRAY
-    // 创建数组的安全快照
-    
-    // 使用原子方式读取数组大小，避免在遍历过程中数组被修改
-    int array_size = __sync_fetch_and_add(&global_array.total, 0); // 原子读取
-    
-    // 分配临时空间存储键值对指针，避免在写入过程中数据结构变化
-    struct array_item_snapshot {
-        char *key;
-        char *value;
-        uint32_t key_len;
-        uint32_t value_len;
-        int64_t expire_at_ms;
-    } *array_snapshot = NULL;
-    
-    int valid_count = 0;
-    
-    // 第一步：收集所有有效的键值对指针
-    if (array_size > 0) {
-        array_snapshot = kvs_malloc(array_size * sizeof(struct array_item_snapshot));
-        if (array_snapshot) {
-            for (int i = 0; i < array_size; i++) {
-                if (global_array.table[i].key && global_array.table[i].value) {
-                    // 原子读取指针（避免编译器重排序）
-                    char *key_ptr = __atomic_load_n(&global_array.table[i].key, __ATOMIC_ACQUIRE);
-                    char *value_ptr = __atomic_load_n(&global_array.table[i].value, __ATOMIC_ACQUIRE);
-                    int64_t expire_at_ms = __atomic_load_n(&global_array.table[i].expire_at_ms, __ATOMIC_ACQUIRE);
-                    
-                    if (key_ptr && value_ptr && !kv_is_expired(expire_at_ms, now_ms)) {
-                        array_snapshot[valid_count].key = key_ptr;
-                        array_snapshot[valid_count].value = value_ptr;
-                        array_snapshot[valid_count].key_len = global_array.table[i].key_len;
-                        array_snapshot[valid_count].value_len = global_array.table[i].value_len;
-                        array_snapshot[valid_count].expire_at_ms = expire_at_ms;
-                        valid_count++;
-                    }
-                }
-                
-                // 超时检查
-                if (time(NULL) - start_time > 290) {
-                    KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during array snapshot");
-                    break;
-                }
-            }
-        }
+    if (write_kv_snapshot_entries(fd, "SET", 3, snapshot->array_entries, snapshot->array_count) == -1 ||
+        write_kv_snapshot_entries(fd, "RSET", 4, snapshot->rbtree_entries, snapshot->rbtree_count) == -1 ||
+        write_kv_snapshot_entries(fd, "HSET", 4, snapshot->hash_entries, snapshot->hash_count) == -1 ||
+        write_kv_snapshot_entries(fd, "SSET", 4, snapshot->skiptable_entries, snapshot->skiptable_count) == -1) {
+        KVS_LOG_ERROR_ERRNO("aof", "failed to write KV snapshot to temp file");
+        return -1;
     }
-    
-    // 第二步：写入收集到的数据
-    for (int i = 0; i < valid_count; i++) {
-        if (time(NULL) - start_time > 290) {
-            KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during array write");
-            break;
-        }
 
-        if(write_command_parts_len(fd, "SET", 3,
-                                    array_snapshot[i].key, array_snapshot[i].key_len,
-                                    array_snapshot[i].value, array_snapshot[i].value_len) == -1){
-            KVS_LOG_ERROR_ERRNO("aof", "failed to write array data to temp file");
-            if(array_snapshot) kvs_free(array_snapshot);
-            return -1;
-        }
-
-        if (write_ttl_command_if_needed(fd, array_snapshot[i].key, array_snapshot[i].expire_at_ms) == -1) {
-            KVS_LOG_ERROR_ERRNO("aof", "failed to write array TTL command to temp file");
-            if(array_snapshot) kvs_free(array_snapshot);
-            return -1;
-        }
-
-        total_commands++;
-    }
-    
-    if (array_snapshot) kvs_free(array_snapshot);
-    //printf("Child process: Wrote %d array commands\n", valid_count);
-#endif
-
-#if ENABLE_RBTREE 
-    if (global_rbtree.root != global_rbtree.nil) {
-        rbtree_rewrite_ctx_t rbtree_ctx = {
-            .fd = fd,
-            .total_commands = 0,
-            .start_time = start_time,
-            .now_ms = now_ms,
-            .error = 0,
-        };
-
-        rbtree_traversal_with_callback(&global_rbtree, global_rbtree.root, rbtree_rewrite_callback, &rbtree_ctx);
-        if (rbtree_ctx.error) {
-            return -1;
-        }
-
-        total_commands += rbtree_ctx.total_commands;
-    }
-#endif
-
-#if ENABLE_HASH
-    //printf("Child process: Processing hash table snapshot...\n");
-    int hash_commands = 0;
-    for (int i = 0; i < global_hash.max_slots; i++) {
-        if (time(NULL) - start_time > 290) {
-            KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during hash processing");
-            break;
-        }
-
-        hashnode_t *slot = &global_hash.nodes[i];
-        if (slot->used != 1) {
-            continue; // 只处理有效槽
-        }
-
-        // 直接使用 slot 中的指针/数组，避免拷贝到栈上的固定大小缓冲区
-        // 这样可以支持任意长度的 Key/Value (前提是 slot->key/value 是合法的 C 字符串)
-        char *key_ptr = slot->key;
-        char *value_ptr = slot->value;
-
-        if (key_ptr && value_ptr && key_ptr[0] != '\0' && value_ptr[0] != '\0' && !kv_is_expired(slot->expire_at_ms, now_ms)) {
-            if (write_command_parts(fd, "HSET", key_ptr, value_ptr) == -1) {
-                KVS_LOG_ERROR_ERRNO("aof", "failed to write hash data to temp file");
-                return -1;
-            }
-            if (write_ttl_command_if_needed(fd, key_ptr, slot->expire_at_ms) == -1) {
-                KVS_LOG_ERROR_ERRNO("aof", "failed to write hash TTL command to temp file");
-                return -1;
-            }
-            hash_commands++;
-            total_commands++;
-        }
-    }
-#endif
-    //printf("Child process: Wrote %d hash commands\n", hash_commands);
-
-
-#if ENABLE_SKIPTABLE
-    //printf("Child process: Processing skiplist snapshot...\n");
-    int skiplist_commands = 0;
-    
-    if (global_skiptable.header) {
-        // 原子读取头节点的第一层指针
-        Node *current = __atomic_load_n(&global_skiptable.header->forward[0], __ATOMIC_ACQUIRE);
-        
-        while (current) {
-            // 超时检查
-            if (time(NULL) - start_time > 290) {
-                KVS_LOG_WARN("aof", "Child process: rewrite timeout approaching during skiplist processing");
-                break;
-            }
-            
-            // 直接访问节点的键值
-            if (current->key && current->value && current->key[0] != '\0' && current->value[0] != '\0' && !kv_is_expired(current->expire_at_ms, now_ms)) {
-                if (write_command_parts_len(fd, "SSET", 4,
-                                            current->key, current->key_len,
-                                            current->value, current->value_len) == -1) {
-                    KVS_LOG_ERROR_ERRNO("aof", "failed to write skiplist data to temp file");
-                    return -1;
-                }
-                if (current->expire_at_ms >= 0) {
-                    char expire_buf[32];
-                    snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)current->expire_at_ms);
-                    if (write_command_parts_len(fd, "PEXPIREAT", 9,
-                                                current->key, current->key_len,
-                                                expire_buf, strlen(expire_buf)) == -1) {
-                        KVS_LOG_ERROR_ERRNO("aof", "failed to write skiplist TTL command to temp file");
-                        return -1;
-                    }
-                }
-                skiplist_commands++;
-                total_commands++;
-            }
-            
-            // 原子读取下一个节点
-            current = __atomic_load_n(&current->forward[0], __ATOMIC_ACQUIRE);
-        }
-    }
-    //printf("Child process: Wrote %d skiplist commands\n", skiplist_commands);
-#endif
-
-    //printf("Child process: Completed writing %d total commands from data snapshot\n", total_commands);
+    total_commands += (int)(snapshot->array_count +
+                            snapshot->rbtree_count +
+                            snapshot->hash_count +
+                            snapshot->skiptable_count);
 
     {
-        int vector_commands = write_vector_data_to_tempfile(fd);
+        int vector_commands = write_vector_snapshot_to_tempfile(fd, snapshot);
         if (vector_commands < 0) {
             return -1;
         }
@@ -686,21 +495,13 @@ static int is_proactor_mode(void) {
 #endif
 }
 
-static int aof_rewrite_acquire_store_read_lock(void) {
-    int lock_ret = pthread_rwlock_rdlock(&g_kv_data_rwlock);
-    if (lock_ret != 0) {
-        KVS_LOG_ERROR("aof", "failed to acquire global store read lock for AOF rewrite: %d", lock_ret);
-        return -1;
-    }
-    return 0;
-}
-
-static void aof_rewrite_release_store_read_lock(void) {
-    pthread_rwlock_unlock(&g_kv_data_rwlock);
-}
-
 //线程方式的 AOF 重写（用于 Proactor 模式）
+typedef struct aof_rewrite_thread_ctx_s {
+    kvs_aof_rewrite_snapshot_t *snapshot;
+} aof_rewrite_thread_ctx_t;
+
 static void* aof_rewrite_thread(void *arg) {
+    aof_rewrite_thread_ctx_t *ctx = (aof_rewrite_thread_ctx_t *)arg;
     // printf("AOF rewrite thread started (TID: %ld)\n", (long)pthread_self());
     
     // 创建临时文件
@@ -720,14 +521,8 @@ static void* aof_rewrite_thread(void *arg) {
     }
 #endif
 
-    /*
-     * 阶段 0.5 临时一致性修复：AOF rewrite 会遍历普通 KV 和
-     * vector live store。aof_state.data_rwlock 不是 global store 锁，
-     * 因此这里用 g_kv_data_rwlock 读锁覆盖实际遍历和写临时文件。
-     * rewrite 期间会阻塞写命令；长期路线 C 会改为 executor 生成
-     * snapshot，AOF rewrite IO 线程只负责锁外写 snapshot。
-     */
-    if (aof_rewrite_acquire_store_read_lock() != 0) {
+    // 写入 snapshot 到临时文件
+    if (!ctx || !ctx->snapshot || write_snapshot_to_tempfile(fd, ctx->snapshot) == -1) {
 #if (NETWORK_SELECT == NETWORK_PROACTOR)
         pthread_rwlock_unlock(&aof_state.data_rwlock);
 #endif
@@ -735,19 +530,6 @@ static void* aof_rewrite_thread(void *arg) {
         aof_state.rewrite_in_progress = 0;
         pthread_exit(NULL);
     }
-
-    // 写入数据到临时文件
-    if (write_data_to_tempfile(fd) == -1) {
-        aof_rewrite_release_store_read_lock();
-#if (NETWORK_SELECT == NETWORK_PROACTOR)
-        pthread_rwlock_unlock(&aof_state.data_rwlock);
-#endif
-        close(fd);
-        aof_state.rewrite_in_progress = 0;
-        pthread_exit(NULL);
-    }
-
-    aof_rewrite_release_store_read_lock();
 
 #if (NETWORK_SELECT == NETWORK_PROACTOR)
     // 遍历完成后释放读锁
@@ -788,20 +570,32 @@ void aof_rewrite_background(void){
     aof_state.rewrite_buf_len = 0;
     pthread_mutex_unlock(&aof_state.rewrite_mutex);
 
-    // 设置重写进行中标志
-    aof_state.rewrite_in_progress = 1;
+    kvs_aof_rewrite_snapshot_t *snapshot = NULL;
+
+    if (kvs_command_executor_build_aof_rewrite_snapshot(&snapshot) != 0 || !snapshot) {
+        KVS_LOG_ERROR("aof", "failed to build AOF rewrite snapshot via executor");
+        return;
+    }
 
     // Proactor 模式使用线程而不是 fork，避免 io_uring 冲突
     if (is_proactor_mode()) {
+        aof_rewrite_thread_ctx_t thread_ctx;
         // printf("Using thread-based AOF rewrite for Proactor mode\n");
 
+        memset(&thread_ctx, 0, sizeof(thread_ctx));
+        thread_ctx.snapshot = snapshot;
+
+        // 设置重写进行中标志
+        aof_state.rewrite_in_progress = 1;
         // 允许写命令进入重写缓冲区
         aof_state.cow_snapshot_ready = 1;
         
         pthread_t rewrite_tid;
-        if (pthread_create(&rewrite_tid, NULL, aof_rewrite_thread, NULL) != 0) {
+        if (pthread_create(&rewrite_tid, NULL, aof_rewrite_thread, &thread_ctx) != 0) {
             KVS_LOG_ERROR_ERRNO("aof", "failed to create rewrite thread");
             aof_state.rewrite_in_progress = 0;
+            aof_state.cow_snapshot_ready = 0;
+            kvs_aof_rewrite_snapshot_destroy(snapshot);
             return;
         }
         
@@ -810,14 +604,18 @@ void aof_rewrite_background(void){
         if (pthread_join(rewrite_tid, &thread_result) != 0) {
             KVS_LOG_ERROR_ERRNO("aof", "failed to join rewrite thread");
             aof_state.rewrite_in_progress = 0;
+            aof_state.cow_snapshot_ready = 0;
+            kvs_aof_rewrite_snapshot_destroy(snapshot);
             return;
         }
+        kvs_aof_rewrite_snapshot_destroy(snapshot);
         
         // 追加重写期间的新命令
         int temp_fd = open(aof_state.temp_filename, O_WRONLY | O_APPEND);
         if (temp_fd == -1) {
             KVS_LOG_ERROR_ERRNO("aof", "failed to open temp file for appending: %s", aof_state.temp_filename);
             aof_state.rewrite_in_progress = 0;
+            aof_state.cow_snapshot_ready = 0;
             return;
         }
 
@@ -855,24 +653,13 @@ void aof_rewrite_background(void){
     // Reactor/NtyCo 模式使用 fork + COW 机制
     // 获取 COW 快照保护
     if (acquire_cow_snapshot() != 0) {
+        kvs_aof_rewrite_snapshot_destroy(snapshot);
         aof_state.rewrite_in_progress = 0;
         KVS_LOG_ERROR("aof", "failed to acquire COW snapshot");
         return;
     }
 
-    /*
-     * 阶段 0.5 临时一致性修复：fork 前持全局读锁，保证子进程
-     * 获得的 COW 视图不会和普通写命令、TTL 删除、slave apply 或
-     * vector 写入并发修改同一 live store。该锁与 aof_state.data_rwlock
-     * 顺序固定为先 aof_state.data_rwlock，后 g_kv_data_rwlock；父进程
-     * fork 后立即释放。长期路线 C 会改为 executor snapshot_task。
-     */
-    if (aof_rewrite_acquire_store_read_lock() != 0) {
-        release_cow_snapshot();
-        aof_state.rewrite_in_progress = 0;
-        KVS_LOG_ERROR("aof", "failed to acquire global store snapshot lock");
-        return;
-    }
+    aof_state.rewrite_in_progress = 1;
 
     pid_t childpid = fork();
     if(childpid == 0){
@@ -880,7 +667,6 @@ void aof_rewrite_background(void){
         // printf("AOF rewrite child process started (PID: %d)\n", getpid());
 
         // 解除 COW 保护（子进程有自己的锁副本）
-        pthread_rwlock_unlock(&g_kv_data_rwlock);
         pthread_rwlock_unlock(&aof_state.data_rwlock);
 
         //子进程
@@ -890,8 +676,9 @@ void aof_rewrite_background(void){
         }
 
         // 写入数据到临时文件
-        if (write_data_to_tempfile(fd) == -1) {
+        if (write_snapshot_to_tempfile(fd, snapshot) == -1) {
             close(fd);
+            kvs_aof_rewrite_snapshot_destroy(snapshot);
             _exit(1);
         }
 
@@ -903,11 +690,13 @@ void aof_rewrite_background(void){
         }
 
         close(fd);
+        kvs_aof_rewrite_snapshot_destroy(snapshot);
         // printf("AOF rewrite child process completed\n");
         _exit(0);
     }else if(childpid > 0){
+        kvs_aof_rewrite_snapshot_destroy(snapshot);
+        snapshot = NULL;
         // 父进程 - 释放快照保护，允许继续处理写操作
-        aof_rewrite_release_store_read_lock();
         release_cow_snapshot();
 
         //父进程
@@ -975,7 +764,7 @@ void aof_rewrite_background(void){
 
     }else{
         //错误
-        aof_rewrite_release_store_read_lock();
+        kvs_aof_rewrite_snapshot_destroy(snapshot);
         release_cow_snapshot();
         aof_state.rewrite_in_progress = 0;
         KVS_LOG_ERROR_ERRNO("aof", "fork failed for AOF rewrite");
@@ -1008,123 +797,17 @@ void aof_stop_rewrite(void) {
 
 //重写缓冲区写入
 static int aof_rewrite_buffer_write_unlocked(int fd){
-    int total_commands = 0;
+    kvs_aof_rewrite_snapshot_t *snapshot = NULL;
+    int ret;
 
-    #if ENABLE_ARRAY
-        for (int i = 0; i < global_array.total; i++) {
-            if (global_array.table[i].key && global_array.table[i].value) {
-                char cmd[2048];
-                int len = snprintf(cmd, sizeof(cmd), "*3\r\n$3\r\nSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                                strlen(global_array.table[i].key), global_array.table[i].key,
-                                strlen(global_array.table[i].value), global_array.table[i].value);
-                
-                if (write(fd, cmd, len) != len) {
-                    KVS_LOG_ERROR_ERRNO("aof", "failed to write to AOF temp file");
-                    return -1;
-                }
-                total_commands++;
-            }
-        }
-    #endif
-
-    #if ENABLE_RBTREE
-        //中序遍历保存
-        void write_rbtree_node(rbtree_node *node, void *data){
-            int fd = *(int *)data;
-            char cmd[2048];
-            if (node == global_rbtree.nil) return;
-            write_rbtree_node(node->left, &fd);
-            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nRSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                            strlen(node->key), node->key,
-                            strlen((char*)node->value), (char*)node->value);
-            if (write(fd, cmd, len) != len) {
-                KVS_LOG_ERROR_ERRNO("aof", "failed to write to AOF temp file");
-                exit(1); // 子进程中直接退出
-            }
-            write_rbtree_node(node->right, &fd);
-        }
-        write_rbtree_node(global_rbtree.root, &fd);
-    #endif
-
-    #if ENABLE_HASH
-        for (int i = 0; i < global_hash.max_slots; i++) {
-            hashnode_t *slot = &global_hash.nodes[i];
-            if (slot->used != 1) {
-                continue;
-            }
-
-            char cmd[2048];
-            int len = snprintf(cmd, sizeof(cmd),
-                               "*3\r\n$4\r\nHSET\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
-                               (size_t)slot->key_len, slot->key,
-                               (size_t)slot->value_len, slot->value);
-
-            if (write(fd, cmd, len) != len) {
-                KVS_LOG_ERROR_ERRNO("aof", "failed to write to AOF temp file");
-                return -1;
-            }
-            total_commands++;
-        }
-    #endif
-
-    #if ENABLE_SKIPTABLE
-        Node *current = global_skiptable.header->forward[0];
-        while (current) {
-            char cmd[2048];
-            int len = snprintf(cmd, sizeof(cmd), "*3\r\n$4\r\nSSET\r\n$%u\r\n", current->key_len);
-            if (len < 0 || len >= (int)sizeof(cmd)) {
-                KVS_LOG_ERROR("aof", "failed to write to AOF temp file");
-                return -1;
-            }
-            int off = len;
-            if (off + (int)current->key_len + 4 >= (int)sizeof(cmd)) {
-                KVS_LOG_ERROR("aof", "failed to write to AOF temp file");
-                return -1;
-            }
-            memcpy(cmd + off, current->key, current->key_len);
-            off += (int)current->key_len;
-            memcpy(cmd + off, "\r\n$", 3);
-            off += 3;
-            len = snprintf(cmd + off, sizeof(cmd) - (size_t)off, "%u\r\n", current->value_len);
-            if (len < 0 || len >= (int)(sizeof(cmd) - (size_t)off)) {
-                KVS_LOG_ERROR("aof", "failed to write to AOF temp file");
-                return -1;
-            }
-            off += len;
-            if (off + (int)current->value_len + 2 >= (int)sizeof(cmd)) {
-                KVS_LOG_ERROR("aof", "failed to write to AOF temp file");
-                return -1;
-            }
-            memcpy(cmd + off, current->value, current->value_len);
-            off += (int)current->value_len;
-            memcpy(cmd + off, "\r\n", 2);
-            off += 2;
-            if (write(fd, cmd, off) != off) {
-                KVS_LOG_ERROR_ERRNO("aof", "failed to write to AOF temp file");
-                return -1;
-            }
-            total_commands++;
-            current = current->forward[0];
-        }
-    #endif
-
-    return 0;
+    if (kvs_command_executor_build_aof_rewrite_snapshot(&snapshot) != 0 || !snapshot) {
+        return -1;
+    }
+    ret = write_snapshot_to_tempfile(fd, snapshot);
+    kvs_aof_rewrite_snapshot_destroy(snapshot);
+    return ret;
 }
 
 int aof_rewrite_buffer_write(int fd){
-    int ret;
-
-    /*
-     * Legacy rewrite helper kept for the existing public symbol. It also
-     * traverses live KV structures, so protect it with the same stage 0.5
-     * global read-lock boundary as the main rewrite path.
-     */
-    if (aof_rewrite_acquire_store_read_lock() != 0) {
-        return -1;
-    }
-
-    ret = aof_rewrite_buffer_write_unlocked(fd);
-
-    aof_rewrite_release_store_read_lock();
-    return ret;
+    return aof_rewrite_buffer_write_unlocked(fd);
 }

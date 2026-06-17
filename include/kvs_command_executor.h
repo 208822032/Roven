@@ -100,6 +100,29 @@ typedef struct kvs_rdb_snapshot_s {
 	kvs_rdb_snapshot_vector_section_t vector_section;
 } kvs_rdb_snapshot_t;
 
+typedef struct kvs_aof_rewrite_snapshot_vector_entry_s {
+	char *question;
+	size_t question_len;
+	char *answer;
+	size_t answer_len;
+	char *scope;
+	size_t scope_len;
+} kvs_aof_rewrite_snapshot_vector_entry_t;
+
+typedef struct kvs_aof_rewrite_snapshot_s {
+	int64_t captured_at_ms;
+	kvs_rdb_snapshot_kv_entry_t *array_entries;
+	size_t array_count;
+	kvs_rdb_snapshot_kv_entry_t *rbtree_entries;
+	size_t rbtree_count;
+	kvs_rdb_snapshot_kv_entry_t *hash_entries;
+	size_t hash_count;
+	kvs_rdb_snapshot_kv_entry_t *skiptable_entries;
+	size_t skiptable_count;
+	kvs_aof_rewrite_snapshot_vector_entry_t *vector_entries;
+	size_t vector_count;
+} kvs_aof_rewrite_snapshot_t;
+
 typedef struct kvs_command_executor_stats_s {
 	uint64_t submitted_tasks;
 	uint64_t completed_tasks;
@@ -212,6 +235,7 @@ int kvs_command_executor_submit_replicated(ms_op_t op,
                                            int64_t expire_at_ms);
 int kvs_command_executor_build_full_sync_snapshot(kvs_full_sync_snapshot_t **out);
 int kvs_command_executor_build_rdb_snapshot(kvs_rdb_snapshot_t **out);
+int kvs_command_executor_build_aof_rewrite_snapshot(kvs_aof_rewrite_snapshot_t **out);
 int kvs_command_executor_poll_response(kvs_response_task_t **resp);
 int kvs_command_executor_poll_response_for(int owner_type,
                                            int owner_poller_id,
@@ -224,5 +248,6 @@ void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out);
 void kvs_command_executor_record_response_drop(int reason);
 void kvs_full_sync_snapshot_destroy(kvs_full_sync_snapshot_t *snapshot);
 void kvs_rdb_snapshot_destroy(kvs_rdb_snapshot_t *snapshot);
+void kvs_aof_rewrite_snapshot_destroy(kvs_aof_rewrite_snapshot_t *snapshot);
 
 #endif /* KVS_COMMAND_EXECUTOR_H */
