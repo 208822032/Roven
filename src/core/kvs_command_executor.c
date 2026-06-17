@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef struct kvs_command_executor_s {
@@ -61,6 +62,30 @@ static void executor_stats_update_max(uint64_t *field, uint64_t value) {
 	}
 }
 
+static uint64_t executor_stats_load(const uint64_t *field) {
+	return __atomic_load_n(field, __ATOMIC_RELAXED);
+}
+
+static uint64_t executor_now_us(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return 0;
+	}
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+static void executor_record_timing(
+	uint64_t *count,
+	uint64_t *total_us,
+	uint64_t *max_us,
+	uint64_t elapsed_us
+) {
+	executor_stats_add(count, 1);
+	executor_stats_add(total_us, elapsed_us);
+	executor_stats_update_max(max_us, elapsed_us);
+}
+
 static void kvs_command_executor_destroy_response(kvs_response_task_t *resp) {
 	if (!resp) {
 		return;
@@ -99,17 +124,69 @@ static void kvs_command_executor_destroy_task(kvs_command_task_t *task) {
 
 static void kvs_command_executor_log_embedding_worker_stats(void) {
 	kvs_embedding_worker_pool_stats_t stats;
-	uint64_t avg_us = 0;
+	kvs_command_executor_stats_t exec_stats;
+	uint64_t prepare_avg_us = 0;
+	uint64_t prepare_wait_avg_us = 0;
+	uint64_t prepared_submit_avg_us = 0;
+	uint64_t encode_avg_us = 0;
+	uint64_t runtime_encode_avg_us = 0;
+	uint64_t tokenizer_avg_us = 0;
+	uint64_t ort_run_avg_us = 0;
+	uint64_t prepared_wait_avg_us = 0;
+	uint64_t prepared_task_execute_avg_us = 0;
+	uint64_t execute_sync_avg_us = 0;
+	uint64_t commit_or_search_avg_us = 0;
+	uint64_t finalize_response_avg_us = 0;
 
 	memset(&stats, 0, sizeof(stats));
+	memset(&exec_stats, 0, sizeof(exec_stats));
 	kvs_embedding_worker_pool_get_stats(&stats);
+	kvs_command_executor_get_stats(&exec_stats);
 	if (stats.prepare_count > 0) {
-		avg_us = stats.prepare_total_us / stats.prepare_count;
+		prepare_avg_us = stats.prepare_total_us / stats.prepare_count;
+		prepare_wait_avg_us = stats.prepare_queue_wait_total_us / stats.prepare_count;
+	}
+	if (stats.prepared_queue_submit_count > 0) {
+		prepared_submit_avg_us =
+			stats.prepared_queue_submit_total_us / stats.prepared_queue_submit_count;
+	}
+	if (stats.encode_thread_context_count + stats.encode_global_mutex_count > 0) {
+		encode_avg_us = stats.encode_total_us /
+			(stats.encode_thread_context_count + stats.encode_global_mutex_count);
+	}
+	if (stats.runtime_encode_count > 0) {
+		runtime_encode_avg_us = stats.embedding_encode_total_us /
+			stats.runtime_encode_count;
+		tokenizer_avg_us = stats.tokenizer_total_us / stats.runtime_encode_count;
+		ort_run_avg_us = stats.ort_run_total_us / stats.runtime_encode_count;
+	}
+	if (exec_stats.prepared_wait_count > 0) {
+		prepared_wait_avg_us = exec_stats.prepared_wait_total_us /
+			exec_stats.prepared_wait_count;
+	}
+	if (exec_stats.prepared_task_execute_count > 0) {
+		prepared_task_execute_avg_us =
+			exec_stats.prepared_task_execute_total_us /
+			exec_stats.prepared_task_execute_count;
+	}
+	if (exec_stats.execute_sync_count > 0) {
+		execute_sync_avg_us =
+			exec_stats.execute_sync_total_us / exec_stats.execute_sync_count;
+	}
+	if (exec_stats.commit_or_search_count > 0) {
+		commit_or_search_avg_us =
+			exec_stats.commit_or_search_total_us /
+			exec_stats.commit_or_search_count;
+	}
+	if (exec_stats.finalize_response_count > 0) {
+		finalize_response_avg_us =
+			exec_stats.finalize_response_total_us /
+			exec_stats.finalize_response_count;
 	}
 
 	KVS_LOG_INFO(
 		"core",
-		"embedding worker pool stats: submitted=%llu completed=%llu failed=%llu queue_depth=%llu queue_max=%llu worker_threads=%llu submit_failed=%llu dispatch_failed=%llu prepare_count=%llu prepare_avg_us=%llu prepare_max_us=%llu per_thread_enabled=%llu contexts_created=%llu contexts_destroyed=%llu context_create_failed=%llu context_fallback=%llu encode_global_mutex=%llu encode_thread_context=%llu encode_current_inflight=%llu encode_max_inflight=%llu encode_avg_us=%llu encode_max_us=%llu",
+		"embedding worker pool stats: submitted=%llu completed=%llu failed=%llu queue_depth=%llu queue_max=%llu worker_threads=%llu submit_failed=%llu dispatch_failed=%llu prepare_count=%llu prepare_avg_us=%llu prepare_max_us=%llu prepare_queue_wait_avg_us=%llu prepare_queue_wait_max_us=%llu prepared_queue_submit_avg_us=%llu prepared_queue_submit_max_us=%llu per_thread_enabled=%llu contexts_created=%llu contexts_destroyed=%llu context_create_failed=%llu context_fallback=%llu encode_global_mutex=%llu encode_thread_context=%llu encode_current_inflight=%llu encode_max_inflight=%llu encode_avg_us=%llu encode_max_us=%llu runtime_encode_count=%llu embedding_encode_avg_us=%llu embedding_encode_max_us=%llu tokenizer_avg_us=%llu tokenizer_max_us=%llu ort_run_avg_us=%llu ort_run_max_us=%llu shared_ort_env_enabled=%llu shared_ort_env_created=%llu shared_ort_env_destroyed=%llu shared_ort_env_refcount_current=%llu shared_ort_env_refcount_max=%llu ort_session_created=%llu ort_session_destroyed=%llu resource_product=%llu worker_threads_effective=%llu embedding_num_threads_effective=%llu",
 		(unsigned long long)stats.submitted_prepare_tasks,
 		(unsigned long long)stats.completed_prepare_tasks,
 		(unsigned long long)stats.failed_prepare_tasks,
@@ -119,8 +196,12 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		(unsigned long long)stats.submit_failed,
 		(unsigned long long)stats.prepare_dispatch_failed,
 		(unsigned long long)stats.prepare_count,
-		(unsigned long long)avg_us,
+		(unsigned long long)prepare_avg_us,
 		(unsigned long long)stats.prepare_max_us,
+		(unsigned long long)prepare_wait_avg_us,
+		(unsigned long long)stats.prepare_queue_wait_max_us,
+		(unsigned long long)prepared_submit_avg_us,
+		(unsigned long long)stats.prepared_queue_submit_max_us,
 		(unsigned long long)stats.per_thread_context_enabled,
 		(unsigned long long)stats.per_thread_context_created,
 		(unsigned long long)stats.per_thread_context_destroyed,
@@ -130,10 +211,46 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		(unsigned long long)stats.encode_thread_context_count,
 		(unsigned long long)stats.encode_current_inflight,
 		(unsigned long long)stats.encode_max_inflight,
-		(unsigned long long)(stats.encode_thread_context_count + stats.encode_global_mutex_count > 0 ?
-			stats.encode_total_us / (stats.encode_thread_context_count + stats.encode_global_mutex_count) :
-			0),
-		(unsigned long long)stats.encode_max_us
+		(unsigned long long)encode_avg_us,
+		(unsigned long long)stats.encode_max_us,
+		(unsigned long long)stats.runtime_encode_count,
+		(unsigned long long)runtime_encode_avg_us,
+		(unsigned long long)stats.embedding_encode_max_us,
+		(unsigned long long)tokenizer_avg_us,
+		(unsigned long long)stats.tokenizer_max_us,
+		(unsigned long long)ort_run_avg_us,
+		(unsigned long long)stats.ort_run_max_us,
+		(unsigned long long)stats.shared_ort_env_enabled,
+		(unsigned long long)stats.shared_ort_env_created,
+		(unsigned long long)stats.shared_ort_env_destroyed,
+		(unsigned long long)stats.shared_ort_env_refcount_current,
+		(unsigned long long)stats.shared_ort_env_refcount_max,
+		(unsigned long long)stats.ort_session_created,
+		(unsigned long long)stats.ort_session_destroyed,
+		(unsigned long long)stats.embedding_runtime_resource_product,
+		(unsigned long long)stats.embedding_worker_threads_effective,
+		(unsigned long long)stats.embedding_num_threads_effective
+	);
+	KVS_LOG_INFO(
+		"core",
+		"embedding executor bottleneck stats: prepared_queue_depth=%llu prepared_queue_max=%llu prepared_wait_count=%llu prepared_wait_avg_us=%llu prepared_wait_max_us=%llu prepared_task_execute_count=%llu prepared_task_execute_avg_us=%llu prepared_task_execute_max_us=%llu execute_sync_count=%llu execute_sync_avg_us=%llu execute_sync_max_us=%llu commit_or_search_count=%llu commit_or_search_avg_us=%llu commit_or_search_max_us=%llu finalize_response_count=%llu finalize_response_avg_us=%llu finalize_response_max_us=%llu",
+		(unsigned long long)exec_stats.prepared_queue_depth,
+		(unsigned long long)exec_stats.prepared_queue_max_depth,
+		(unsigned long long)exec_stats.prepared_wait_count,
+		(unsigned long long)prepared_wait_avg_us,
+		(unsigned long long)exec_stats.prepared_wait_max_us,
+		(unsigned long long)exec_stats.prepared_task_execute_count,
+		(unsigned long long)prepared_task_execute_avg_us,
+		(unsigned long long)exec_stats.prepared_task_execute_max_us,
+		(unsigned long long)exec_stats.execute_sync_count,
+		(unsigned long long)execute_sync_avg_us,
+		(unsigned long long)exec_stats.execute_sync_max_us,
+		(unsigned long long)exec_stats.commit_or_search_count,
+		(unsigned long long)commit_or_search_avg_us,
+		(unsigned long long)exec_stats.commit_or_search_max_us,
+		(unsigned long long)exec_stats.finalize_response_count,
+		(unsigned long long)finalize_response_avg_us,
+		(unsigned long long)exec_stats.finalize_response_max_us
 	);
 }
 
@@ -220,9 +337,17 @@ static int kvs_command_executor_should_async_prepare(kvs_command_task_t *task) {
 static void kvs_command_executor_execute(kvs_command_task_t *task) {
 	kvs_response_task_t *resp;
 	int ret;
+	int prepared_task;
+	uint64_t total_start_us = 0;
+	uint64_t start_us = 0;
+	uint64_t end_us = 0;
 
 	if (!task) {
 		return;
+	}
+	prepared_task = task->prepare_completed;
+	if (prepared_task) {
+		total_start_us = executor_now_us();
 	}
 	resp = task->response_task;
 	if (!resp) {
@@ -249,8 +374,24 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 	} else if (task->prepare_completed) {
 		ret = task->prepare_status;
 		if (ret == 0) {
+			start_us = executor_now_us();
 			ret = kvs_command_task_execute_sync(task);
+			end_us = executor_now_us();
+			executor_record_timing(
+				&g_executor.stats.execute_sync_count,
+				&g_executor.stats.execute_sync_total_us,
+				&g_executor.stats.execute_sync_max_us,
+				end_us >= start_us ? end_us - start_us : 0
+			);
+			start_us = executor_now_us();
 			kvs_command_task_post_commit(task, ret);
+			end_us = executor_now_us();
+			executor_record_timing(
+				&g_executor.stats.commit_or_search_count,
+				&g_executor.stats.commit_or_search_total_us,
+				&g_executor.stats.commit_or_search_max_us,
+				end_us >= start_us ? end_us - start_us : 0
+			);
 		}
 	} else {
 		ret = kvs_command_task_prepare(task);
@@ -260,12 +401,31 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 		}
 	}
 
+	start_us = prepared_task ? executor_now_us() : 0;
 	kvs_response_task_finalize(resp, ret);
+	if (prepared_task) {
+		end_us = executor_now_us();
+		executor_record_timing(
+			&g_executor.stats.finalize_response_count,
+			&g_executor.stats.finalize_response_total_us,
+			&g_executor.stats.finalize_response_max_us,
+			end_us >= start_us ? end_us - start_us : 0
+		);
+	}
 	task->response_task = NULL;
 	kvs_command_task_destroy(task);
 	kvs_free(task);
 	executor_stats_add(&g_executor.stats.completed_tasks, 1);
 	kvs_command_executor_push_response(resp);
+	if (prepared_task) {
+		end_us = executor_now_us();
+		executor_record_timing(
+			&g_executor.stats.prepared_task_execute_count,
+			&g_executor.stats.prepared_task_execute_total_us,
+			&g_executor.stats.prepared_task_execute_max_us,
+			end_us >= total_start_us ? end_us - total_start_us : 0
+		);
+	}
 }
 
 static int kvs_command_executor_dispatch_or_execute(kvs_command_task_t *task) {
@@ -303,6 +463,16 @@ static void *kvs_command_executor_thread_main(void *arg) {
 		task = kvs_command_executor_pop_prepared_locked();
 		if (!task) {
 			task = kvs_command_executor_pop_command_locked();
+		} else if (task->prepared_enqueue_us > 0) {
+			uint64_t now_us = executor_now_us();
+			executor_record_timing(
+				&g_executor.stats.prepared_wait_count,
+				&g_executor.stats.prepared_wait_total_us,
+				&g_executor.stats.prepared_wait_max_us,
+				now_us >= task->prepared_enqueue_us ?
+					now_us - task->prepared_enqueue_us :
+					0
+			);
 		}
 		pthread_mutex_unlock(&g_executor.cmd_mu);
 
@@ -426,6 +596,7 @@ int kvs_command_executor_submit_prepared(kvs_command_task_t *task) {
 		executor_stats_add(&g_executor.stats.submit_failed, 1);
 		return -1;
 	}
+	task->prepared_enqueue_us = executor_now_us();
 	if (g_executor.prepared_tail) {
 		g_executor.prepared_tail->queue_next = task;
 	} else {
@@ -572,6 +743,21 @@ void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out) {
 	out->embedding_prepare_dispatched = __atomic_load_n(&g_executor.stats.embedding_prepare_dispatched, __ATOMIC_RELAXED);
 	out->embedding_prepare_inline = __atomic_load_n(&g_executor.stats.embedding_prepare_inline, __ATOMIC_RELAXED);
 	out->embedding_prepare_submit_failed = __atomic_load_n(&g_executor.stats.embedding_prepare_submit_failed, __ATOMIC_RELAXED);
+	out->prepared_wait_count = executor_stats_load(&g_executor.stats.prepared_wait_count);
+	out->prepared_wait_total_us = executor_stats_load(&g_executor.stats.prepared_wait_total_us);
+	out->prepared_wait_max_us = executor_stats_load(&g_executor.stats.prepared_wait_max_us);
+	out->prepared_task_execute_count = executor_stats_load(&g_executor.stats.prepared_task_execute_count);
+	out->prepared_task_execute_total_us = executor_stats_load(&g_executor.stats.prepared_task_execute_total_us);
+	out->prepared_task_execute_max_us = executor_stats_load(&g_executor.stats.prepared_task_execute_max_us);
+	out->execute_sync_count = executor_stats_load(&g_executor.stats.execute_sync_count);
+	out->execute_sync_total_us = executor_stats_load(&g_executor.stats.execute_sync_total_us);
+	out->execute_sync_max_us = executor_stats_load(&g_executor.stats.execute_sync_max_us);
+	out->commit_or_search_count = executor_stats_load(&g_executor.stats.commit_or_search_count);
+	out->commit_or_search_total_us = executor_stats_load(&g_executor.stats.commit_or_search_total_us);
+	out->commit_or_search_max_us = executor_stats_load(&g_executor.stats.commit_or_search_max_us);
+	out->finalize_response_count = executor_stats_load(&g_executor.stats.finalize_response_count);
+	out->finalize_response_total_us = executor_stats_load(&g_executor.stats.finalize_response_total_us);
+	out->finalize_response_max_us = executor_stats_load(&g_executor.stats.finalize_response_max_us);
 }
 
 void kvs_command_executor_record_response_drop(int reason) {

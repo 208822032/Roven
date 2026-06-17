@@ -40,6 +40,8 @@ typedef struct kvs_command_task_s {
 	int prepare_dispatched;
 	int prepare_completed;
 	int prepare_status;
+	uint64_t prepare_enqueue_us;
+	uint64_t prepared_enqueue_us;
 	kvs_command_task_prepared_kind_t prepared_kind;
 	void *prepared;
 

@@ -196,12 +196,66 @@ static int kvs_vector_embedding_create_runtime_handle(
 	return KVS_VECTOR_OK;
 }
 
+static void kvs_vector_embedding_log_final_runtime_stats(void) {
+	kvs_vector_embedding_runtime_stats_t stats;
+
+	memset(&stats, 0, sizeof(stats));
+	kvs_vector_embedding_runtime_get_stats(&stats);
+	KVS_LOG_INFO(
+		KVS_VECTOR_LOG_MODULE,
+		"embedding runtime final stats: shared_ort_env_enabled=%llu shared_ort_env_created=%llu shared_ort_env_destroyed=%llu shared_ort_env_refcount_current=%llu shared_ort_env_refcount_max=%llu ort_session_created=%llu ort_session_destroyed=%llu runtime_encode_count=%llu embedding_encode_avg_us=%llu embedding_encode_max_us=%llu tokenizer_avg_us=%llu tokenizer_max_us=%llu ort_run_avg_us=%llu ort_run_max_us=%llu resource_product=%llu worker_threads_effective=%llu embedding_num_threads_effective=%llu contexts_created=%llu contexts_destroyed=%llu encode_global_mutex=%llu encode_thread_context=%llu encode_max_inflight=%llu",
+		(unsigned long long)stats.shared_ort_env_enabled,
+		(unsigned long long)stats.shared_ort_env_created,
+		(unsigned long long)stats.shared_ort_env_destroyed,
+		(unsigned long long)stats.shared_ort_env_refcount_current,
+		(unsigned long long)stats.shared_ort_env_refcount_max,
+		(unsigned long long)stats.ort_session_created,
+		(unsigned long long)stats.ort_session_destroyed,
+		(unsigned long long)stats.encode_count,
+		(unsigned long long)(stats.encode_count > 0 ?
+			stats.embedding_encode_total_us / stats.encode_count :
+			0),
+		(unsigned long long)stats.embedding_encode_max_us,
+		(unsigned long long)(stats.encode_count > 0 ?
+			stats.tokenizer_total_us / stats.encode_count :
+			0),
+		(unsigned long long)stats.tokenizer_max_us,
+		(unsigned long long)(stats.encode_count > 0 ?
+			stats.ort_run_total_us / stats.encode_count :
+			0),
+		(unsigned long long)stats.ort_run_max_us,
+		(unsigned long long)stats.embedding_runtime_resource_product,
+		(unsigned long long)stats.embedding_worker_threads_effective,
+		(unsigned long long)stats.embedding_num_threads_effective,
+		(unsigned long long)stats.per_thread_context_created,
+		(unsigned long long)stats.per_thread_context_destroyed,
+		(unsigned long long)stats.encode_global_mutex_count,
+		(unsigned long long)stats.encode_thread_context_count,
+		(unsigned long long)stats.encode_max_inflight
+	);
+}
+
 void kvs_vector_embedding_runtime_get_stats(
 	kvs_vector_embedding_runtime_stats_t *out
 ) {
+	EmbeddingRuntimeResourceStats resource_stats;
+	uint64_t worker_threads_effective;
+	uint64_t embedding_num_threads_effective;
+
 	if (!out) {
 		return;
 	}
+	memset(&resource_stats, 0, sizeof(resource_stats));
+	embedding_runtime_get_resource_stats(&resource_stats);
+	worker_threads_effective = g_cfg.embedding_worker_pool_enabled ?
+		(uint64_t)(g_cfg.embedding_worker_threads > 0 ?
+			g_cfg.embedding_worker_threads :
+			0) :
+		0;
+	embedding_num_threads_effective = (uint64_t)(g_cfg.embedding_num_threads > 0 ?
+		g_cfg.embedding_num_threads :
+		1);
+
 	out->per_thread_context_enabled = embedding_stats_load(&g_embedding_runtime_stats.per_thread_context_enabled);
 	out->per_thread_context_created = embedding_stats_load(&g_embedding_runtime_stats.per_thread_context_created);
 	out->per_thread_context_destroyed = embedding_stats_load(&g_embedding_runtime_stats.per_thread_context_destroyed);
@@ -213,6 +267,24 @@ void kvs_vector_embedding_runtime_get_stats(
 	out->encode_max_inflight = embedding_stats_load(&g_embedding_runtime_stats.encode_max_inflight);
 	out->encode_total_us = embedding_stats_load(&g_embedding_runtime_stats.encode_total_us);
 	out->encode_max_us = embedding_stats_load(&g_embedding_runtime_stats.encode_max_us);
+	out->shared_ort_env_enabled = resource_stats.shared_ort_env_enabled;
+	out->shared_ort_env_created = resource_stats.shared_ort_env_created;
+	out->shared_ort_env_destroyed = resource_stats.shared_ort_env_destroyed;
+	out->shared_ort_env_refcount_current = resource_stats.shared_ort_env_refcount_current;
+	out->shared_ort_env_refcount_max = resource_stats.shared_ort_env_refcount_max;
+	out->ort_session_created = resource_stats.ort_session_created;
+	out->ort_session_destroyed = resource_stats.ort_session_destroyed;
+	out->encode_count = resource_stats.encode_count;
+	out->embedding_encode_total_us = resource_stats.embedding_encode_total_us;
+	out->embedding_encode_max_us = resource_stats.embedding_encode_max_us;
+	out->tokenizer_total_us = resource_stats.tokenizer_total_us;
+	out->tokenizer_max_us = resource_stats.tokenizer_max_us;
+	out->ort_run_total_us = resource_stats.ort_run_total_us;
+	out->ort_run_max_us = resource_stats.ort_run_max_us;
+	out->embedding_worker_threads_effective = worker_threads_effective;
+	out->embedding_num_threads_effective = embedding_num_threads_effective;
+	out->embedding_runtime_resource_product =
+		worker_threads_effective * embedding_num_threads_effective;
 }
 
 int kvs_vector_embedding_thread_context_init(void) {
@@ -391,6 +463,7 @@ void kvs_vector_embedding_provider_destroy(
 	if (provider->runtime_handle) {
 		embedding_destroy(provider->runtime_handle);
 	}
+	kvs_vector_embedding_log_final_runtime_stats();
 
 	memset(provider, 0, sizeof(*provider));
 }

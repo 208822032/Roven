@@ -43,6 +43,8 @@ struct EmbeddingHandle {
 
 	const OrtApi *ort;
 	OrtEnv *env;
+	int shared_env_ref_acquired;
+	int owns_env;
 	OrtSessionOptions *session_options;
 	OrtSession *session;
 	OrtMemoryInfo *memory_info;
@@ -67,6 +69,56 @@ struct EmbeddingHandle {
 	uint64_t profile_inflight;
 	uint64_t profile_max_inflight;
 };
+
+typedef struct EmbeddingOnnxResourceStats {
+	uint64_t shared_ort_env_enabled;
+	uint64_t shared_ort_env_created;
+	uint64_t shared_ort_env_destroyed;
+	uint64_t shared_ort_env_refcount_current;
+	uint64_t shared_ort_env_refcount_max;
+	uint64_t ort_session_created;
+	uint64_t ort_session_destroyed;
+	uint64_t encode_count;
+	uint64_t embedding_encode_total_us;
+	uint64_t embedding_encode_max_us;
+	uint64_t tokenizer_total_us;
+	uint64_t tokenizer_max_us;
+	uint64_t ort_run_total_us;
+	uint64_t ort_run_max_us;
+} EmbeddingOnnxResourceStats;
+
+static pthread_mutex_t g_onnx_env_mu = PTHREAD_MUTEX_INITIALIZER;
+static OrtEnv *g_shared_ort_env;
+static int g_shared_ort_env_refcount;
+static const OrtApi *g_shared_ort_api;
+static EmbeddingOnnxResourceStats g_onnx_resource_stats;
+
+static uint64_t embedding_resource_stats_add(uint64_t *field, uint64_t value) {
+	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
+}
+
+static uint64_t embedding_resource_stats_load(const uint64_t *field) {
+	return __atomic_load_n(field, __ATOMIC_RELAXED);
+}
+
+static void embedding_resource_stats_store(uint64_t *field, uint64_t value) {
+	__atomic_store_n(field, value, __ATOMIC_RELAXED);
+}
+
+static void embedding_resource_stats_update_max(uint64_t *field, uint64_t value) {
+	uint64_t old_value = __atomic_load_n(field, __ATOMIC_RELAXED);
+
+	while (value > old_value) {
+		if (__atomic_compare_exchange_n(field,
+		                                &old_value,
+		                                value,
+		                                0,
+		                                __ATOMIC_RELAXED,
+		                                __ATOMIC_RELAXED)) {
+			break;
+		}
+	}
+}
 
 static uint64_t embedding_now_us(void) {
 	struct timespec ts;
@@ -429,6 +481,126 @@ static EmbeddingErrorCode embedding_set_ort_error(
 	return code;
 }
 
+static EmbeddingErrorCode embedding_acquire_shared_ort_env(
+	EmbeddingHandle *handle
+) {
+	OrtStatus *status;
+
+	if (!handle || !handle->ort) {
+		return EMBEDDING_ERR_INVALID_ARGUMENT;
+	}
+
+	if (!g_cfg.embedding_shared_ort_env_enabled) {
+		embedding_resource_stats_store(
+			&g_onnx_resource_stats.shared_ort_env_enabled,
+			0
+		);
+		status = handle->ort->CreateEnv(
+			ORT_LOGGING_LEVEL_WARNING,
+			"kvlite_embedding",
+			&handle->env
+		);
+		if (status) {
+			return embedding_set_ort_error(
+				handle,
+				status,
+				"failed to create ONNX Runtime environment",
+				EMBEDDING_ERR_MODEL_LOAD_FAILED
+			);
+		}
+		handle->owns_env = 1;
+		return EMBEDDING_OK;
+	}
+
+	embedding_resource_stats_store(
+		&g_onnx_resource_stats.shared_ort_env_enabled,
+		1
+	);
+
+	pthread_mutex_lock(&g_onnx_env_mu);
+	if (!g_shared_ort_env) {
+		status = handle->ort->CreateEnv(
+			ORT_LOGGING_LEVEL_WARNING,
+			"kvlite_embedding",
+			&g_shared_ort_env
+		);
+		if (status) {
+			pthread_mutex_unlock(&g_onnx_env_mu);
+			return embedding_set_ort_error(
+				handle,
+				status,
+				"failed to create shared ONNX Runtime environment",
+				EMBEDDING_ERR_MODEL_LOAD_FAILED
+			);
+		}
+		g_shared_ort_api = handle->ort;
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.shared_ort_env_created,
+			1
+		);
+	}
+
+	g_shared_ort_env_refcount++;
+	handle->env = g_shared_ort_env;
+	handle->shared_env_ref_acquired = 1;
+	embedding_resource_stats_store(
+		&g_onnx_resource_stats.shared_ort_env_refcount_current,
+		(uint64_t)g_shared_ort_env_refcount
+	);
+	embedding_resource_stats_update_max(
+		&g_onnx_resource_stats.shared_ort_env_refcount_max,
+		(uint64_t)g_shared_ort_env_refcount
+	);
+	pthread_mutex_unlock(&g_onnx_env_mu);
+	return EMBEDDING_OK;
+}
+
+static void embedding_release_shared_ort_env_ref(EmbeddingHandle *handle) {
+	const OrtApi *ort_api;
+	OrtEnv *env_to_release = NULL;
+
+	if (!handle) {
+		return;
+	}
+	if (handle->owns_env && handle->env && handle->ort) {
+		handle->ort->ReleaseEnv(handle->env);
+		handle->env = NULL;
+		handle->owns_env = 0;
+		return;
+	}
+	if (!handle->shared_env_ref_acquired) {
+		return;
+	}
+
+	pthread_mutex_lock(&g_onnx_env_mu);
+	if (g_shared_ort_env_refcount > 0) {
+		g_shared_ort_env_refcount--;
+	}
+	if (g_shared_ort_env_refcount == 0 && g_shared_ort_env) {
+		env_to_release = g_shared_ort_env;
+		ort_api = g_shared_ort_api ? g_shared_ort_api : handle->ort;
+		g_shared_ort_env = NULL;
+		g_shared_ort_api = NULL;
+	} else {
+		ort_api = NULL;
+	}
+	embedding_resource_stats_store(
+		&g_onnx_resource_stats.shared_ort_env_refcount_current,
+		(uint64_t)g_shared_ort_env_refcount
+	);
+	pthread_mutex_unlock(&g_onnx_env_mu);
+
+	handle->shared_env_ref_acquired = 0;
+	handle->env = NULL;
+	if (env_to_release && ort_api) {
+		ort_api->ReleaseEnv(env_to_release);
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.shared_ort_env_destroyed,
+			1
+		);
+	}
+}
+
 static int embedding_parse_graph_opt_level(
 	const char *value,
 	GraphOptimizationLevel *level
@@ -556,6 +728,10 @@ static void embedding_release_ort_resources(EmbeddingHandle *handle) {
 	if (handle->session) {
 		handle->ort->ReleaseSession(handle->session);
 		handle->session = NULL;
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.ort_session_destroyed,
+			1
+		);
 	}
 
 	if (handle->session_options) {
@@ -568,10 +744,7 @@ static void embedding_release_ort_resources(EmbeddingHandle *handle) {
 		handle->memory_info = NULL;
 	}
 
-	if (handle->env) {
-		handle->ort->ReleaseEnv(handle->env);
-		handle->env = NULL;
-	}
+	embedding_release_shared_ort_env_ref(handle);
 }
 
 static const char *embedding_onnx_element_type_name(
@@ -1312,18 +1485,7 @@ EmbeddingErrorCode embedding_create(
 		goto fail_model_load;
 	}
 
-	status = created->ort->CreateEnv(
-		ORT_LOGGING_LEVEL_WARNING,
-		"kvlite_embedding",
-		&created->env
-	);
-	if (status) {
-		embedding_set_ort_error(
-			created,
-			status,
-			"failed to create ONNX Runtime environment",
-			EMBEDDING_ERR_MODEL_LOAD_FAILED
-		);
+	if (embedding_acquire_shared_ort_env(created) != EMBEDDING_OK) {
 		goto fail_model_load;
 	}
 
@@ -1463,6 +1625,10 @@ EmbeddingErrorCode embedding_create(
 		);
 		goto fail_model_load;
 	}
+	embedding_resource_stats_add(
+		&g_onnx_resource_stats.ort_session_created,
+		1
+	);
 
 	inspect_result = embedding_inspect_onnx_model(created);
 	if (inspect_result != EMBEDDING_OK) {
@@ -1560,9 +1726,9 @@ EmbeddingErrorCode embedding_encode(
 	}
 
 	profile_enabled = handle->profile_enabled;
+	total_start_us = embedding_now_us();
 	if (profile_enabled) {
 		embedding_profile_enter(handle);
-		total_start_us = embedding_now_us();
 	}
 
 	if (!text || text_len == 0 || !output) {
@@ -1598,9 +1764,7 @@ EmbeddingErrorCode embedding_encode(
 		goto cleanup;
 	}
 
-	if (profile_enabled) {
-		tokenize_start_us = embedding_now_us();
-	}
+	tokenize_start_us = embedding_now_us();
 	result = bert_tokenize(
 		handle,
 		text,
@@ -1611,9 +1775,7 @@ EmbeddingErrorCode embedding_encode(
 		handle->max_tokens,
 		&seq_len
 	);
-	if (profile_enabled) {
-		tokenize_us = embedding_elapsed_us(tokenize_start_us, embedding_now_us());
-	}
+	tokenize_us = embedding_elapsed_us(tokenize_start_us, embedding_now_us());
 	if (result != EMBEDDING_OK) {
 		embedding_set_error(handle, "tokenization failed");
 		goto cleanup;
@@ -1655,9 +1817,7 @@ EmbeddingErrorCode embedding_encode(
 		tensor_us = embedding_elapsed_us(tensor_start_us, embedding_now_us());
 	}
 
-	if (profile_enabled) {
-		ort_start_us = embedding_now_us();
-	}
+	ort_start_us = embedding_now_us();
 	status = handle->ort->Run(
 		handle->session,
 		NULL,
@@ -1668,9 +1828,7 @@ EmbeddingErrorCode embedding_encode(
 		1,
 		output_values
 	);
-	if (profile_enabled) {
-		ort_us = embedding_elapsed_us(ort_start_us, embedding_now_us());
-	}
+	ort_us = embedding_elapsed_us(ort_start_us, embedding_now_us());
 	if (status) {
 		result = embedding_set_ort_error(
 			handle,
@@ -1703,6 +1861,38 @@ EmbeddingErrorCode embedding_encode(
 	}
 
 cleanup:
+	if (total_start_us > 0) {
+		uint64_t total_us = embedding_elapsed_us(total_start_us, embedding_now_us());
+
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.encode_count,
+			1
+		);
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.embedding_encode_total_us,
+			total_us
+		);
+		embedding_resource_stats_update_max(
+			&g_onnx_resource_stats.embedding_encode_max_us,
+			total_us
+		);
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.tokenizer_total_us,
+			tokenize_us
+		);
+		embedding_resource_stats_update_max(
+			&g_onnx_resource_stats.tokenizer_max_us,
+			tokenize_us
+		);
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.ort_run_total_us,
+			ort_us
+		);
+		embedding_resource_stats_update_max(
+			&g_onnx_resource_stats.ort_run_max_us,
+			ort_us
+		);
+	}
 	if (profile_enabled) {
 		embedding_profile_record(
 			handle,
@@ -1747,6 +1937,57 @@ const char *embedding_last_error(EmbeddingHandle *handle) {
 	}
 
 	return handle->last_error;
+}
+
+void embedding_runtime_get_resource_stats(
+	EmbeddingRuntimeResourceStats *out
+) {
+	if (!out) {
+		return;
+	}
+
+	out->shared_ort_env_enabled = embedding_resource_stats_load(
+		&g_onnx_resource_stats.shared_ort_env_enabled
+	);
+	out->shared_ort_env_created = embedding_resource_stats_load(
+		&g_onnx_resource_stats.shared_ort_env_created
+	);
+	out->shared_ort_env_destroyed = embedding_resource_stats_load(
+		&g_onnx_resource_stats.shared_ort_env_destroyed
+	);
+	out->shared_ort_env_refcount_current = embedding_resource_stats_load(
+		&g_onnx_resource_stats.shared_ort_env_refcount_current
+	);
+	out->shared_ort_env_refcount_max = embedding_resource_stats_load(
+		&g_onnx_resource_stats.shared_ort_env_refcount_max
+	);
+	out->ort_session_created = embedding_resource_stats_load(
+		&g_onnx_resource_stats.ort_session_created
+	);
+	out->ort_session_destroyed = embedding_resource_stats_load(
+		&g_onnx_resource_stats.ort_session_destroyed
+	);
+	out->encode_count = embedding_resource_stats_load(
+		&g_onnx_resource_stats.encode_count
+	);
+	out->embedding_encode_total_us = embedding_resource_stats_load(
+		&g_onnx_resource_stats.embedding_encode_total_us
+	);
+	out->embedding_encode_max_us = embedding_resource_stats_load(
+		&g_onnx_resource_stats.embedding_encode_max_us
+	);
+	out->tokenizer_total_us = embedding_resource_stats_load(
+		&g_onnx_resource_stats.tokenizer_total_us
+	);
+	out->tokenizer_max_us = embedding_resource_stats_load(
+		&g_onnx_resource_stats.tokenizer_max_us
+	);
+	out->ort_run_total_us = embedding_resource_stats_load(
+		&g_onnx_resource_stats.ort_run_total_us
+	);
+	out->ort_run_max_us = embedding_resource_stats_load(
+		&g_onnx_resource_stats.ort_run_max_us
+	);
 }
 
 void embedding_destroy(EmbeddingHandle *handle) {

@@ -117,6 +117,7 @@ typedef struct kvs_config {
 	int embedding_worker_queue_capacity;
 	int embedding_per_thread_runtime_enabled;
 	int embedding_per_thread_runtime_fallback_mutex;
+	int embedding_shared_ort_env_enabled;
 
 	// vector index 配置。正式语义缓存主路径固定为 HNSW；
 	// flat 仅作为 debug / 单元测试 baseline，sq8_flat 为实验性压缩索引。
@@ -212,6 +213,12 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path);
 //  --log_async <yes|no>
 //  --log_file <path>
 //  --embedding_provider <hash>
+//  --embedding_num_threads <n>
+//  --embedding_worker_pool_enabled <yes|no>
+//  --embedding_worker_threads <n>
+//  --embedding_per_thread_runtime_enabled <yes|no>
+//  --embedding_per_thread_runtime_fallback_mutex <yes|no>
+//  --embedding_shared_ort_env_enabled <yes|no>
 //  --vector_metric <ip|l2|cosine>
 	//  --vector_distance_backend <auto|fallback|avx2>
 //  --vector_scope_overfetch_factor <1-32>

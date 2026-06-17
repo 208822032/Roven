@@ -28,6 +28,21 @@ typedef struct kvs_command_executor_stats_s {
 	uint64_t embedding_prepare_dispatched;
 	uint64_t embedding_prepare_inline;
 	uint64_t embedding_prepare_submit_failed;
+	uint64_t prepared_wait_count;
+	uint64_t prepared_wait_total_us;
+	uint64_t prepared_wait_max_us;
+	uint64_t prepared_task_execute_count;
+	uint64_t prepared_task_execute_total_us;
+	uint64_t prepared_task_execute_max_us;
+	uint64_t execute_sync_count;
+	uint64_t execute_sync_total_us;
+	uint64_t execute_sync_max_us;
+	uint64_t commit_or_search_count;
+	uint64_t commit_or_search_total_us;
+	uint64_t commit_or_search_max_us;
+	uint64_t finalize_response_count;
+	uint64_t finalize_response_total_us;
+	uint64_t finalize_response_max_us;
 } kvs_command_executor_stats_t;
 
 typedef enum kvs_command_executor_drop_reason_e {

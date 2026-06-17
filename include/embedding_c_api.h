@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,23 @@ typedef enum {
 	EMBEDDING_ERR_NOT_INITIALIZED = 7
 } EmbeddingErrorCode;
 
+typedef struct {
+	uint64_t shared_ort_env_enabled;
+	uint64_t shared_ort_env_created;
+	uint64_t shared_ort_env_destroyed;
+	uint64_t shared_ort_env_refcount_current;
+	uint64_t shared_ort_env_refcount_max;
+	uint64_t ort_session_created;
+	uint64_t ort_session_destroyed;
+	uint64_t encode_count;
+	uint64_t embedding_encode_total_us;
+	uint64_t embedding_encode_max_us;
+	uint64_t tokenizer_total_us;
+	uint64_t tokenizer_max_us;
+	uint64_t ort_run_total_us;
+	uint64_t ort_run_max_us;
+} EmbeddingRuntimeResourceStats;
+
 EmbeddingErrorCode embedding_create(
 	const EmbeddingConfig *config,
 	EmbeddingHandle **handle
@@ -43,6 +61,10 @@ EmbeddingErrorCode embedding_encode(
 int embedding_dimension(EmbeddingHandle *handle);
 
 const char *embedding_last_error(EmbeddingHandle *handle);
+
+void embedding_runtime_get_resource_stats(
+	EmbeddingRuntimeResourceStats *out
+);
 
 void embedding_destroy(EmbeddingHandle *handle);
 

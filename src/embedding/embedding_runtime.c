@@ -174,6 +174,16 @@ const char *embedding_last_error(EmbeddingHandle *handle) {
 	return handle->last_error;
 }
 
+void embedding_runtime_get_resource_stats(
+	EmbeddingRuntimeResourceStats *out
+) {
+	if (!out) {
+		return;
+	}
+
+	memset(out, 0, sizeof(*out));
+}
+
 void embedding_destroy(EmbeddingHandle *handle) {
 	if (!handle) {
 		return;
