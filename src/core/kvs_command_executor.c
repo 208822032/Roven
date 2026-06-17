@@ -24,6 +24,8 @@ typedef struct kvs_command_executor_s {
 	kvs_command_task_t *cmd_tail;
 	kvs_command_task_t *prepared_head;
 	kvs_command_task_t *prepared_tail;
+	kvs_ttl_expire_task_t *ttl_head;
+	kvs_ttl_expire_task_t *ttl_tail;
 	pthread_mutex_t resp_mu;
 	kvs_response_task_t *resp_head;
 	kvs_response_task_t *resp_tail;
@@ -120,6 +122,17 @@ static void kvs_command_executor_destroy_task(kvs_command_task_t *task) {
 		release_fn(owner);
 	}
 	kvs_command_task_destroy(task);
+	kvs_free(task);
+}
+
+static void kvs_command_executor_destroy_ttl_task(kvs_ttl_expire_task_t *task) {
+	if (!task) {
+		return;
+	}
+	if (task->key) {
+		kvs_free(task->key);
+		task->key = NULL;
+	}
 	kvs_free(task);
 }
 
@@ -429,6 +442,22 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	);
 	KVS_LOG_INFO(
 		"core",
+		"ttl executor stats: ttl_expire_task_submitted=%llu ttl_expire_task_executed=%llu ttl_expire_task_failed=%llu ttl_expire_task_dropped=%llu ttl_expire_queue_depth=%llu ttl_expire_queue_max_depth=%llu ttl_expire_deleted_keys=%llu ttl_expire_skipped_keys=%llu ttl_expire_submit_failed=%llu ttl_expire_wait_count=%llu ttl_expire_wait_total_us=%llu ttl_expire_wait_max_us=%llu",
+		(unsigned long long)exec_stats.ttl_expire_task_submitted,
+		(unsigned long long)exec_stats.ttl_expire_task_executed,
+		(unsigned long long)exec_stats.ttl_expire_task_failed,
+		(unsigned long long)exec_stats.ttl_expire_task_dropped,
+		(unsigned long long)exec_stats.ttl_expire_queue_depth,
+		(unsigned long long)exec_stats.ttl_expire_queue_max_depth,
+		(unsigned long long)exec_stats.ttl_expire_deleted_keys,
+		(unsigned long long)exec_stats.ttl_expire_skipped_keys,
+		(unsigned long long)exec_stats.ttl_expire_submit_failed,
+		(unsigned long long)exec_stats.ttl_expire_wait_count,
+		(unsigned long long)exec_stats.ttl_expire_wait_total_us,
+		(unsigned long long)exec_stats.ttl_expire_wait_max_us
+	);
+	KVS_LOG_INFO(
+		"core",
 		"embedding batch stats: batch_enabled=%llu batch_count=%llu batch_items=%llu batch_avg_size=%llu batch_max_observed_size=%llu batch_wait_avg_us=%llu batch_wait_max_us=%llu batch_encode_avg_us=%llu batch_encode_max_us=%llu batch_fallback_single_count=%llu batch_failed=%llu batch_provider_unsupported=%llu",
 		(unsigned long long)stats.embedding_batch_enabled,
 		(unsigned long long)stats.embedding_batch_count,
@@ -646,6 +675,65 @@ static kvs_command_task_t *kvs_command_executor_pop_prepared_locked(void) {
 	return task;
 }
 
+static kvs_ttl_expire_task_t *kvs_command_executor_pop_ttl_locked(void) {
+	kvs_ttl_expire_task_t *task = g_executor.ttl_head;
+
+	if (!task) {
+		return NULL;
+	}
+	g_executor.ttl_head = task->queue_next;
+	if (!g_executor.ttl_head) {
+		g_executor.ttl_tail = NULL;
+	}
+	task->queue_next = NULL;
+	executor_stats_sub(&g_executor.stats.ttl_expire_queue_depth, 1);
+	return task;
+}
+
+static void kvs_command_executor_execute_ttl(kvs_ttl_expire_task_t *task) {
+	uint64_t now_us;
+	uint64_t wait_us;
+	int ret;
+
+	if (!task) {
+		return;
+	}
+	if (task->enqueue_us > 0) {
+		now_us = executor_now_us();
+		wait_us = now_us >= task->enqueue_us ? now_us - task->enqueue_us : 0;
+		executor_record_timing(
+			&g_executor.stats.ttl_expire_wait_count,
+			&g_executor.stats.ttl_expire_wait_total_us,
+			&g_executor.stats.ttl_expire_wait_max_us,
+			wait_us
+		);
+	}
+
+	if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+		executor_stats_add(&g_executor.stats.ttl_expire_task_failed, 1);
+		kvs_command_executor_destroy_ttl_task(task);
+		return;
+	}
+	ret = ttl_expire_observed_key(
+		task->key,
+		task->key_len,
+		task->observed_expire_at_ms
+	);
+	pthread_rwlock_unlock(&g_kv_data_rwlock);
+
+	if (ret > 0) {
+		executor_stats_add(&g_executor.stats.ttl_expire_deleted_keys, 1);
+		executor_stats_add(&g_executor.stats.ttl_expire_task_executed, 1);
+	} else if (ret == 0) {
+		executor_stats_add(&g_executor.stats.ttl_expire_skipped_keys, 1);
+		executor_stats_add(&g_executor.stats.ttl_expire_task_executed, 1);
+	} else {
+		executor_stats_add(&g_executor.stats.ttl_expire_task_failed, 1);
+	}
+
+	kvs_command_executor_destroy_ttl_task(task);
+}
+
 static int kvs_command_executor_should_async_prepare(kvs_command_task_t *task) {
 	return kvs_embedding_worker_pool_enabled() &&
 	       kvs_command_task_requires_embedding_prepare(task) &&
@@ -855,18 +943,29 @@ static void *kvs_command_executor_thread_main(void *arg) {
 
 	for (;;) {
 		kvs_command_task_t *task;
+		kvs_ttl_expire_task_t *ttl_task;
 
 		pthread_mutex_lock(&g_executor.cmd_mu);
-		while (!g_executor.prepared_head && !g_executor.cmd_head && !g_executor.stopping) {
+		while (!g_executor.prepared_head &&
+		       !g_executor.ttl_head &&
+		       !g_executor.cmd_head &&
+		       !g_executor.stopping) {
 			pthread_cond_wait(&g_executor.cmd_cv, &g_executor.cmd_mu);
 		}
-		if (!g_executor.prepared_head && !g_executor.cmd_head && g_executor.stopping) {
+		if (!g_executor.prepared_head &&
+		    !g_executor.ttl_head &&
+		    !g_executor.cmd_head &&
+		    g_executor.stopping) {
 			pthread_mutex_unlock(&g_executor.cmd_mu);
 			break;
 		}
+		ttl_task = NULL;
 		task = kvs_command_executor_pop_prepared_locked();
 		if (!task) {
-			task = kvs_command_executor_pop_command_locked();
+			ttl_task = kvs_command_executor_pop_ttl_locked();
+			if (!ttl_task) {
+				task = kvs_command_executor_pop_command_locked();
+			}
 		} else if (task->prepared_enqueue_us > 0) {
 			uint64_t now_us = executor_now_us();
 			uint64_t wait_us = now_us >= task->prepared_enqueue_us ?
@@ -892,7 +991,11 @@ static void *kvs_command_executor_thread_main(void *arg) {
 		}
 		pthread_mutex_unlock(&g_executor.cmd_mu);
 
-		kvs_command_executor_dispatch_or_execute(task);
+		if (ttl_task) {
+			kvs_command_executor_execute_ttl(ttl_task);
+		} else {
+			kvs_command_executor_dispatch_or_execute(task);
+		}
 	}
 
 	return NULL;
@@ -937,13 +1040,12 @@ int kvs_command_executor_start(void) {
 void kvs_command_executor_stop(void) {
 	kvs_command_task_t *task;
 	kvs_command_task_t *prepared;
+	kvs_ttl_expire_task_t *ttl_task;
 	kvs_response_task_t *resp;
 	int should_join;
 
 	kvs_embedding_worker_pool_stop();
-	if (g_cfg.embedding_worker_pool_enabled) {
-		kvs_command_executor_log_embedding_worker_stats();
-	}
+	kvs_command_executor_log_embedding_worker_stats();
 
 	pthread_mutex_lock(&g_executor.cmd_mu);
 	should_join = g_executor.running;
@@ -963,6 +1065,9 @@ void kvs_command_executor_stop(void) {
 	prepared = g_executor.prepared_head;
 	g_executor.prepared_head = NULL;
 	g_executor.prepared_tail = NULL;
+	ttl_task = g_executor.ttl_head;
+	g_executor.ttl_head = NULL;
+	g_executor.ttl_tail = NULL;
 	pthread_mutex_unlock(&g_executor.cmd_mu);
 	while (task) {
 		kvs_command_task_t *next = task->queue_next;
@@ -977,6 +1082,14 @@ void kvs_command_executor_stop(void) {
 		executor_stats_sub(&g_executor.stats.prepared_queue_depth, 1);
 		kvs_command_executor_destroy_task(prepared);
 		prepared = next;
+	}
+	while (ttl_task) {
+		kvs_ttl_expire_task_t *next = ttl_task->queue_next;
+		ttl_task->queue_next = NULL;
+		executor_stats_sub(&g_executor.stats.ttl_expire_queue_depth, 1);
+		executor_stats_add(&g_executor.stats.ttl_expire_task_dropped, 1);
+		kvs_command_executor_destroy_ttl_task(ttl_task);
+		ttl_task = next;
 	}
 
 	pthread_mutex_lock(&g_executor.resp_mu);
@@ -1022,6 +1135,58 @@ int kvs_command_executor_submit_prepared(kvs_command_task_t *task) {
 	depth = executor_stats_add(&g_executor.stats.prepared_queue_depth, 1);
 	executor_stats_update_max(&g_executor.stats.prepared_queue_max_depth, depth);
 	executor_stats_add(&g_executor.stats.prepared_tasks, 1);
+	pthread_cond_signal(&g_executor.cmd_cv);
+	pthread_mutex_unlock(&g_executor.cmd_mu);
+	return 0;
+}
+
+int kvs_command_executor_submit_ttl_expire(
+	const char *key,
+	size_t key_len,
+	int64_t observed_expire_at_ms
+) {
+	kvs_ttl_expire_task_t *task;
+	uint64_t depth;
+
+	if (!key || key_len == 0 || observed_expire_at_ms < 0) {
+		executor_stats_add(&g_executor.stats.ttl_expire_submit_failed, 1);
+		return -1;
+	}
+
+	task = (kvs_ttl_expire_task_t *)kvs_malloc(sizeof(*task));
+	if (!task) {
+		executor_stats_add(&g_executor.stats.ttl_expire_submit_failed, 1);
+		return -1;
+	}
+	memset(task, 0, sizeof(*task));
+	task->key = (char *)kvs_malloc(key_len + 1);
+	if (!task->key) {
+		kvs_free(task);
+		executor_stats_add(&g_executor.stats.ttl_expire_submit_failed, 1);
+		return -1;
+	}
+	memcpy(task->key, key, key_len);
+	task->key[key_len] = '\0';
+	task->key_len = key_len;
+	task->observed_expire_at_ms = observed_expire_at_ms;
+	task->enqueue_us = executor_now_us();
+
+	pthread_mutex_lock(&g_executor.cmd_mu);
+	if (!g_executor.running || g_executor.stopping) {
+		pthread_mutex_unlock(&g_executor.cmd_mu);
+		kvs_command_executor_destroy_ttl_task(task);
+		executor_stats_add(&g_executor.stats.ttl_expire_submit_failed, 1);
+		return -1;
+	}
+	if (g_executor.ttl_tail) {
+		g_executor.ttl_tail->queue_next = task;
+	} else {
+		g_executor.ttl_head = task;
+	}
+	g_executor.ttl_tail = task;
+	depth = executor_stats_add(&g_executor.stats.ttl_expire_queue_depth, 1);
+	executor_stats_update_max(&g_executor.stats.ttl_expire_queue_max_depth, depth);
+	executor_stats_add(&g_executor.stats.ttl_expire_task_submitted, 1);
 	pthread_cond_signal(&g_executor.cmd_cv);
 	pthread_mutex_unlock(&g_executor.cmd_mu);
 	return 0;
@@ -1199,6 +1364,18 @@ void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out) {
 	out->vsearch_execute_sync_count = executor_stats_load(&g_executor.stats.vsearch_execute_sync_count);
 	out->vsearch_execute_sync_total_us = executor_stats_load(&g_executor.stats.vsearch_execute_sync_total_us);
 	out->vsearch_execute_sync_max_us = executor_stats_load(&g_executor.stats.vsearch_execute_sync_max_us);
+	out->ttl_expire_task_submitted = executor_stats_load(&g_executor.stats.ttl_expire_task_submitted);
+	out->ttl_expire_task_executed = executor_stats_load(&g_executor.stats.ttl_expire_task_executed);
+	out->ttl_expire_task_failed = executor_stats_load(&g_executor.stats.ttl_expire_task_failed);
+	out->ttl_expire_task_dropped = executor_stats_load(&g_executor.stats.ttl_expire_task_dropped);
+	out->ttl_expire_queue_depth = executor_stats_load(&g_executor.stats.ttl_expire_queue_depth);
+	out->ttl_expire_queue_max_depth = executor_stats_load(&g_executor.stats.ttl_expire_queue_max_depth);
+	out->ttl_expire_deleted_keys = executor_stats_load(&g_executor.stats.ttl_expire_deleted_keys);
+	out->ttl_expire_skipped_keys = executor_stats_load(&g_executor.stats.ttl_expire_skipped_keys);
+	out->ttl_expire_submit_failed = executor_stats_load(&g_executor.stats.ttl_expire_submit_failed);
+	out->ttl_expire_wait_count = executor_stats_load(&g_executor.stats.ttl_expire_wait_count);
+	out->ttl_expire_wait_total_us = executor_stats_load(&g_executor.stats.ttl_expire_wait_total_us);
+	out->ttl_expire_wait_max_us = executor_stats_load(&g_executor.stats.ttl_expire_wait_max_us);
 }
 
 void kvs_command_executor_record_response_drop(int reason) {

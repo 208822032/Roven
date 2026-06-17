@@ -6,6 +6,14 @@
 #include "kvs_command_task.h"
 #include "kvs_response_task.h"
 
+typedef struct kvs_ttl_expire_task_s {
+	struct kvs_ttl_expire_task_s *queue_next;
+	char *key;
+	size_t key_len;
+	int64_t observed_expire_at_ms;
+	uint64_t enqueue_us;
+} kvs_ttl_expire_task_t;
+
 typedef struct kvs_command_executor_stats_s {
 	uint64_t submitted_tasks;
 	uint64_t completed_tasks;
@@ -68,6 +76,18 @@ typedef struct kvs_command_executor_stats_s {
 	uint64_t vsearch_execute_sync_count;
 	uint64_t vsearch_execute_sync_total_us;
 	uint64_t vsearch_execute_sync_max_us;
+	uint64_t ttl_expire_task_submitted;
+	uint64_t ttl_expire_task_executed;
+	uint64_t ttl_expire_task_failed;
+	uint64_t ttl_expire_task_dropped;
+	uint64_t ttl_expire_queue_depth;
+	uint64_t ttl_expire_queue_max_depth;
+	uint64_t ttl_expire_deleted_keys;
+	uint64_t ttl_expire_skipped_keys;
+	uint64_t ttl_expire_submit_failed;
+	uint64_t ttl_expire_wait_count;
+	uint64_t ttl_expire_wait_total_us;
+	uint64_t ttl_expire_wait_max_us;
 } kvs_command_executor_stats_t;
 
 typedef enum kvs_command_executor_drop_reason_e {
@@ -81,6 +101,9 @@ void kvs_command_executor_stop(void);
 
 int kvs_command_executor_submit(kvs_command_task_t *task);
 int kvs_command_executor_submit_prepared(kvs_command_task_t *task);
+int kvs_command_executor_submit_ttl_expire(const char *key,
+                                           size_t key_len,
+                                           int64_t observed_expire_at_ms);
 int kvs_command_executor_poll_response(kvs_response_task_t **resp);
 int kvs_command_executor_poll_response_for(int owner_type,
                                            int owner_poller_id,

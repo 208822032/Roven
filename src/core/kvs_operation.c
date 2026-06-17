@@ -40,6 +40,7 @@ typedef struct {
 static int64_t ttl_target_get_expire_at(const ttl_target_ref_t *ref);
 static void ttl_target_set_expire_at(const ttl_target_ref_t *ref, int64_t expire_at_ms);
 static int ttl_target_delete(const ttl_target_ref_t *ref);
+static int ttl_target_apply_expired_side_effects(const ttl_target_ref_t *ref, const char *key, size_t key_len);
 
 #if ENABLE_RBTREE
 typedef struct {
@@ -228,6 +229,46 @@ int ttl_set_any_key_expire_at_ms(const char *key, size_t key_len, int64_t expire
     }
 
     ttl_target_set_expire_at(&ref, expire_at_ms);
+    return 1;
+}
+
+int ttl_expire_observed_key(const char *key, size_t key_len, int64_t observed_expire_at_ms) {
+    ttl_target_ref_t ref;
+    int64_t current_expire_at_ms;
+    int64_t now_ms;
+
+    if (!key || key_len == 0 || observed_expire_at_ms < 0) {
+        return -1;
+    }
+
+    memset(&ref, 0, sizeof(ref));
+    if (!ttl_lookup_any(key, key_len, &ref)) {
+        return 0;
+    }
+
+    current_expire_at_ms = ttl_target_get_expire_at(&ref);
+    if (current_expire_at_ms < 0) {
+        return 0;
+    }
+
+    /*
+     * Stage 10.1: an active-expire scanner may have observed an old TTL.
+     * If the key was SET/EXPIRE/PERSIST after that observation, do not delete
+     * the current value.
+     */
+    if (current_expire_at_ms != observed_expire_at_ms) {
+        return 0;
+    }
+
+    now_ms = kv_now_ms();
+    if (!kv_is_expired(current_expire_at_ms, now_ms)) {
+        return 0;
+    }
+
+    if (ttl_target_apply_expired_side_effects(&ref, key, key_len) != 0) {
+        return -1;
+    }
+
     return 1;
 }
 

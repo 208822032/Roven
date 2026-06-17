@@ -11,6 +11,7 @@
 #include "kvs_log.h"
 #include "kvs_vector.h"
 #include "kvs_command_task.h"
+#include "kvs_command_executor.h"
 #include "kvs_response_task.h"
 
 #include <strings.h>
@@ -297,6 +298,12 @@ int main(int argc, char *argv[]) {
 	}
 	#endif
 
+	if (kvs_command_executor_start() != 0) {
+		KVS_LOG_ERROR("core", "failed to start command executor");
+		dest_kvengine();
+		return 1;
+	}
+
 	if (kvs_ttl_background_start() != 0) {
 		KVS_LOG_WARN("ttl", "failed to start TTL background scan thread");
 	}
@@ -327,6 +334,7 @@ int main(int argc, char *argv[]) {
 	kvs_rdb_save(g_cfg.rdb_filename);
 #endif
 	kvs_ttl_background_stop();
+	kvs_command_executor_stop();
 	KVS_LOG_INFO("core", "data saved. exiting.");
     dest_kvengine();
 	pthread_rwlock_destroy(&g_kv_data_rwlock);

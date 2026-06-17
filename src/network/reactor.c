@@ -941,15 +941,9 @@ int reactor_start(unsigned short port, msg_handler handler) {
 	//unsigned short port = 2000;
 	kvs_handler = handler;
 
-    if (kvs_command_executor_start() != 0) {
-        KVS_LOG_ERROR("core", "failed to start command executor");
-        return -1;
-    }
-
 	epfd = epoll_create(1);
 	if (epfd < 0) {
 		KVS_LOG_ERROR_ERRNO("net", "epoll_create1 failed");
-        kvs_command_executor_stop();
         return -1;
     }
 
@@ -970,7 +964,6 @@ int reactor_start(unsigned short port, msg_handler handler) {
     int executor_event_fd = kvs_command_executor_response_event_fd();
     if (executor_event_fd < 0 || set_event(executor_event_fd, EPOLLIN, 1) != 0) {
         KVS_LOG_ERROR_ERRNO("net", "failed to register executor response eventfd");
-        kvs_command_executor_stop();
         close(epfd);
         return -1;
     }
@@ -1023,6 +1016,5 @@ int reactor_start(unsigned short port, msg_handler handler) {
     reactor_process_executor_event();
     epoll_ctl(epfd, EPOLL_CTL_DEL, executor_event_fd, NULL);
 	close(epfd);
-    kvs_command_executor_stop();
 	return 0;
 }

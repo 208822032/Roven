@@ -84,5 +84,6 @@ int handle_vinfo_command(command_context_t *ctx, char *response);
 
 int ttl_get_any_key_expire_at_ms(const char *key, size_t key_len, int64_t *expire_at_ms);
 int ttl_set_any_key_expire_at_ms(const char *key, size_t key_len, int64_t expire_at_ms);
+int ttl_expire_observed_key(const char *key, size_t key_len, int64_t observed_expire_at_ms);
 
 extern const command_info command_table[];

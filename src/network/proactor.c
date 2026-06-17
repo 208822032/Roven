@@ -1063,19 +1063,12 @@ int proactor_start(unsigned short port, msg_handler handler) {
     }
 	kvs_handler = handler;
 
-    if (kvs_command_executor_start() != 0) {
-        KVS_LOG_ERROR("core", "failed to start command executor for proactor eventfd wake");
-        close(sockfd);
-        return -1;
-    }
-
 	struct io_uring_params params;
 	memset(&params, 0, sizeof(params));
     struct io_uring ring;
 	if (io_uring_queue_init_params(ENTRIES_LENGTH, &ring, &params) < 0) {
     KVS_LOG_ERROR_ERRNO("network", "io_uring_queue_init_params failed");
         close(sockfd);
-        kvs_command_executor_stop();
         return -1;
     }
 
@@ -1086,7 +1079,6 @@ int proactor_start(unsigned short port, msg_handler handler) {
         KVS_LOG_ERROR("network", "failed to arm executor eventfd poll in proactor");
         close(sockfd);
         io_uring_queue_exit(&ring);
-        kvs_command_executor_stop();
         return -1;
     }
 	
@@ -1232,9 +1224,8 @@ int proactor_start(unsigned short port, msg_handler handler) {
     proactor_cancel_executor_eventfd(&ring);
     proactor_drain_pending_ops(&ring);
 	close(sockfd);
-	io_uring_queue_exit(&ring);
+    io_uring_queue_exit(&ring);
     proactor_log_executor_stats();
-    kvs_command_executor_stop();
     KVS_LOG_INFO("network", "Proactor network exited");
 
 	return 0;
