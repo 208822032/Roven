@@ -1,3 +1,4 @@
+#define KVS_VECTOR_INTERNAL
 #include "kvs_command_executor.h"
 
 #include "kvs_async_net_adapter.h"
@@ -34,6 +35,8 @@ typedef struct kvs_command_executor_s {
 	kvs_ttl_expire_task_t *ttl_tail;
 	struct kvs_full_sync_snapshot_task_s *snapshot_head;
 	struct kvs_full_sync_snapshot_task_s *snapshot_tail;
+	struct kvs_rdb_snapshot_task_s *rdb_snapshot_head;
+	struct kvs_rdb_snapshot_task_s *rdb_snapshot_tail;
 	pthread_mutex_t resp_mu;
 	kvs_response_task_t *resp_head;
 	kvs_response_task_t *resp_tail;
@@ -64,6 +67,25 @@ typedef struct kvs_full_sync_snapshot_builder_s {
 	size_t next_index;
 	int failed;
 } kvs_full_sync_snapshot_builder_t;
+
+typedef struct kvs_rdb_snapshot_task_s {
+	struct kvs_rdb_snapshot_task_s *queue_next;
+	pthread_mutex_t mu;
+	pthread_cond_t cv;
+	int done;
+	int status;
+	kvs_rdb_snapshot_t *snapshot;
+} kvs_rdb_snapshot_task_t;
+
+typedef struct kvs_rdb_snapshot_builder_s {
+	kvs_rdb_snapshot_t *snapshot;
+	size_t array_next_index;
+	size_t rbtree_next_index;
+	size_t hash_next_index;
+	size_t skiptable_next_index;
+	size_t vector_next_index;
+	int failed;
+} kvs_rdb_snapshot_builder_t;
 
 static uint64_t executor_stats_add(uint64_t *field, uint64_t value) {
 	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
@@ -198,6 +220,66 @@ void kvs_full_sync_snapshot_destroy(kvs_full_sync_snapshot_t *snapshot) {
 	kvs_free(snapshot);
 }
 
+void kvs_rdb_snapshot_destroy(kvs_rdb_snapshot_t *snapshot) {
+	size_t i;
+	kvs_rdb_snapshot_kv_entry_t *kv_entries[] = {
+		snapshot ? snapshot->array_entries : NULL,
+		snapshot ? snapshot->rbtree_entries : NULL,
+		snapshot ? snapshot->hash_entries : NULL,
+		snapshot ? snapshot->skiptable_entries : NULL
+	};
+	size_t kv_counts[] = {
+		snapshot ? snapshot->array_count : 0,
+		snapshot ? snapshot->rbtree_count : 0,
+		snapshot ? snapshot->hash_count : 0,
+		snapshot ? snapshot->skiptable_count : 0
+	};
+
+	if (!snapshot) {
+		return;
+	}
+	for (i = 0; i < sizeof(kv_entries) / sizeof(kv_entries[0]); ++i) {
+		size_t j;
+		for (j = 0; j < kv_counts[i]; ++j) {
+			if (kv_entries[i][j].key) {
+				kvs_free(kv_entries[i][j].key);
+				kv_entries[i][j].key = NULL;
+			}
+			if (kv_entries[i][j].value) {
+				kvs_free(kv_entries[i][j].value);
+				kv_entries[i][j].value = NULL;
+			}
+		}
+		if (kv_entries[i]) {
+			kvs_free(kv_entries[i]);
+		}
+	}
+	if (snapshot->vector_section.records) {
+		for (i = 0; i < snapshot->vector_section.record_count; ++i) {
+			kvs_rdb_snapshot_vector_record_t *record =
+				&snapshot->vector_section.records[i];
+			if (record->question) {
+				kvs_free(record->question);
+			}
+			if (record->answer) {
+				kvs_free(record->answer);
+			}
+			if (record->scope) {
+				kvs_free(record->scope);
+			}
+			if (record->normalized_question) {
+				kvs_free(record->normalized_question);
+			}
+			if (record->embedding) {
+				kvs_free(record->embedding);
+			}
+		}
+		kvs_free(snapshot->vector_section.records);
+		snapshot->vector_section.records = NULL;
+	}
+	kvs_free(snapshot);
+}
+
 static void kvs_command_executor_snapshot_task_complete(
 	kvs_full_sync_snapshot_task_t *task,
 	int status,
@@ -206,6 +288,26 @@ static void kvs_command_executor_snapshot_task_complete(
 	if (!task) {
 		if (snapshot) {
 			kvs_full_sync_snapshot_destroy(snapshot);
+		}
+		return;
+	}
+
+	pthread_mutex_lock(&task->mu);
+	task->status = status;
+	task->snapshot = snapshot;
+	task->done = 1;
+	pthread_cond_signal(&task->cv);
+	pthread_mutex_unlock(&task->mu);
+}
+
+static void kvs_command_executor_rdb_snapshot_task_complete(
+	kvs_rdb_snapshot_task_t *task,
+	int status,
+	kvs_rdb_snapshot_t *snapshot
+) {
+	if (!task) {
+		if (snapshot) {
+			kvs_rdb_snapshot_destroy(snapshot);
 		}
 		return;
 	}
@@ -819,6 +921,20 @@ static kvs_full_sync_snapshot_task_t *kvs_command_executor_pop_snapshot_locked(v
 	return task;
 }
 
+static kvs_rdb_snapshot_task_t *kvs_command_executor_pop_rdb_snapshot_locked(void) {
+	kvs_rdb_snapshot_task_t *task = g_executor.rdb_snapshot_head;
+
+	if (!task) {
+		return NULL;
+	}
+	g_executor.rdb_snapshot_head = task->queue_next;
+	if (!g_executor.rdb_snapshot_head) {
+		g_executor.rdb_snapshot_tail = NULL;
+	}
+	task->queue_next = NULL;
+	return task;
+}
+
 static int kvs_command_executor_repl_is_set(ms_op_t op) {
 	return op == MS_OP_ARRAY_SET ||
 	       op == MS_OP_RBTREE_RSET ||
@@ -1168,6 +1284,413 @@ static kvs_full_sync_snapshot_t *kvs_command_executor_create_full_sync_snapshot(
 	return snapshot;
 }
 
+typedef struct kvs_rdb_snapshot_count_s {
+	size_t array_count;
+	size_t rbtree_count;
+	size_t hash_count;
+	size_t skiptable_count;
+	size_t vector_count;
+} kvs_rdb_snapshot_count_t;
+
+typedef struct kvs_rdb_snapshot_rbtree_count_ctx_s {
+	size_t count;
+	int64_t now_ms;
+} kvs_rdb_snapshot_rbtree_count_ctx_t;
+
+#if ENABLE_RBTREE
+static void kvs_rdb_snapshot_count_rbtree_node(rbtree_node *node, void *userdata) {
+	kvs_rdb_snapshot_rbtree_count_ctx_t *ctx =
+		(kvs_rdb_snapshot_rbtree_count_ctx_t *)userdata;
+
+	if (!ctx || !node || !node->key || !node->value) {
+		return;
+	}
+	if (!kv_is_expired(node->expire_at_ms, ctx->now_ms)) {
+		ctx->count++;
+	}
+}
+#endif
+
+static int kvs_rdb_snapshot_builder_copy_embedding(
+	float **out,
+	const float *src,
+	int dim
+) {
+	size_t bytes;
+	float *buf;
+
+	if (!out) {
+		return -1;
+	}
+	*out = NULL;
+	if (!src || dim <= 0) {
+		return dim == 0 ? 0 : -1;
+	}
+	bytes = (size_t)dim * sizeof(float);
+	buf = (float *)kvs_malloc(bytes);
+	if (!buf) {
+		return -1;
+	}
+	memcpy(buf, src, bytes);
+	*out = buf;
+	return 0;
+}
+
+static int kvs_rdb_snapshot_builder_append_kv(
+	kvs_rdb_snapshot_kv_entry_t *entries,
+	size_t capacity,
+	size_t *next_index,
+	const char *key,
+	size_t key_len,
+	const char *value,
+	size_t value_len,
+	int64_t expire_at_ms
+) {
+	kvs_rdb_snapshot_kv_entry_t *entry;
+
+	if (!entries || !next_index || *next_index >= capacity) {
+		return -1;
+	}
+	entry = &entries[*next_index];
+	memset(entry, 0, sizeof(*entry));
+	entry->key_len = key_len;
+	entry->value_len = value_len;
+	entry->expire_at_ms = expire_at_ms;
+	if (kvs_full_sync_snapshot_builder_copy_bytes(&entry->key, key, key_len) != 0) {
+		return -1;
+	}
+	if (kvs_full_sync_snapshot_builder_copy_bytes(&entry->value, value, value_len) != 0) {
+		return -1;
+	}
+	(*next_index)++;
+	return 0;
+}
+
+static int kvs_rdb_snapshot_builder_append_vector(
+	kvs_rdb_snapshot_builder_t *builder,
+	const kvs_vector_record_t *src,
+	size_t record_index
+) {
+	kvs_rdb_snapshot_vector_record_t *dst;
+
+	if (!builder || !builder->snapshot || !src ||
+	    builder->vector_next_index >= builder->snapshot->vector_section.record_count) {
+		return -1;
+	}
+	dst = &builder->snapshot->vector_section.records[builder->vector_next_index];
+	memset(dst, 0, sizeof(*dst));
+	dst->record_index = record_index;
+	dst->id = src->id;
+	dst->question_len = src->question_len;
+	dst->answer_len = src->answer_len;
+	dst->scope_len = src->scope_len;
+	dst->normalized_question_len = src->normalized_question_len;
+	dst->embedding_dim = src->embedding_dim;
+	dst->state = src->state;
+	dst->deleted = src->deleted;
+	dst->created_at_ms = src->created_at_ms;
+	dst->updated_at_ms = src->updated_at_ms;
+
+	if (kvs_full_sync_snapshot_builder_copy_bytes(
+		    &dst->question, src->question, src->question_len) != 0 ||
+	    kvs_full_sync_snapshot_builder_copy_bytes(
+		    &dst->answer, src->answer, src->answer_len) != 0 ||
+	    kvs_full_sync_snapshot_builder_copy_bytes(
+		    &dst->scope, src->scope, src->scope_len) != 0 ||
+	    kvs_full_sync_snapshot_builder_copy_bytes(
+		    &dst->normalized_question,
+		    src->normalized_question,
+		    src->normalized_question_len) != 0 ||
+	    kvs_rdb_snapshot_builder_copy_embedding(
+		    &dst->embedding, src->embedding, src->embedding_dim) != 0) {
+		return -1;
+	}
+	builder->vector_next_index++;
+	return 0;
+}
+
+static void kvs_command_executor_count_rdb_snapshot(
+	kvs_rdb_snapshot_count_t *counts,
+	int64_t now_ms
+) {
+	int i;
+
+	if (!counts) {
+		return;
+	}
+	memset(counts, 0, sizeof(*counts));
+
+#if ENABLE_ARRAY
+	{
+		kvs_array_t *array = kvs_get_global_array();
+		for (i = 0; i < array->total; ++i) {
+			if (array->table[i].key &&
+			    array->table[i].value &&
+			    !kv_is_expired(array->table[i].expire_at_ms, now_ms)) {
+				counts->array_count++;
+			}
+		}
+	}
+#endif
+
+#if ENABLE_RBTREE
+	{
+		kvs_rdb_snapshot_rbtree_count_ctx_t ctx;
+		memset(&ctx, 0, sizeof(ctx));
+		ctx.now_ms = now_ms;
+		rbtree_traversal_with_callback(
+			(rbtree *)kvs_get_global_rbtree(),
+			kvs_get_global_rbtree()->root,
+			kvs_rdb_snapshot_count_rbtree_node,
+			&ctx
+		);
+		counts->rbtree_count = ctx.count;
+	}
+#endif
+
+#if ENABLE_HASH
+	{
+		kvs_hash_t *hash = kvs_get_global_hash();
+		for (i = 0; i < hash->max_slots; ++i) {
+			hashnode_t *slot = &hash->nodes[i];
+			if (slot->used == 1 &&
+			    slot->key &&
+			    slot->value &&
+			    !kv_is_expired(slot->expire_at_ms, now_ms)) {
+				counts->hash_count++;
+			}
+		}
+	}
+#endif
+
+#if ENABLE_SKIPTABLE
+	{
+		kvs_skiptable_t *skiptable = kvs_get_global_skiptable();
+		Node *current = skiptable->header ? skiptable->header->forward[0] : NULL;
+		while (current) {
+			if (current->key &&
+			    current->value &&
+			    !kv_is_expired(current->expire_at_ms, now_ms)) {
+				counts->skiptable_count++;
+			}
+			current = current->forward[0];
+		}
+	}
+#endif
+
+	{
+		kvs_vector_store_t *store = &g_vector_state.store;
+		for (i = 0; i < (int)store->capacity; ++i) {
+			if (store->records[i].state != KVS_VECTOR_RECORD_EMPTY) {
+				counts->vector_count++;
+			}
+		}
+	}
+}
+
+#if ENABLE_RBTREE
+static void kvs_rdb_snapshot_fill_rbtree_node(rbtree_node *node, void *userdata) {
+	kvs_rdb_snapshot_builder_t *builder =
+		(kvs_rdb_snapshot_builder_t *)userdata;
+
+	if (!builder || builder->failed || !node || !node->key || !node->value) {
+		return;
+	}
+	if (kv_is_expired(node->expire_at_ms, builder->snapshot->captured_at_ms)) {
+		return;
+	}
+	if (kvs_rdb_snapshot_builder_append_kv(
+		    builder->snapshot->rbtree_entries,
+		    builder->snapshot->rbtree_count,
+		    &builder->rbtree_next_index,
+		    node->key,
+		    node->key_len,
+		    (const char *)node->value,
+		    node->value_len,
+		    node->expire_at_ms) != 0) {
+		builder->failed = 1;
+	}
+}
+#endif
+
+static int kvs_command_executor_fill_rdb_snapshot(
+	kvs_rdb_snapshot_builder_t *builder,
+	int64_t now_ms
+) {
+	int i;
+
+	if (!builder || !builder->snapshot) {
+		return -1;
+	}
+
+#if ENABLE_ARRAY
+	{
+		kvs_array_t *array = kvs_get_global_array();
+		for (i = 0; i < array->total; ++i) {
+			kvs_array_item_t *item = &array->table[i];
+			if (!item->key || !item->value || kv_is_expired(item->expire_at_ms, now_ms)) {
+				continue;
+			}
+			if (kvs_rdb_snapshot_builder_append_kv(
+			        builder->snapshot->array_entries,
+			        builder->snapshot->array_count,
+			        &builder->array_next_index,
+			        item->key,
+			        item->key_len,
+			        item->value,
+			        item->value_len,
+			        item->expire_at_ms) != 0) {
+				return -1;
+			}
+		}
+	}
+#endif
+
+#if ENABLE_RBTREE
+	rbtree_traversal_with_callback(
+		(rbtree *)kvs_get_global_rbtree(),
+		kvs_get_global_rbtree()->root,
+		kvs_rdb_snapshot_fill_rbtree_node,
+		builder
+	);
+	if (builder->failed) {
+		return -1;
+	}
+#endif
+
+#if ENABLE_HASH
+	{
+		kvs_hash_t *hash = kvs_get_global_hash();
+		for (i = 0; i < hash->max_slots; ++i) {
+			hashnode_t *slot = &hash->nodes[i];
+			if (slot->used != 1 || !slot->key || !slot->value ||
+			    kv_is_expired(slot->expire_at_ms, now_ms)) {
+				continue;
+			}
+			if (kvs_rdb_snapshot_builder_append_kv(
+			        builder->snapshot->hash_entries,
+			        builder->snapshot->hash_count,
+			        &builder->hash_next_index,
+			        slot->key,
+			        slot->key_len,
+			        slot->value,
+			        slot->value_len,
+			        slot->expire_at_ms) != 0) {
+				return -1;
+			}
+		}
+	}
+#endif
+
+#if ENABLE_SKIPTABLE
+	{
+		kvs_skiptable_t *skiptable = kvs_get_global_skiptable();
+		Node *current = skiptable->header ? skiptable->header->forward[0] : NULL;
+		while (current) {
+			if (current->key &&
+			    current->value &&
+			    !kv_is_expired(current->expire_at_ms, now_ms)) {
+				if (kvs_rdb_snapshot_builder_append_kv(
+				        builder->snapshot->skiptable_entries,
+				        builder->snapshot->skiptable_count,
+				        &builder->skiptable_next_index,
+				        current->key,
+				        current->key_len,
+				        current->value,
+				        current->value_len,
+				        current->expire_at_ms) != 0) {
+					return -1;
+				}
+			}
+			current = current->forward[0];
+		}
+	}
+#endif
+
+	{
+		kvs_vector_store_t *store = &g_vector_state.store;
+		for (i = 0; i < (int)store->capacity; ++i) {
+			kvs_vector_record_t *record = &store->records[i];
+			if (record->state == KVS_VECTOR_RECORD_EMPTY) {
+				continue;
+			}
+			if (kvs_rdb_snapshot_builder_append_vector(builder, record, (size_t)i) != 0) {
+				return -1;
+			}
+		}
+	}
+
+	return builder->array_next_index == builder->snapshot->array_count &&
+	       builder->rbtree_next_index == builder->snapshot->rbtree_count &&
+	       builder->hash_next_index == builder->snapshot->hash_count &&
+	       builder->skiptable_next_index == builder->snapshot->skiptable_count &&
+	       builder->vector_next_index == builder->snapshot->vector_section.record_count ?
+		       0 :
+		       -1;
+}
+
+static kvs_rdb_snapshot_t *kvs_command_executor_create_rdb_snapshot(void) {
+	kvs_rdb_snapshot_t *snapshot;
+	kvs_rdb_snapshot_builder_t builder;
+	kvs_rdb_snapshot_count_t counts;
+	int64_t now_ms;
+
+	now_ms = kv_now_ms();
+	kvs_command_executor_count_rdb_snapshot(&counts, now_ms);
+
+	snapshot = (kvs_rdb_snapshot_t *)kvs_malloc(sizeof(*snapshot));
+	if (!snapshot) {
+		return NULL;
+	}
+	memset(snapshot, 0, sizeof(*snapshot));
+	memset(&builder, 0, sizeof(builder));
+
+	snapshot->captured_at_ms = now_ms;
+	snapshot->array_count = counts.array_count;
+	snapshot->rbtree_count = counts.rbtree_count;
+	snapshot->hash_count = counts.hash_count;
+	snapshot->skiptable_count = counts.skiptable_count;
+	snapshot->vector_section.initialized = g_vector_state.initialized;
+	snapshot->vector_section.metric_type = g_vector_state.metric_type;
+	snapshot->vector_section.index_type = g_vector_state.index_type;
+	snapshot->vector_section.next_id = g_vector_state.store.next_id;
+	snapshot->vector_section.record_count = counts.vector_count;
+	snapshot->vector_section.active_records = g_vector_state.store.active_records;
+	snapshot->vector_section.deleted_records = g_vector_state.store.deleted_records;
+
+#define KVS_ALLOC_RDB_SNAPSHOT_ENTRIES(field, count, type)                           \
+	do {                                                                         \
+		if ((count) > 0) {                                                    \
+			(field) = (type *)kvs_malloc((count) * sizeof(*(field)));      \
+			if (!(field)) {                                                \
+				kvs_rdb_snapshot_destroy(snapshot);                     \
+				return NULL;                                           \
+			}                                                                \
+			memset((field), 0, (count) * sizeof(*(field)));                 \
+		}                                                                    \
+	} while (0)
+
+	KVS_ALLOC_RDB_SNAPSHOT_ENTRIES(snapshot->array_entries, snapshot->array_count, kvs_rdb_snapshot_kv_entry_t);
+	KVS_ALLOC_RDB_SNAPSHOT_ENTRIES(snapshot->rbtree_entries, snapshot->rbtree_count, kvs_rdb_snapshot_kv_entry_t);
+	KVS_ALLOC_RDB_SNAPSHOT_ENTRIES(snapshot->hash_entries, snapshot->hash_count, kvs_rdb_snapshot_kv_entry_t);
+	KVS_ALLOC_RDB_SNAPSHOT_ENTRIES(snapshot->skiptable_entries, snapshot->skiptable_count, kvs_rdb_snapshot_kv_entry_t);
+	KVS_ALLOC_RDB_SNAPSHOT_ENTRIES(
+		snapshot->vector_section.records,
+		snapshot->vector_section.record_count,
+		kvs_rdb_snapshot_vector_record_t
+	);
+
+#undef KVS_ALLOC_RDB_SNAPSHOT_ENTRIES
+
+	builder.snapshot = snapshot;
+	if (kvs_command_executor_fill_rdb_snapshot(&builder, now_ms) != 0) {
+		kvs_rdb_snapshot_destroy(snapshot);
+		return NULL;
+	}
+
+	return snapshot;
+}
+
 static int kvs_command_executor_apply_repl_store(kvs_replicated_command_task_t *task) {
 	const char *value;
 	size_t value_len;
@@ -1451,6 +1974,30 @@ static void kvs_command_executor_execute_full_sync_snapshot(
 	kvs_command_executor_snapshot_task_complete(task, 0, snapshot);
 }
 
+static void kvs_command_executor_execute_rdb_snapshot(
+	kvs_rdb_snapshot_task_t *task
+) {
+	kvs_rdb_snapshot_t *snapshot = NULL;
+
+	if (!task) {
+		return;
+	}
+
+	if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+		kvs_command_executor_rdb_snapshot_task_complete(task, -1, NULL);
+		return;
+	}
+	snapshot = kvs_command_executor_create_rdb_snapshot();
+	pthread_rwlock_unlock(&g_kv_data_rwlock);
+
+	if (!snapshot) {
+		kvs_command_executor_rdb_snapshot_task_complete(task, -1, NULL);
+		return;
+	}
+
+	kvs_command_executor_rdb_snapshot_task_complete(task, 0, snapshot);
+}
+
 static int kvs_command_executor_should_async_prepare(kvs_command_task_t *task) {
 	return kvs_embedding_worker_pool_enabled() &&
 	       kvs_command_task_requires_embedding_prepare(task) &&
@@ -1663,6 +2210,7 @@ static void *kvs_command_executor_thread_main(void *arg) {
 		kvs_replicated_command_task_t *repl_task;
 		kvs_ttl_expire_task_t *ttl_task;
 		kvs_full_sync_snapshot_task_t *snapshot_task;
+		kvs_rdb_snapshot_task_t *rdb_snapshot_task;
 
 		pthread_mutex_lock(&g_executor.cmd_mu);
 		while (!g_executor.prepared_head &&
@@ -1670,6 +2218,7 @@ static void *kvs_command_executor_thread_main(void *arg) {
 		       !g_executor.ttl_head &&
 		       !g_executor.cmd_head &&
 		       !g_executor.snapshot_head &&
+		       !g_executor.rdb_snapshot_head &&
 		       !g_executor.stopping) {
 			pthread_cond_wait(&g_executor.cmd_cv, &g_executor.cmd_mu);
 		}
@@ -1678,6 +2227,7 @@ static void *kvs_command_executor_thread_main(void *arg) {
 		    !g_executor.ttl_head &&
 		    !g_executor.cmd_head &&
 		    !g_executor.snapshot_head &&
+		    !g_executor.rdb_snapshot_head &&
 		    g_executor.stopping) {
 			pthread_mutex_unlock(&g_executor.cmd_mu);
 			break;
@@ -1685,6 +2235,7 @@ static void *kvs_command_executor_thread_main(void *arg) {
 		repl_task = NULL;
 		ttl_task = NULL;
 		snapshot_task = NULL;
+		rdb_snapshot_task = NULL;
 		task = kvs_command_executor_pop_prepared_locked();
 		if (!task) {
 			repl_task = kvs_command_executor_pop_repl_locked();
@@ -1694,6 +2245,9 @@ static void *kvs_command_executor_thread_main(void *arg) {
 					task = kvs_command_executor_pop_command_locked();
 					if (!task) {
 						snapshot_task = kvs_command_executor_pop_snapshot_locked();
+						if (!snapshot_task) {
+							rdb_snapshot_task = kvs_command_executor_pop_rdb_snapshot_locked();
+						}
 					}
 				}
 			}
@@ -1728,6 +2282,8 @@ static void *kvs_command_executor_thread_main(void *arg) {
 			kvs_command_executor_execute_ttl(ttl_task);
 		} else if (snapshot_task) {
 			kvs_command_executor_execute_full_sync_snapshot(snapshot_task);
+		} else if (rdb_snapshot_task) {
+			kvs_command_executor_execute_rdb_snapshot(rdb_snapshot_task);
 		} else {
 			kvs_command_executor_dispatch_or_execute(task);
 		}
@@ -1778,6 +2334,7 @@ void kvs_command_executor_stop(void) {
 	kvs_replicated_command_task_t *repl_task;
 	kvs_ttl_expire_task_t *ttl_task;
 	kvs_full_sync_snapshot_task_t *snapshot_task;
+	kvs_rdb_snapshot_task_t *rdb_snapshot_task;
 	kvs_response_task_t *resp;
 	int should_join;
 
@@ -1811,6 +2368,9 @@ void kvs_command_executor_stop(void) {
 	snapshot_task = g_executor.snapshot_head;
 	g_executor.snapshot_head = NULL;
 	g_executor.snapshot_tail = NULL;
+	rdb_snapshot_task = g_executor.rdb_snapshot_head;
+	g_executor.rdb_snapshot_head = NULL;
+	g_executor.rdb_snapshot_tail = NULL;
 	pthread_mutex_unlock(&g_executor.cmd_mu);
 	while (task) {
 		kvs_command_task_t *next = task->queue_next;
@@ -1847,6 +2407,12 @@ void kvs_command_executor_stop(void) {
 		snapshot_task->queue_next = NULL;
 		kvs_command_executor_snapshot_task_complete(snapshot_task, -1, NULL);
 		snapshot_task = next;
+	}
+	while (rdb_snapshot_task) {
+		kvs_rdb_snapshot_task_t *next = rdb_snapshot_task->queue_next;
+		rdb_snapshot_task->queue_next = NULL;
+		kvs_command_executor_rdb_snapshot_task_complete(rdb_snapshot_task, -1, NULL);
+		rdb_snapshot_task = next;
 	}
 
 	pthread_mutex_lock(&g_executor.resp_mu);
@@ -2071,6 +2637,68 @@ int kvs_command_executor_build_full_sync_snapshot(kvs_full_sync_snapshot_t **out
 
 	if (task->snapshot) {
 		kvs_full_sync_snapshot_destroy(task->snapshot);
+		task->snapshot = NULL;
+	}
+	pthread_cond_destroy(&task->cv);
+	pthread_mutex_destroy(&task->mu);
+	kvs_free(task);
+	return status;
+}
+
+int kvs_command_executor_build_rdb_snapshot(kvs_rdb_snapshot_t **out) {
+	kvs_rdb_snapshot_task_t *task;
+	int status;
+
+	if (!out) {
+		return -1;
+	}
+	*out = NULL;
+
+	task = (kvs_rdb_snapshot_task_t *)kvs_malloc(sizeof(*task));
+	if (!task) {
+		return -1;
+	}
+	memset(task, 0, sizeof(*task));
+	if (pthread_mutex_init(&task->mu, NULL) != 0) {
+		kvs_free(task);
+		return -1;
+	}
+	if (pthread_cond_init(&task->cv, NULL) != 0) {
+		pthread_mutex_destroy(&task->mu);
+		kvs_free(task);
+		return -1;
+	}
+
+	pthread_mutex_lock(&g_executor.cmd_mu);
+	if (!g_executor.running || g_executor.stopping) {
+		pthread_mutex_unlock(&g_executor.cmd_mu);
+		pthread_cond_destroy(&task->cv);
+		pthread_mutex_destroy(&task->mu);
+		kvs_free(task);
+		return -1;
+	}
+	if (g_executor.rdb_snapshot_tail) {
+		g_executor.rdb_snapshot_tail->queue_next = task;
+	} else {
+		g_executor.rdb_snapshot_head = task;
+	}
+	g_executor.rdb_snapshot_tail = task;
+	pthread_cond_signal(&g_executor.cmd_cv);
+	pthread_mutex_unlock(&g_executor.cmd_mu);
+
+	pthread_mutex_lock(&task->mu);
+	while (!task->done) {
+		pthread_cond_wait(&task->cv, &task->mu);
+	}
+	status = task->status;
+	if (status == 0) {
+		*out = task->snapshot;
+		task->snapshot = NULL;
+	}
+	pthread_mutex_unlock(&task->mu);
+
+	if (task->snapshot) {
+		kvs_rdb_snapshot_destroy(task->snapshot);
 		task->snapshot = NULL;
 	}
 	pthread_cond_destroy(&task->cv);

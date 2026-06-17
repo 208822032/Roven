@@ -1,5 +1,6 @@
 #define KVS_VECTOR_INTERNAL
 #include "kvstore.h"
+#include "kvs_command_executor.h"
 #include "kvs_globals.h"
 #include <stdio.h>
 #include <string.h>
@@ -36,13 +37,13 @@ extern kvs_skiptable_t global_skiptable;
 extern rbtree_node *rbtree_search(rbtree *T, KEY_TYPE key);
 
 // 内部函数前向声明（需在首次调用前声明以避免隐式声明）
-static void rdb_save_array(FILE *fp, int64_t now_ms);
+static int rdb_save_array_snapshot(FILE *fp, const kvs_rdb_snapshot_t *snapshot);
 static int rdb_load_array(FILE *fp, uint8_t version, int64_t now_ms);
-static void rdb_save_rbtree(FILE *fp, int64_t now_ms);
+static int rdb_save_rbtree_snapshot(FILE *fp, const kvs_rdb_snapshot_t *snapshot);
 static int rdb_load_rbtree(FILE *fp, uint8_t version, int64_t now_ms);
-static void rdb_save_hash(FILE *fp, int64_t now_ms);
+static int rdb_save_hash_snapshot(FILE *fp, const kvs_rdb_snapshot_t *snapshot);
 static int rdb_load_hash(FILE *fp, uint8_t version, int64_t now_ms);
-static void rdb_save_skiptable(FILE *fp, int64_t now_ms);
+static int rdb_save_skiptable_snapshot(FILE *fp, const kvs_rdb_snapshot_t *snapshot);
 static int rdb_load_skiptable(FILE *fp, uint8_t version, int64_t now_ms);
 
 static int rdb_write_exact(FILE *fp, const void *buf, size_t size) {
@@ -130,36 +131,36 @@ static int rdb_read_blob(FILE *fp, char **out, uint32_t *out_len) {
     return RDB_OK;
 }
 
-static int rdb_save_vector_section(FILE *fp) {
-    kvs_vector_store_t *store = &g_vector_state.store;
+static int rdb_save_vector_section_snapshot(
+    FILE *fp,
+    const kvs_rdb_snapshot_t *snapshot
+) {
+    const kvs_rdb_snapshot_vector_section_t *vector;
     uint8_t type = RDB_TYPE_VECTOR;
     uint8_t section_version = RDB_VECTOR_SECTION_VERSION;
-    uint64_t record_count = 0;
-    long count_pos;
     size_t i;
 
-    if (!g_vector_state.initialized) {
+    if (!snapshot) {
+        return RDB_ERR;
+    }
+
+    vector = &snapshot->vector_section;
+    if (!vector->initialized) {
         return RDB_OK;
     }
 
     if (rdb_write_u8(fp, type) != RDB_OK) return RDB_ERR;
     if (rdb_write_u8(fp, section_version) != RDB_OK) return RDB_ERR;
 
-    if (rdb_write_i32(fp, (int32_t)g_vector_state.metric_type) != RDB_OK) return RDB_ERR;
-    if (rdb_write_i32(fp, (int32_t)g_vector_state.index_type) != RDB_OK) return RDB_ERR;
-    if (rdb_write_u64(fp, store->next_id) != RDB_OK) return RDB_ERR;
+    if (rdb_write_i32(fp, (int32_t)vector->metric_type) != RDB_OK) return RDB_ERR;
+    if (rdb_write_i32(fp, (int32_t)vector->index_type) != RDB_OK) return RDB_ERR;
+    if (rdb_write_u64(fp, vector->next_id) != RDB_OK) return RDB_ERR;
+    if (rdb_write_u64(fp, (uint64_t)vector->record_count) != RDB_OK) return RDB_ERR;
 
-    count_pos = ftell(fp);
-    if (rdb_write_u64(fp, 0) != RDB_OK) return RDB_ERR;
+    for (i = 0; i < vector->record_count; ++i) {
+        const kvs_rdb_snapshot_vector_record_t *record = &vector->records[i];
 
-    for (i = 0; i < store->capacity; ++i) {
-        kvs_vector_record_t *record = &store->records[i];
-
-        if (record->state == KVS_VECTOR_RECORD_EMPTY) {
-            continue;
-        }
-
-        if (rdb_write_u64(fp, (uint64_t)i) != RDB_OK) return RDB_ERR;
+        if (rdb_write_u64(fp, (uint64_t)record->record_index) != RDB_OK) return RDB_ERR;
         if (rdb_write_u8(fp, (uint8_t)record->state) != RDB_OK) return RDB_ERR;
         if (rdb_write_u8(fp, (uint8_t)record->deleted) != RDB_OK) return RDB_ERR;
         if (rdb_write_u64(fp, record->id) != RDB_OK) return RDB_ERR;
@@ -177,21 +178,12 @@ static int rdb_save_vector_section(FILE *fp) {
 
         if (rdb_write_i64(fp, record->created_at_ms) != RDB_OK) return RDB_ERR;
         if (rdb_write_i64(fp, record->updated_at_ms) != RDB_OK) return RDB_ERR;
-
-        record_count++;
-    }
-
-    {
-        long current_pos = ftell(fp);
-        fseek(fp, count_pos, SEEK_SET);
-        rdb_write_u64(fp, record_count);
-        fseek(fp, current_pos, SEEK_SET);
     }
 
     KVS_LOG_INFO("persistence", "RDB vector section saved: records=%llu active=%zu deleted=%zu",
-                 (unsigned long long)record_count,
-                 store->active_records,
-                 store->deleted_records);
+                 (unsigned long long)vector->record_count,
+                 vector->active_records,
+                 vector->deleted_records);
 
     return RDB_OK;
 }
@@ -414,12 +406,15 @@ static int file_exists(const char *filename){
 
 }
 
-/*
- * Caller must provide a stable traversal boundary for live store data.
- * Today kvs_rdb_save() does that with g_kv_data_rwlock read lock.
- */
-static int kvs_rdb_save_unlocked(const char *filename){
+static int kvs_rdb_save_snapshot_file(
+    const char *filename,
+    const kvs_rdb_snapshot_t *snapshot
+){
     char tmpname[1024];
+
+    if (!filename || !snapshot) {
+        return RDB_ERR;
+    }
 
     // 构造临时文件名：<filename>.tmp
     if (snprintf(tmpname, sizeof(tmpname), "%s.tmp", filename) >= (int)sizeof(tmpname)) {
@@ -442,27 +437,23 @@ static int kvs_rdb_save_unlocked(const char *filename){
     time_t timestamp = time(NULL);
     if (rdb_write_exact(fp, &timestamp, sizeof(timestamp)) != RDB_OK) goto write_error;
 
-    //保存各数据结构
-    int64_t now_ms = kv_now_ms();
-
 #if ENABLE_ARRAY
-
-    rdb_save_array(fp, now_ms);
+    if (rdb_save_array_snapshot(fp, snapshot) != RDB_OK) goto write_error;
 #endif
 
 #if ENABLE_RBTREE
-    rdb_save_rbtree(fp, now_ms);
+    if (rdb_save_rbtree_snapshot(fp, snapshot) != RDB_OK) goto write_error;
 #endif
 
 #if ENABLE_HASH
-    rdb_save_hash(fp, now_ms);
+    if (rdb_save_hash_snapshot(fp, snapshot) != RDB_OK) goto write_error;
 #endif
 
 #if ENABLE_SKIPTABLE
-    rdb_save_skiptable(fp, now_ms);
+    if (rdb_save_skiptable_snapshot(fp, snapshot) != RDB_OK) goto write_error;
 #endif
 
-    if (rdb_save_vector_section(fp) != RDB_OK) goto write_error;
+    if (rdb_save_vector_section_snapshot(fp, snapshot) != RDB_OK) goto write_error;
 
     //写入结束标识
     {
@@ -508,25 +499,17 @@ write_error_no_close:
 
 //保存rdb文件
 int kvs_rdb_save(const char *filename){
-    int lock_ret;
+    kvs_rdb_snapshot_t *snapshot = NULL;
     int ret;
 
-    /*
-     * 阶段 0.5 临时一致性修复：RDB save 会遍历普通 KV 和 vector
-     * live store，因此外层持全局读锁覆盖整个保存过程。这样会在
-     * save 期间阻塞写命令，并且当前仍在读锁内执行文件 IO。
-     * 长期路线 C 会改为 executor 生成一致性 snapshot，RDB IO 线程
-     * 只负责锁外写 snapshot。
-     */
-    lock_ret = pthread_rwlock_rdlock(&g_kv_data_rwlock);
-    if (lock_ret != 0) {
-        KVS_LOG_ERROR("persistence", "failed to acquire RDB save read lock: %d", lock_ret);
+    ret = kvs_command_executor_build_rdb_snapshot(&snapshot);
+    if (ret != 0 || !snapshot) {
+        KVS_LOG_ERROR("persistence", "failed to build RDB snapshot via executor");
         return RDB_ERR;
     }
 
-    ret = kvs_rdb_save_unlocked(filename);
-
-    pthread_rwlock_unlock(&g_kv_data_rwlock);
+    ret = kvs_rdb_save_snapshot_file(filename, snapshot);
+    kvs_rdb_snapshot_destroy(snapshot);
     return ret;
 }
 
@@ -664,38 +647,50 @@ int kvs_rdb_load(const char *filename){
 
  
 
-//保存数组
-static void rdb_save_array(FILE *fp, int64_t now_ms){
-    uint8_t type = 0x01; // 数据类型标识符
-    fwrite(&type, sizeof(type), 1, fp);
+static int rdb_save_snapshot_entries(
+    FILE *fp,
+    uint8_t type,
+    const kvs_rdb_snapshot_kv_entry_t *entries,
+    size_t count
+) {
+    uint32_t count_u32;
+    size_t i;
 
-    long count_pos = ftell(fp);
-    uint32_t count = 0;
-    fwrite(&count, sizeof(count), 1, fp);
-    for (int i = 0; i < global_array.len; i++) {
-        if (!global_array.table[i].key || !global_array.table[i].value) continue;
-        if (kv_is_expired(global_array.table[i].expire_at_ms, now_ms)) continue;
-
-        uint32_t key_len   = global_array.table[i].key_len;
-        uint32_t value_len = global_array.table[i].value_len;
-
-        fwrite(&key_len, sizeof(key_len), 1, fp);
-        fwrite(global_array.table[i].key, key_len, 1, fp);
-        fwrite(&value_len, sizeof(value_len), 1, fp);
-        fwrite(global_array.table[i].value, value_len, 1, fp);
-
-#if RDB_VERSION >= 2
-        fwrite(&global_array.table[i].expire_at_ms, sizeof(int64_t), 1, fp);
-#endif
-
-        count++;
+    if (!fp) {
+        return RDB_ERR;
     }
+    if (count > UINT32_MAX) {
+        return RDB_ERR;
+    }
+    count_u32 = (uint32_t)count;
+    if (rdb_write_u8(fp, type) != RDB_OK) return RDB_ERR;
+    if (rdb_write_exact(fp, &count_u32, sizeof(count_u32)) != RDB_OK) return RDB_ERR;
+    for (i = 0; i < count; ++i) {
+        uint32_t key_len = (uint32_t)entries[i].key_len;
+        uint32_t value_len = (uint32_t)entries[i].value_len;
 
-    long current_pos = ftell(fp);
-    fseek(fp, count_pos, SEEK_SET);
-    fwrite(&count, sizeof(count), 1, fp);
-    fseek(fp, current_pos, SEEK_SET);
+        if (rdb_write_exact(fp, &key_len, sizeof(key_len)) != RDB_OK) return RDB_ERR;
+        if (key_len > 0 && rdb_write_exact(fp, entries[i].key, key_len) != RDB_OK) return RDB_ERR;
+        if (rdb_write_exact(fp, &value_len, sizeof(value_len)) != RDB_OK) return RDB_ERR;
+        if (value_len > 0 && rdb_write_exact(fp, entries[i].value, value_len) != RDB_OK) return RDB_ERR;
+#if RDB_VERSION >= 2
+        if (rdb_write_exact(fp, &entries[i].expire_at_ms, sizeof(int64_t)) != RDB_OK) return RDB_ERR;
+#endif
+    }
+    return RDB_OK;
+}
 
+//保存数组
+static int rdb_save_array_snapshot(FILE *fp, const kvs_rdb_snapshot_t *snapshot){
+    if (!snapshot) {
+        return RDB_ERR;
+    }
+    return rdb_save_snapshot_entries(
+        fp,
+        RDB_TYPE_ARRAY,
+        snapshot->array_entries,
+        snapshot->array_count
+    );
 }
 
 //加载数组
@@ -779,56 +774,17 @@ static int rdb_load_array(FILE *fp, uint8_t version, int64_t now_ms){
     return RDB_OK;
 }
 
-static void rdb_save_rbtree_node(rbtree_node *node,
-                                 rbtree *T,
-                                 FILE *fp,
-                                 uint32_t *count,
-                                 int64_t now_ms)
-{
-    if (node == T->nil) return;
-
-    rdb_save_rbtree_node(node->left, T, fp, count, now_ms);
-
-    if (kv_is_expired(node->expire_at_ms, now_ms)) {
-        rdb_save_rbtree_node(node->right, T, fp, count, now_ms);
-        return;
-    }
-
-    uint32_t key_len   = (uint32_t)node->key_len;
-    uint32_t value_len = (uint32_t)node->value_len;
-
-    fwrite(&key_len,   sizeof(key_len),   1, fp);
-    fwrite(node->key,  key_len,          1, fp);
-    fwrite(&value_len, sizeof(value_len),1, fp);
-    fwrite(node->value,value_len,        1, fp);
-#if RDB_VERSION >= 2
-    fwrite(&node->expire_at_ms, sizeof(int64_t), 1, fp);
-#endif
-
-    (*count)++;
-
-    rdb_save_rbtree_node(node->right, T, fp, count, now_ms);
-}
-
 //保存红黑树
-static void rdb_save_rbtree(FILE *fp, int64_t now_ms){
-    uint8_t type = 0x02;//红黑树类型
-    fwrite(&type, sizeof(type), 1, fp);
-
-    // 先占位写入 0，稍后回填
-    long count_pos = ftell(fp);
-    uint32_t count = 0;
-    fwrite(&count, sizeof(count), 1, fp);
-
-    // 中序遍历保存所有节点
-    rdb_save_rbtree_node(global_rbtree.root, &global_rbtree, fp, &count, now_ms);
-
-    // 回写实际数量
-    long current_pos = ftell(fp);
-    fseek(fp, count_pos, SEEK_SET);
-    fwrite(&count, sizeof(count), 1, fp);
-    fseek(fp, current_pos, SEEK_SET);
-
+static int rdb_save_rbtree_snapshot(FILE *fp, const kvs_rdb_snapshot_t *snapshot){
+    if (!snapshot) {
+        return RDB_ERR;
+    }
+    return rdb_save_snapshot_entries(
+        fp,
+        RDB_TYPE_RBTREE,
+        snapshot->rbtree_entries,
+        snapshot->rbtree_count
+    );
 }
 
 //红黑树加载实现
@@ -901,46 +857,16 @@ static int rdb_load_rbtree(FILE *fp, uint8_t version, int64_t now_ms){
 }
 
 //哈希表实现
-static void rdb_save_hash(FILE *fp, int64_t now_ms){
-    uint8_t type = 0x03; // 哈希表类型标识
-    fwrite(&type, sizeof(type), 1, fp);
-
-    if (!global_hash.nodes || global_hash.max_slots == 0) { // 防御
-        uint32_t zero = 0;
-        fwrite(&zero, sizeof(zero), 1, fp);
-        return;
+static int rdb_save_hash_snapshot(FILE *fp, const kvs_rdb_snapshot_t *snapshot){
+    if (!snapshot) {
+        return RDB_ERR;
     }
-
-    uint32_t count = 0;
-    long count_pos = ftell(fp);
-    fwrite(&count, sizeof(count), 1, fp); // 占位
-
-    for (int i = 0; i < global_hash.max_slots; i++) {
-        hashnode_t *slot = &global_hash.nodes[i];
-        if (slot->used != 1) continue; // 只保存有效元素
-        if (kv_is_expired(slot->expire_at_ms, now_ms)) continue;
-
-        uint32_t key_len   = (uint32_t)slot->key_len;
-        uint32_t value_len = (uint32_t)slot->value_len;
-
-        fwrite(&key_len, sizeof(key_len), 1, fp);
-        fwrite(slot->key, key_len, 1, fp);
-        fwrite(&value_len, sizeof(value_len), 1, fp);
-        fwrite(slot->value, value_len, 1, fp);
-#if RDB_VERSION >= 2
-        fwrite(&slot->expire_at_ms, sizeof(int64_t), 1, fp);
-#endif
-
-        count++;
-    }
-
-
-    // 回写实际数量
-    long current_pos = ftell(fp);
-    fseek(fp, count_pos, SEEK_SET);
-    fwrite(&count, sizeof(count), 1, fp);
-    fseek(fp, current_pos, SEEK_SET);
-
+    return rdb_save_snapshot_entries(
+        fp,
+        RDB_TYPE_HASH,
+        snapshot->hash_entries,
+        snapshot->hash_count
+    );
 }
 
 //哈希表加载
@@ -1012,41 +938,16 @@ static int rdb_load_hash(FILE *fp, uint8_t version, int64_t now_ms){
 }
 
 //跳表保存
-static void rdb_save_skiptable(FILE *fp, int64_t now_ms){
-    uint8_t type = 0x04; // 跳表类型标识
-    fwrite(&type, sizeof(type), 1, fp);
-
-    long count_pos = ftell(fp);
-    uint32_t count = 0;
-    fwrite(&count, sizeof(count), 1, fp);
-
-    Node *current = global_skiptable.header->forward[0];
-    while (current) {
-        if (!current->key || !current->value || kv_is_expired(current->expire_at_ms, now_ms)) {
-            current = current->forward[0];
-            continue;
-        }
-        uint32_t key_len = current->key_len;
-        uint32_t value_len = current->value_len;
-        
-        fwrite(&key_len, sizeof(key_len), 1, fp);
-        fwrite(current->key, key_len, 1, fp);
-        fwrite(&value_len, sizeof(value_len), 1, fp);
-        fwrite(current->value, value_len, 1, fp);
-#if RDB_VERSION >= 2
-        fwrite(&current->expire_at_ms, sizeof(int64_t), 1, fp);
-#endif
-        count++;
-        
-        current = current->forward[0];
+static int rdb_save_skiptable_snapshot(FILE *fp, const kvs_rdb_snapshot_t *snapshot){
+    if (!snapshot) {
+        return RDB_ERR;
     }
-
-    long current_pos = ftell(fp);
-    fseek(fp, count_pos, SEEK_SET);
-    fwrite(&count, sizeof(count), 1, fp);
-    fseek(fp, current_pos, SEEK_SET);
-
-    
+    return rdb_save_snapshot_entries(
+        fp,
+        RDB_TYPE_SKIPTABLE,
+        snapshot->skiptable_entries,
+        snapshot->skiptable_count
+    );
 }
 
 //跳表加载
@@ -1116,6 +1017,3 @@ static int rdb_load_skiptable(FILE *fp, uint8_t version, int64_t now_ms){
 
     return RDB_OK;
 }
-
-
-

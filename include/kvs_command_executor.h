@@ -5,6 +5,7 @@
 
 #include "kvs_command_task.h"
 #include "kvs_response_task.h"
+#include "kvs_vector.h"
 #include "master_slave_proto.h"
 
 typedef struct kvs_ttl_expire_task_s {
@@ -47,6 +48,57 @@ typedef struct kvs_full_sync_snapshot_s {
 	size_t entry_count;
 	int64_t captured_at_ms;
 } kvs_full_sync_snapshot_t;
+
+typedef struct kvs_rdb_snapshot_kv_entry_s {
+	char *key;
+	size_t key_len;
+	char *value;
+	size_t value_len;
+	int64_t expire_at_ms;
+} kvs_rdb_snapshot_kv_entry_t;
+
+typedef struct kvs_rdb_snapshot_vector_record_s {
+	size_t record_index;
+	uint64_t id;
+	char *question;
+	size_t question_len;
+	char *answer;
+	size_t answer_len;
+	char *scope;
+	size_t scope_len;
+	char *normalized_question;
+	size_t normalized_question_len;
+	float *embedding;
+	int embedding_dim;
+	int state;
+	int deleted;
+	int64_t created_at_ms;
+	int64_t updated_at_ms;
+} kvs_rdb_snapshot_vector_record_t;
+
+typedef struct kvs_rdb_snapshot_vector_section_s {
+	int initialized;
+	kvs_vector_metric_type_t metric_type;
+	kvs_vector_index_type_t index_type;
+	uint64_t next_id;
+	size_t record_count;
+	size_t active_records;
+	size_t deleted_records;
+	kvs_rdb_snapshot_vector_record_t *records;
+} kvs_rdb_snapshot_vector_section_t;
+
+typedef struct kvs_rdb_snapshot_s {
+	int64_t captured_at_ms;
+	kvs_rdb_snapshot_kv_entry_t *array_entries;
+	size_t array_count;
+	kvs_rdb_snapshot_kv_entry_t *rbtree_entries;
+	size_t rbtree_count;
+	kvs_rdb_snapshot_kv_entry_t *hash_entries;
+	size_t hash_count;
+	kvs_rdb_snapshot_kv_entry_t *skiptable_entries;
+	size_t skiptable_count;
+	kvs_rdb_snapshot_vector_section_t vector_section;
+} kvs_rdb_snapshot_t;
 
 typedef struct kvs_command_executor_stats_s {
 	uint64_t submitted_tasks;
@@ -159,6 +211,7 @@ int kvs_command_executor_submit_replicated(ms_op_t op,
                                            size_t value_len,
                                            int64_t expire_at_ms);
 int kvs_command_executor_build_full_sync_snapshot(kvs_full_sync_snapshot_t **out);
+int kvs_command_executor_build_rdb_snapshot(kvs_rdb_snapshot_t **out);
 int kvs_command_executor_poll_response(kvs_response_task_t **resp);
 int kvs_command_executor_poll_response_for(int owner_type,
                                            int owner_poller_id,
@@ -170,5 +223,6 @@ int kvs_command_executor_response_event_fd(void);
 void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out);
 void kvs_command_executor_record_response_drop(int reason);
 void kvs_full_sync_snapshot_destroy(kvs_full_sync_snapshot_t *snapshot);
+void kvs_rdb_snapshot_destroy(kvs_rdb_snapshot_t *snapshot);
 
 #endif /* KVS_COMMAND_EXECUTOR_H */
