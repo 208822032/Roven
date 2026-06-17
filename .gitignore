@@ -56,8 +56,8 @@ cmake-build-*/
 *.aof
 *.dat
 *.pid
-core
-core.*
+/core
+/core.*
 
 # Logs and benchmark outputs generated locally.
 # Some historical logs/results are already tracked; this prevents new ones.

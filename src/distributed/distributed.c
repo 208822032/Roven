@@ -45,13 +45,65 @@ extern kvs_skiptable_t global_skiptable;
 static int master_sync_key_expire_at(const char *key, size_t key_len, int64_t expire_at_ms)
 {
     if (!key || expire_at_ms < 0) {
-        return 0;
+        return -1;
     }
 
     char expire_buf[32];
     snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)expire_at_ms);
-    master_sync_command("PEXPIREAT", key, key_len, expire_buf, strlen(expire_buf));
-    return 1;
+    return master_sync_command("PEXPIREAT", key, key_len, expire_buf, strlen(expire_buf));
+}
+
+static const char *master_full_sync_snapshot_entry_command(
+    kvs_full_sync_snapshot_backend_t backend
+) {
+    switch (backend) {
+        case KVS_FULL_SYNC_SNAPSHOT_BACKEND_ARRAY:
+            return "SET";
+        case KVS_FULL_SYNC_SNAPSHOT_BACKEND_RBTREE:
+            return "RSET";
+        case KVS_FULL_SYNC_SNAPSHOT_BACKEND_HASH:
+            return "HSET";
+        case KVS_FULL_SYNC_SNAPSHOT_BACKEND_SKIPTABLE:
+            return "SSET";
+        default:
+            return NULL;
+    }
+}
+
+static int master_send_full_sync_snapshot(
+    const kvs_full_sync_snapshot_t *snapshot
+) {
+    size_t i;
+
+    if (!snapshot) {
+        return -1;
+    }
+
+    for (i = 0; i < snapshot->entry_count; ++i) {
+        const kvs_full_sync_snapshot_entry_t *entry = &snapshot->entries[i];
+        const char *cmd = master_full_sync_snapshot_entry_command(entry->backend);
+
+        if (!cmd) {
+            return -1;
+        }
+        if (master_sync_command(
+                cmd,
+                entry->key,
+                entry->key_len,
+                entry->value,
+                entry->value_len) != 0) {
+            return -1;
+        }
+        if (entry->expire_at_ms >= 0 &&
+            master_sync_key_expire_at(
+                entry->key,
+                entry->key_len,
+                entry->expire_at_ms) != 0) {
+            return -1;
+        }
+    }
+
+    return 0;
 }
 
 //每个slave同步线程 先全量 再增量
@@ -59,86 +111,28 @@ void* slave_sync_thread(void *arg){
 
     slave_info_t *slave = (slave_info_t*)arg;
     int sockfd = slave->sockfd;
+    kvs_full_sync_snapshot_t *snapshot = NULL;
 
     KVS_LOG_INFO("dist", "slave connected from %s:%d",
                  inet_ntoa(slave->addr.sin_addr),
                  ntohs(slave->addr.sin_port));
 
-    int64_t now_ms = kv_now_ms();
-
-    /*
-     * Route C phase 0.5 stability fix:
-     * master full sync still streams records while traversing the live store.
-     * Holding the global read lock here prevents concurrent writers/TTL cleanup
-     * from freeing nodes during traversal. This may block write commands for the
-     * duration of the full sync. The long-term Route C plan is an executor
-     * snapshot_task: executor builds a consistent snapshot and the sync thread
-     * only sends that snapshot without touching live store.
-     */
-    int lock_ret = pthread_rwlock_rdlock(&g_kv_data_rwlock);
-    if (lock_ret != 0) {
-        KVS_LOG_ERROR("dist", "failed to acquire data read lock for master full sync: ret=%d", lock_ret);
+    if (kvs_command_executor_build_full_sync_snapshot(&snapshot) != 0 || !snapshot) {
+        KVS_LOG_ERROR("dist", "failed to build full sync snapshot for slave %s:%d",
+                      inet_ntoa(slave->addr.sin_addr),
+                      ntohs(slave->addr.sin_port));
         goto cleanup_slave;
     }
 
-    // 全量同步：遍历本地所有数据结构，对每个 key 调用 master_sync_command()
-#if ENABLE_ARRAY
-    for (int i = 0; i < global_array.total; i++) {
-        if (global_array.table[i].key && global_array.table[i].value &&
-            !kv_is_expired(global_array.table[i].expire_at_ms, now_ms)) {
-            master_sync_command("SET",
-                                global_array.table[i].key, global_array.table[i].key_len,
-                                global_array.table[i].value, global_array.table[i].value_len);
-            if (global_array.table[i].expire_at_ms >= 0) {
-                master_sync_key_expire_at(global_array.table[i].key, global_array.table[i].key_len,
-                                          global_array.table[i].expire_at_ms);
-            }
-        }
+    if (master_send_full_sync_snapshot(snapshot) != 0) {
+        KVS_LOG_ERROR("dist", "failed to send full sync snapshot to slave %s:%d",
+                      inet_ntoa(slave->addr.sin_addr),
+                      ntohs(slave->addr.sin_port));
+        goto cleanup_slave;
     }
-#endif
 
-#if ENABLE_RBTREE
-    /* 递归遍历 rbtree 执行全量同步 */
-    void send_rbtree_node(rbtree_node *node) {
-        if (node == global_rbtree.nil) return;
-        send_rbtree_node(node->left);
-        if (!kv_is_expired(node->expire_at_ms, now_ms)) {
-            master_sync_command("RSET", node->key, node->key_len, (char*)node->value, node->value_len);
-            if (node->expire_at_ms >= 0) {
-                master_sync_key_expire_at(node->key, node->key_len, node->expire_at_ms);
-            }
-        }
-        send_rbtree_node(node->right);
-    }
-    send_rbtree_node(global_rbtree.root);
-#endif
-
-#if ENABLE_HASH
-    for (int i = 0; i < global_hash.max_slots; i++) {
-        hashnode_t *slot = &global_hash.nodes[i];
-        if (slot->used == 1 && !kv_is_expired(slot->expire_at_ms, now_ms)) {
-            master_sync_command("HSET", slot->key, slot->key_len, slot->value, slot->value_len);
-            if (slot->expire_at_ms >= 0) {
-                master_sync_key_expire_at(slot->key, slot->key_len, slot->expire_at_ms);
-            }
-        }
-    }
-#endif
-
-#if ENABLE_SKIPTABLE
-    Node *current = global_skiptable.header->forward[0];
-    while (current) {
-        if (!kv_is_expired(current->expire_at_ms, now_ms)) {
-            master_sync_command("SSET", current->key, current->key_len, current->value, current->value_len);
-            if (current->expire_at_ms >= 0) {
-                master_sync_key_expire_at(current->key, current->key_len, current->expire_at_ms);
-            }
-        }
-        current = current->forward[0];
-    }
-#endif
-
-    pthread_rwlock_unlock(&g_kv_data_rwlock);
+    kvs_full_sync_snapshot_destroy(snapshot);
+    snapshot = NULL;
 
     char tmp[16];
     while (1) {
@@ -149,6 +143,10 @@ void* slave_sync_thread(void *arg){
     }
 
 cleanup_slave:
+    if (snapshot) {
+        kvs_full_sync_snapshot_destroy(snapshot);
+        snapshot = NULL;
+    }
     close(sockfd);
 
     // 从全局 slave 列表中移除
@@ -530,12 +528,12 @@ void slave_connect_master(){
 
 
 //主节点同步写操作到所有从节点
-void master_sync_command(const char *cmd,
-                          const char *key, size_t key_len,
-                          const char *value, size_t value_len){
+int master_sync_command(const char *cmd,
+                        const char *key, size_t key_len,
+                        const char *value, size_t value_len){
 
-    if(global_dist_config.role != ROLE_MASTER) return;
-    if(!key || !cmd) return;
+    if(global_dist_config.role != ROLE_MASTER) return 0;
+    if(!key || !cmd) return -1;
 
     ms_op_t op;
     if(strcmp(cmd, "SET") == 0){
@@ -574,14 +572,14 @@ void master_sync_command(const char *cmd,
         op = MS_OP_TTL_PERSIST;
     }else{
         //未知命令
-        return;
+        return -1;
     }
 
     size_t needed = (size_t)MS_HEADER_LEN + key_len + value_len;
     sync_msg_t *msg = (sync_msg_t *)kvs_malloc(sizeof(sync_msg_t) + needed);
     if (!msg) {
         KVS_LOG_ERROR("dist", "master_sync_command malloc failed, cmd=%s key=%s", cmd, key);
-        return;
+        return -1;
     }
 
     int len = ms_encode_message(
@@ -594,7 +592,7 @@ void master_sync_command(const char *cmd,
     if (len <= 0) {
         KVS_LOG_ERROR("dist", "master_sync_command encode error, cmd=%s key=%s", cmd, key);
         kvs_free(msg);
-        return;
+        return -1;
     }
 
     msg->len = (size_t)len;
@@ -605,8 +603,10 @@ void master_sync_command(const char *cmd,
     if (sync_backend_broadcast_owned(msg) != 0) {
         KVS_LOG_ERROR("dist", "sync_backend_broadcast failed, cmd=%s key=%s", cmd, key);
         kvs_free(msg);
+        return -1;
     } else {
         // fprintf(stderr, "[DIST] sync_backend_broadcast ok, len=%d\n", len);
     }
 
+    return 0;
 }

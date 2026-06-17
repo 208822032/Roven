@@ -26,6 +26,28 @@ typedef struct kvs_replicated_command_task_s {
 	uint64_t enqueue_us;
 } kvs_replicated_command_task_t;
 
+typedef enum kvs_full_sync_snapshot_backend_e {
+	KVS_FULL_SYNC_SNAPSHOT_BACKEND_ARRAY = 1,
+	KVS_FULL_SYNC_SNAPSHOT_BACKEND_RBTREE = 2,
+	KVS_FULL_SYNC_SNAPSHOT_BACKEND_HASH = 3,
+	KVS_FULL_SYNC_SNAPSHOT_BACKEND_SKIPTABLE = 4,
+} kvs_full_sync_snapshot_backend_t;
+
+typedef struct kvs_full_sync_snapshot_entry_s {
+	kvs_full_sync_snapshot_backend_t backend;
+	char *key;
+	size_t key_len;
+	char *value;
+	size_t value_len;
+	int64_t expire_at_ms;
+} kvs_full_sync_snapshot_entry_t;
+
+typedef struct kvs_full_sync_snapshot_s {
+	kvs_full_sync_snapshot_entry_t *entries;
+	size_t entry_count;
+	int64_t captured_at_ms;
+} kvs_full_sync_snapshot_t;
+
 typedef struct kvs_command_executor_stats_s {
 	uint64_t submitted_tasks;
 	uint64_t completed_tasks;
@@ -136,6 +158,7 @@ int kvs_command_executor_submit_replicated(ms_op_t op,
                                            const char *value,
                                            size_t value_len,
                                            int64_t expire_at_ms);
+int kvs_command_executor_build_full_sync_snapshot(kvs_full_sync_snapshot_t **out);
 int kvs_command_executor_poll_response(kvs_response_task_t **resp);
 int kvs_command_executor_poll_response_for(int owner_type,
                                            int owner_poller_id,
@@ -146,5 +169,6 @@ int kvs_command_executor_poll_response_for_owner(int owner_type,
 int kvs_command_executor_response_event_fd(void);
 void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out);
 void kvs_command_executor_record_response_drop(int reason);
+void kvs_full_sync_snapshot_destroy(kvs_full_sync_snapshot_t *snapshot);
 
 #endif /* KVS_COMMAND_EXECUTOR_H */
