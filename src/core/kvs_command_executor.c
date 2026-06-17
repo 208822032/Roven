@@ -1,12 +1,16 @@
 #include "kvs_command_executor.h"
 
 #include "kvs_async_net_adapter.h"
+#include "distributed.h"
 #include "kvs_config.h"
 #include "kvs_embedding_worker_pool.h"
 #include "kvs_globals.h"
 #include "kvs_log.h"
 #include "kvs_memory.h"
+#include "kvs_aof.h"
+#include "kvs_distributed.h"
 #include "kvs_vector.h"
+#include "kvstore.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -24,6 +28,8 @@ typedef struct kvs_command_executor_s {
 	kvs_command_task_t *cmd_tail;
 	kvs_command_task_t *prepared_head;
 	kvs_command_task_t *prepared_tail;
+	kvs_replicated_command_task_t *repl_head;
+	kvs_replicated_command_task_t *repl_tail;
 	kvs_ttl_expire_task_t *ttl_head;
 	kvs_ttl_expire_task_t *ttl_tail;
 	pthread_mutex_t resp_mu;
@@ -132,6 +138,21 @@ static void kvs_command_executor_destroy_ttl_task(kvs_ttl_expire_task_t *task) {
 	if (task->key) {
 		kvs_free(task->key);
 		task->key = NULL;
+	}
+	kvs_free(task);
+}
+
+static void kvs_command_executor_destroy_repl_task(kvs_replicated_command_task_t *task) {
+	if (!task) {
+		return;
+	}
+	if (task->key) {
+		kvs_free(task->key);
+		task->key = NULL;
+	}
+	if (task->value) {
+		kvs_free(task->value);
+		task->value = NULL;
 	}
 	kvs_free(task);
 }
@@ -458,6 +479,24 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	);
 	KVS_LOG_INFO(
 		"core",
+		"replicated executor stats: repl_task_submitted=%llu repl_task_executed=%llu repl_task_failed=%llu repl_task_dropped=%llu repl_task_submit_failed=%llu repl_queue_depth=%llu repl_queue_max_depth=%llu repl_wait_count=%llu repl_wait_total_us=%llu repl_wait_max_us=%llu repl_set_count=%llu repl_del_count=%llu repl_mod_count=%llu repl_ttl_count=%llu",
+		(unsigned long long)exec_stats.repl_task_submitted,
+		(unsigned long long)exec_stats.repl_task_executed,
+		(unsigned long long)exec_stats.repl_task_failed,
+		(unsigned long long)exec_stats.repl_task_dropped,
+		(unsigned long long)exec_stats.repl_task_submit_failed,
+		(unsigned long long)exec_stats.repl_queue_depth,
+		(unsigned long long)exec_stats.repl_queue_max_depth,
+		(unsigned long long)exec_stats.repl_wait_count,
+		(unsigned long long)exec_stats.repl_wait_total_us,
+		(unsigned long long)exec_stats.repl_wait_max_us,
+		(unsigned long long)exec_stats.repl_set_count,
+		(unsigned long long)exec_stats.repl_del_count,
+		(unsigned long long)exec_stats.repl_mod_count,
+		(unsigned long long)exec_stats.repl_ttl_count
+	);
+	KVS_LOG_INFO(
+		"core",
 		"embedding batch stats: batch_enabled=%llu batch_count=%llu batch_items=%llu batch_avg_size=%llu batch_max_observed_size=%llu batch_wait_avg_us=%llu batch_wait_max_us=%llu batch_encode_avg_us=%llu batch_encode_max_us=%llu batch_fallback_single_count=%llu batch_failed=%llu batch_provider_unsupported=%llu",
 		(unsigned long long)stats.embedding_batch_enabled,
 		(unsigned long long)stats.embedding_batch_count,
@@ -675,6 +714,21 @@ static kvs_command_task_t *kvs_command_executor_pop_prepared_locked(void) {
 	return task;
 }
 
+static kvs_replicated_command_task_t *kvs_command_executor_pop_repl_locked(void) {
+	kvs_replicated_command_task_t *task = g_executor.repl_head;
+
+	if (!task) {
+		return NULL;
+	}
+	g_executor.repl_head = task->queue_next;
+	if (!g_executor.repl_head) {
+		g_executor.repl_tail = NULL;
+	}
+	task->queue_next = NULL;
+	executor_stats_sub(&g_executor.stats.repl_queue_depth, 1);
+	return task;
+}
+
 static kvs_ttl_expire_task_t *kvs_command_executor_pop_ttl_locked(void) {
 	kvs_ttl_expire_task_t *task = g_executor.ttl_head;
 
@@ -688,6 +742,262 @@ static kvs_ttl_expire_task_t *kvs_command_executor_pop_ttl_locked(void) {
 	task->queue_next = NULL;
 	executor_stats_sub(&g_executor.stats.ttl_expire_queue_depth, 1);
 	return task;
+}
+
+static int kvs_command_executor_repl_is_set(ms_op_t op) {
+	return op == MS_OP_ARRAY_SET ||
+	       op == MS_OP_RBTREE_RSET ||
+	       op == MS_OP_HASH_HSET ||
+	       op == MS_OP_SKIPTABLE_SSET ||
+	       op == MS_OP_PAPERSET;
+}
+
+static int kvs_command_executor_repl_is_del(ms_op_t op) {
+	return op == MS_OP_ARRAY_DEL ||
+	       op == MS_OP_RBTREE_RDEL ||
+	       op == MS_OP_HASH_HDEL ||
+	       op == MS_OP_SKIPTABLE_SDEL ||
+	       op == MS_OP_PAPERDEL;
+}
+
+static int kvs_command_executor_repl_is_mod(ms_op_t op) {
+	return op == MS_OP_ARRAY_MOD ||
+	       op == MS_OP_RBTREE_RMOD ||
+	       op == MS_OP_HASH_HMOD ||
+	       op == MS_OP_SKIPTABLE_SMOD ||
+	       op == MS_OP_PAPERMOD;
+}
+
+static int kvs_command_executor_repl_is_ttl(ms_op_t op) {
+	return op == MS_OP_TTL_PEXPIREAT ||
+	       op == MS_OP_TTL_PERSIST;
+}
+
+static void kvs_command_executor_repl_record_op(ms_op_t op) {
+	if (kvs_command_executor_repl_is_set(op)) {
+		executor_stats_add(&g_executor.stats.repl_set_count, 1);
+	} else if (kvs_command_executor_repl_is_del(op)) {
+		executor_stats_add(&g_executor.stats.repl_del_count, 1);
+	} else if (kvs_command_executor_repl_is_mod(op)) {
+		executor_stats_add(&g_executor.stats.repl_mod_count, 1);
+	} else if (kvs_command_executor_repl_is_ttl(op)) {
+		executor_stats_add(&g_executor.stats.repl_ttl_count, 1);
+	}
+}
+
+static int kvs_command_executor_apply_repl_store(kvs_replicated_command_task_t *task) {
+	const char *value;
+	size_t value_len;
+
+	if (!task || !task->key || task->key_len == 0) {
+		return -1;
+	}
+	value = task->value ? task->value : "";
+	value_len = task->value ? task->value_len : 0;
+
+	switch (task->op) {
+		case MS_OP_ARRAY_SET:
+#if ENABLE_ARRAY
+			return kvs_array_set_len(kvs_get_global_array(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_RBTREE_RSET:
+#if ENABLE_RBTREE
+			return kvs_rbtree_set_len(kvs_get_global_rbtree(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_HASH_HSET:
+#if ENABLE_HASH
+			return kvs_hash_set_len(kvs_get_global_hash(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_SKIPTABLE_SSET:
+#if ENABLE_SKIPTABLE
+			return kvs_skiptable_set_len(kvs_get_global_skiptable(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_ARRAY_DEL:
+#if ENABLE_ARRAY
+			return kvs_array_del_len(kvs_get_global_array(), task->key, task->key_len);
+#else
+			return -1;
+#endif
+		case MS_OP_RBTREE_RDEL:
+#if ENABLE_RBTREE
+			return kvs_rbtree_del_len(kvs_get_global_rbtree(), task->key, task->key_len);
+#else
+			return -1;
+#endif
+		case MS_OP_HASH_HDEL:
+#if ENABLE_HASH
+			return kvs_hash_del_len(kvs_get_global_hash(), task->key, task->key_len);
+#else
+			return -1;
+#endif
+		case MS_OP_SKIPTABLE_SDEL:
+#if ENABLE_SKIPTABLE
+			return kvs_skiptable_del_len(kvs_get_global_skiptable(), task->key, task->key_len);
+#else
+			return -1;
+#endif
+		case MS_OP_ARRAY_MOD:
+#if ENABLE_ARRAY
+			return kvs_array_mod_len(kvs_get_global_array(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_RBTREE_RMOD:
+#if ENABLE_RBTREE
+			return kvs_rbtree_mod_len(kvs_get_global_rbtree(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_HASH_HMOD:
+#if ENABLE_HASH
+			return kvs_hash_mod_len(kvs_get_global_hash(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_SKIPTABLE_SMOD:
+#if ENABLE_SKIPTABLE
+			return kvs_skiptable_mod_len(kvs_get_global_skiptable(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_PAPERSET:
+#if ENABLE_RBTREE
+			return kvs_rbtree_set_len(kvs_get_global_rbtree(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_PAPERDEL:
+#if ENABLE_RBTREE
+			return kvs_rbtree_del_len(kvs_get_global_rbtree(), task->key, task->key_len);
+#else
+			return -1;
+#endif
+		case MS_OP_PAPERMOD:
+#if ENABLE_RBTREE
+			return kvs_rbtree_mod_len(kvs_get_global_rbtree(), task->key, task->key_len, value, value_len);
+#else
+			return -1;
+#endif
+		case MS_OP_TTL_PEXPIREAT:
+			return ttl_set_any_key_expire_at_ms(task->key, task->key_len, task->expire_at_ms) < 0 ? -1 : 0;
+		case MS_OP_TTL_PERSIST:
+			return ttl_set_any_key_expire_at_ms(task->key, task->key_len, KV_TTL_NO_EXPIRE) < 0 ? -1 : 0;
+		default:
+			return -1;
+	}
+}
+
+#if ENABLE_AOF
+static void kvs_command_executor_repl_append_aof(kvs_replicated_command_task_t *task) {
+	const char *cmd = NULL;
+	char expire_buf[32];
+	char *argv[3];
+	size_t arg_lens[3];
+	int argc;
+
+	if (!task || !task->key) {
+		return;
+	}
+
+	switch (task->op) {
+		case MS_OP_ARRAY_SET: cmd = "SET"; break;
+		case MS_OP_RBTREE_RSET: cmd = "RSET"; break;
+		case MS_OP_HASH_HSET: cmd = "HSET"; break;
+		case MS_OP_SKIPTABLE_SSET: cmd = "SSET"; break;
+		case MS_OP_ARRAY_DEL: cmd = "DEL"; break;
+		case MS_OP_RBTREE_RDEL: cmd = "RDEL"; break;
+		case MS_OP_HASH_HDEL: cmd = "HDEL"; break;
+		case MS_OP_SKIPTABLE_SDEL: cmd = "SDEL"; break;
+		case MS_OP_ARRAY_MOD: cmd = "MOD"; break;
+		case MS_OP_RBTREE_RMOD: cmd = "RMOD"; break;
+		case MS_OP_HASH_HMOD: cmd = "HMOD"; break;
+		case MS_OP_SKIPTABLE_SMOD: cmd = "SMOD"; break;
+		case MS_OP_PAPERSET: cmd = "PAPERSET"; break;
+		case MS_OP_PAPERDEL: cmd = "PAPERDEL"; break;
+		case MS_OP_TTL_PEXPIREAT: cmd = "PEXPIREAT"; break;
+		case MS_OP_TTL_PERSIST: cmd = "PERSIST"; break;
+		default: return;
+	}
+
+	argv[0] = (char *)cmd;
+	arg_lens[0] = strlen(cmd);
+	argv[1] = task->key;
+	arg_lens[1] = task->key_len;
+	if (task->op == MS_OP_ARRAY_DEL ||
+	    task->op == MS_OP_RBTREE_RDEL ||
+	    task->op == MS_OP_HASH_HDEL ||
+	    task->op == MS_OP_SKIPTABLE_SDEL ||
+	    task->op == MS_OP_TTL_PERSIST) {
+		argc = 2;
+	} else {
+		argc = 3;
+		if (task->op == MS_OP_TTL_PEXPIREAT) {
+			int n = snprintf(expire_buf, sizeof(expire_buf), "%lld", (long long)task->expire_at_ms);
+			if (n < 0 || n >= (int)sizeof(expire_buf)) {
+				return;
+			}
+			argv[2] = expire_buf;
+			arg_lens[2] = (size_t)n;
+		} else {
+			argv[2] = task->value ? task->value : "";
+			arg_lens[2] = task->value ? task->value_len : 0;
+		}
+	}
+	aof_append(argc, argv, arg_lens);
+}
+#endif
+
+static void kvs_command_executor_execute_repl(kvs_replicated_command_task_t *task) {
+	uint64_t now_us;
+	uint64_t wait_us;
+	int old_sync_context;
+	int ret;
+
+	if (!task) {
+		return;
+	}
+	if (task->enqueue_us > 0) {
+		now_us = executor_now_us();
+		wait_us = now_us >= task->enqueue_us ? now_us - task->enqueue_us : 0;
+		executor_record_timing(
+			&g_executor.stats.repl_wait_count,
+			&g_executor.stats.repl_wait_total_us,
+			&g_executor.stats.repl_wait_max_us,
+			wait_us
+		);
+	}
+
+	if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+		executor_stats_add(&g_executor.stats.repl_task_failed, 1);
+		kvs_command_executor_destroy_repl_task(task);
+		return;
+	}
+	old_sync_context = get_sync_context();
+	set_sync_context(1);
+	ret = kvs_command_executor_apply_repl_store(task);
+	pthread_rwlock_unlock(&g_kv_data_rwlock);
+
+	if (ret == 0) {
+#if ENABLE_AOF
+		if (!aof_is_loading()) {
+			kvs_command_executor_repl_append_aof(task);
+		}
+#endif
+		executor_stats_add(&g_executor.stats.repl_task_executed, 1);
+		kvs_command_executor_repl_record_op(task->op);
+	} else {
+		executor_stats_add(&g_executor.stats.repl_task_failed, 1);
+	}
+	set_sync_context(old_sync_context);
+	kvs_command_executor_destroy_repl_task(task);
 }
 
 static void kvs_command_executor_execute_ttl(kvs_ttl_expire_task_t *task) {
@@ -943,28 +1253,35 @@ static void *kvs_command_executor_thread_main(void *arg) {
 
 	for (;;) {
 		kvs_command_task_t *task;
+		kvs_replicated_command_task_t *repl_task;
 		kvs_ttl_expire_task_t *ttl_task;
 
 		pthread_mutex_lock(&g_executor.cmd_mu);
 		while (!g_executor.prepared_head &&
+		       !g_executor.repl_head &&
 		       !g_executor.ttl_head &&
 		       !g_executor.cmd_head &&
 		       !g_executor.stopping) {
 			pthread_cond_wait(&g_executor.cmd_cv, &g_executor.cmd_mu);
 		}
 		if (!g_executor.prepared_head &&
+		    !g_executor.repl_head &&
 		    !g_executor.ttl_head &&
 		    !g_executor.cmd_head &&
 		    g_executor.stopping) {
 			pthread_mutex_unlock(&g_executor.cmd_mu);
 			break;
 		}
+		repl_task = NULL;
 		ttl_task = NULL;
 		task = kvs_command_executor_pop_prepared_locked();
 		if (!task) {
-			ttl_task = kvs_command_executor_pop_ttl_locked();
-			if (!ttl_task) {
-				task = kvs_command_executor_pop_command_locked();
+			repl_task = kvs_command_executor_pop_repl_locked();
+			if (!repl_task) {
+				ttl_task = kvs_command_executor_pop_ttl_locked();
+				if (!ttl_task) {
+					task = kvs_command_executor_pop_command_locked();
+				}
 			}
 		} else if (task->prepared_enqueue_us > 0) {
 			uint64_t now_us = executor_now_us();
@@ -991,7 +1308,9 @@ static void *kvs_command_executor_thread_main(void *arg) {
 		}
 		pthread_mutex_unlock(&g_executor.cmd_mu);
 
-		if (ttl_task) {
+		if (repl_task) {
+			kvs_command_executor_execute_repl(repl_task);
+		} else if (ttl_task) {
 			kvs_command_executor_execute_ttl(ttl_task);
 		} else {
 			kvs_command_executor_dispatch_or_execute(task);
@@ -1040,6 +1359,7 @@ int kvs_command_executor_start(void) {
 void kvs_command_executor_stop(void) {
 	kvs_command_task_t *task;
 	kvs_command_task_t *prepared;
+	kvs_replicated_command_task_t *repl_task;
 	kvs_ttl_expire_task_t *ttl_task;
 	kvs_response_task_t *resp;
 	int should_join;
@@ -1065,6 +1385,9 @@ void kvs_command_executor_stop(void) {
 	prepared = g_executor.prepared_head;
 	g_executor.prepared_head = NULL;
 	g_executor.prepared_tail = NULL;
+	repl_task = g_executor.repl_head;
+	g_executor.repl_head = NULL;
+	g_executor.repl_tail = NULL;
 	ttl_task = g_executor.ttl_head;
 	g_executor.ttl_head = NULL;
 	g_executor.ttl_tail = NULL;
@@ -1082,6 +1405,14 @@ void kvs_command_executor_stop(void) {
 		executor_stats_sub(&g_executor.stats.prepared_queue_depth, 1);
 		kvs_command_executor_destroy_task(prepared);
 		prepared = next;
+	}
+	while (repl_task) {
+		kvs_replicated_command_task_t *next = repl_task->queue_next;
+		repl_task->queue_next = NULL;
+		executor_stats_sub(&g_executor.stats.repl_queue_depth, 1);
+		executor_stats_add(&g_executor.stats.repl_task_dropped, 1);
+		kvs_command_executor_destroy_repl_task(repl_task);
+		repl_task = next;
 	}
 	while (ttl_task) {
 		kvs_ttl_expire_task_t *next = ttl_task->queue_next;
@@ -1187,6 +1518,74 @@ int kvs_command_executor_submit_ttl_expire(
 	depth = executor_stats_add(&g_executor.stats.ttl_expire_queue_depth, 1);
 	executor_stats_update_max(&g_executor.stats.ttl_expire_queue_max_depth, depth);
 	executor_stats_add(&g_executor.stats.ttl_expire_task_submitted, 1);
+	pthread_cond_signal(&g_executor.cmd_cv);
+	pthread_mutex_unlock(&g_executor.cmd_mu);
+	return 0;
+}
+
+int kvs_command_executor_submit_replicated(
+	ms_op_t op,
+	const char *key,
+	size_t key_len,
+	const char *value,
+	size_t value_len,
+	int64_t expire_at_ms
+) {
+	kvs_replicated_command_task_t *task;
+	uint64_t depth;
+
+	if (!key || key_len == 0 || (value_len > 0 && !value)) {
+		executor_stats_add(&g_executor.stats.repl_task_submit_failed, 1);
+		return -1;
+	}
+
+	task = (kvs_replicated_command_task_t *)kvs_malloc(sizeof(*task));
+	if (!task) {
+		executor_stats_add(&g_executor.stats.repl_task_submit_failed, 1);
+		return -1;
+	}
+	memset(task, 0, sizeof(*task));
+	task->key = (char *)kvs_malloc(key_len + 1);
+	if (!task->key) {
+		kvs_free(task);
+		executor_stats_add(&g_executor.stats.repl_task_submit_failed, 1);
+		return -1;
+	}
+	memcpy(task->key, key, key_len);
+	task->key[key_len] = '\0';
+	task->key_len = key_len;
+
+	if (value_len > 0) {
+		task->value = (char *)kvs_malloc(value_len + 1);
+		if (!task->value) {
+			kvs_command_executor_destroy_repl_task(task);
+			executor_stats_add(&g_executor.stats.repl_task_submit_failed, 1);
+			return -1;
+		}
+		memcpy(task->value, value, value_len);
+		task->value[value_len] = '\0';
+		task->value_len = value_len;
+	}
+	task->op = op;
+	task->expire_at_ms = expire_at_ms;
+	task->enqueue_us = executor_now_us();
+
+	pthread_mutex_lock(&g_executor.cmd_mu);
+	if (!g_executor.running || g_executor.stopping) {
+		pthread_mutex_unlock(&g_executor.cmd_mu);
+		kvs_command_executor_destroy_repl_task(task);
+		executor_stats_add(&g_executor.stats.repl_task_submit_failed, 1);
+		return -1;
+	}
+	if (g_executor.repl_tail) {
+		g_executor.repl_tail->queue_next = task;
+	} else {
+		g_executor.repl_head = task;
+	}
+	g_executor.repl_tail = task;
+	depth = executor_stats_add(&g_executor.stats.repl_queue_depth, 1);
+	executor_stats_update_max(&g_executor.stats.repl_queue_max_depth, depth);
+	executor_stats_add(&g_executor.stats.repl_task_submitted, 1);
 	pthread_cond_signal(&g_executor.cmd_cv);
 	pthread_mutex_unlock(&g_executor.cmd_mu);
 	return 0;
@@ -1376,6 +1775,20 @@ void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out) {
 	out->ttl_expire_wait_count = executor_stats_load(&g_executor.stats.ttl_expire_wait_count);
 	out->ttl_expire_wait_total_us = executor_stats_load(&g_executor.stats.ttl_expire_wait_total_us);
 	out->ttl_expire_wait_max_us = executor_stats_load(&g_executor.stats.ttl_expire_wait_max_us);
+	out->repl_task_submitted = executor_stats_load(&g_executor.stats.repl_task_submitted);
+	out->repl_task_executed = executor_stats_load(&g_executor.stats.repl_task_executed);
+	out->repl_task_failed = executor_stats_load(&g_executor.stats.repl_task_failed);
+	out->repl_task_dropped = executor_stats_load(&g_executor.stats.repl_task_dropped);
+	out->repl_task_submit_failed = executor_stats_load(&g_executor.stats.repl_task_submit_failed);
+	out->repl_queue_depth = executor_stats_load(&g_executor.stats.repl_queue_depth);
+	out->repl_queue_max_depth = executor_stats_load(&g_executor.stats.repl_queue_max_depth);
+	out->repl_wait_count = executor_stats_load(&g_executor.stats.repl_wait_count);
+	out->repl_wait_total_us = executor_stats_load(&g_executor.stats.repl_wait_total_us);
+	out->repl_wait_max_us = executor_stats_load(&g_executor.stats.repl_wait_max_us);
+	out->repl_set_count = executor_stats_load(&g_executor.stats.repl_set_count);
+	out->repl_del_count = executor_stats_load(&g_executor.stats.repl_del_count);
+	out->repl_mod_count = executor_stats_load(&g_executor.stats.repl_mod_count);
+	out->repl_ttl_count = executor_stats_load(&g_executor.stats.repl_ttl_count);
 }
 
 void kvs_command_executor_record_response_drop(int reason) {

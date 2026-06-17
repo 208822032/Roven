@@ -14,6 +14,7 @@
 #include "kvs_memory.h"
 #include "kvs_globals.h"
 #include "kvstore.h"
+#include "kvs_command_executor.h"
 #include "sync_backend.h"
 #include <stdint.h>
 #include "kvs_log.h"
@@ -40,62 +41,6 @@ extern kvs_hash_t global_hash;
 #if ENABLE_SKIPTABLE
 extern kvs_skiptable_t global_skiptable;
 #endif
-
-#if ENABLE_AOF
-// 将 master-slave 协议 op 映射为用户命令字符串，并写入 AOF（RESP）
-static void slave_append_aof_from_op(ms_op_t op, const char *key, const char *val)
-{
-    if (!key) return;
-
-    const char *cmd = NULL;
-
-    switch (op) {
-        case MS_OP_ARRAY_SET:     cmd = "SET";  break;
-        case MS_OP_RBTREE_RSET:   cmd = "RSET"; break;
-        case MS_OP_HASH_HSET:     cmd = "HSET"; break;
-        case MS_OP_SKIPTABLE_SSET:cmd = "SSET"; break;
-
-        case MS_OP_ARRAY_DEL:     cmd = "DEL";  break;
-        case MS_OP_RBTREE_RDEL:   cmd = "RDEL"; break;
-        case MS_OP_HASH_HDEL:     cmd = "HDEL"; break;
-        case MS_OP_SKIPTABLE_SDEL:cmd = "SDEL"; break;
-
-        case MS_OP_ARRAY_MOD:     cmd = "MOD";  break;
-        case MS_OP_RBTREE_RMOD:   cmd = "RMOD"; break;
-        case MS_OP_HASH_HMOD:     cmd = "HMOD"; break;
-        case MS_OP_SKIPTABLE_SMOD:cmd = "SMOD"; break;
-        case MS_OP_PAPERSET:      cmd = "PAPERSET"; break;
-        case MS_OP_PAPERDEL:      cmd = "PAPERDEL"; break;
-        case MS_OP_TTL_PEXPIREAT: cmd = "PEXPIREAT"; break;
-        case MS_OP_TTL_PERSIST:   cmd = "PERSIST"; break;
-
-        default:
-            // 非写类 / 未知操作，不写入 AOF
-            return;
-    }
-
-    // DEL/RDEL/HDEL/SDEL 只有两个参数，其余都是三个
-    char *argv[3];
-    int   argc = 0;
-
-    argv[0] = (char *)cmd;
-    argv[1] = (char *)key;
-
-    if (op == MS_OP_ARRAY_DEL ||
-        op == MS_OP_RBTREE_RDEL ||
-        op == MS_OP_HASH_HDEL  ||
-        op == MS_OP_SKIPTABLE_SDEL ||
-        op == MS_OP_TTL_PERSIST) {
-        argc = 2;
-    } else {
-        argv[2] = (char *)(val ? val : "");
-        argc = 3;
-    }
-
-    extern void aof_append(int argc, char **argv, size_t *arg_lens);
-    aof_append(argc, argv, NULL);
-}
-#endif // ENABLE_AOF
 
 static int master_sync_key_expire_at(const char *key, size_t key_len, int64_t expire_at_ms)
 {
@@ -554,124 +499,17 @@ void slave_connect_master(){
                     break;
             }
 
-            /*
-             * Route C phase 0.5 stability fix:
-             * recv/protocol parsing stays outside the lock. Hold the global
-             * write lock only while applying one decoded replication message
-             * to live store, including TTL/expire_at mutations.
-             * Long-term Route C will route this through replicated_command_task
-             * in the single commit executor.
-             */
-            int apply_locked = 0;
             if (should_apply) {
-                int apply_lock_ret = pthread_rwlock_wrlock(&g_kv_data_rwlock);
-                apply_locked = (apply_lock_ret == 0);
-                if (!apply_locked) {
-                    KVS_LOG_ERROR("dist", "failed to acquire data write lock for slave apply: ret=%d", apply_lock_ret);
+                if (kvs_command_executor_submit_replicated(
+                        op,
+                        key,
+                        klen,
+                        val,
+                        vlen,
+                        parsed_expire_at) != 0) {
+                    KVS_LOG_ERROR("dist", "submit replicated command failed, op=%d key=%s", op, key);
                 }
             }
-
-            set_sync_context(1); // 标记这是主从同步写，避免回写 master
-
-            if (apply_locked) {
-                // printf("[SLAVE] decoded msg: op=%d key_len=%zu val_len=%zu\n",
-        //    op, klen, vlen);
-
-                switch(op){
-                    case MS_OP_ARRAY_SET:
-#if ENABLE_ARRAY
-                        kvs_array_set(&global_array, key, val ? val : "");
-#endif
-                        break;
-                    case MS_OP_RBTREE_RSET:
-#if ENABLE_RBTREE
-                        kvs_rbtree_set(&global_rbtree, key, val ? val : "");
-#endif
-                        break;
-                    case MS_OP_HASH_HSET:
-#if ENABLE_HASH
-                        kvs_hash_set(&global_hash, key, val ? val : "");
-#endif
-                        break;
-                    case MS_OP_SKIPTABLE_SSET:
-#if ENABLE_SKIPTABLE
-                        kvs_skiptable_set(&global_skiptable, key, val ? val : "");
-#endif
-                        break;
-                    case MS_OP_ARRAY_DEL:
-#if ENABLE_ARRAY
-                        kvs_array_del(&global_array, key);
-#endif
-                        break;
-                    case MS_OP_RBTREE_RDEL:
-#if ENABLE_RBTREE
-                        kvs_rbtree_del(&global_rbtree, key);
-#endif
-                        break;
-                    case MS_OP_HASH_HDEL:
-#if ENABLE_HASH
-                        kvs_hash_del(&global_hash, key);
-#endif
-                        break;
-                    case MS_OP_SKIPTABLE_SDEL:
-#if ENABLE_SKIPTABLE
-                        kvs_skiptable_del(&global_skiptable, key);
-#endif
-                        break;
-                    case MS_OP_ARRAY_MOD:
-#if ENABLE_ARRAY
-                        kvs_array_mod(&global_array, key, val ? val : "");
-#endif  
-                        break;
-                    case MS_OP_RBTREE_RMOD:
-#if ENABLE_RBTREE
-                        kvs_rbtree_mod(&global_rbtree, key, val ? val : "");
-#endif
-                        break;
-                    case MS_OP_HASH_HMOD:
-#if ENABLE_HASH
-                        kvs_hash_mod(&global_hash, key, val ? val : "");
-#endif
-                        break;
-                    case MS_OP_SKIPTABLE_SMOD:
-#if ENABLE_SKIPTABLE
-                        kvs_skiptable_mod(&global_skiptable, key, val ? val : "");
-#endif
-                        break;
-                    case MS_OP_PAPERSET:
-                        kvs_rbtree_set(&global_rbtree, key, val ? val : "");
-                        break;
-                    case MS_OP_PAPERDEL:
-                        kvs_rbtree_del(&global_rbtree, key);
-                        break;
-                    case MS_OP_PAPERMOD:
-                        kvs_rbtree_mod(&global_rbtree, key, val ? val : "");
-                        break;
-                    case MS_OP_TTL_PEXPIREAT:
-                        if (ttl_set_any_key_expire_at_ms(key, klen, parsed_expire_at) < 0) {
-                            KVS_LOG_ERROR("dist", "apply PEXPIREAT failed for key=%s", key);
-                        }
-                        break;
-                    case MS_OP_TTL_PERSIST:
-                        if (ttl_set_any_key_expire_at_ms(key, klen, KV_TTL_NO_EXPIRE) < 0) {
-                            KVS_LOG_ERROR("dist", "apply PERSIST failed for key=%s", key);
-                        }
-                        break;
-                    default:
-                        break;
-                }
-
-                pthread_rwlock_unlock(&g_kv_data_rwlock);
-            }
-
-#if ENABLE_AOF
-            // 写入 AOF（RESP 格式）
-            if (apply_locked) {
-                slave_append_aof_from_op(op, key, val);
-            }
-#endif
-
-            set_sync_context(0);
 
             kvs_free(key);
             if (val) kvs_free(val);

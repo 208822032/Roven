@@ -5,6 +5,7 @@
 
 #include "kvs_command_task.h"
 #include "kvs_response_task.h"
+#include "master_slave_proto.h"
 
 typedef struct kvs_ttl_expire_task_s {
 	struct kvs_ttl_expire_task_s *queue_next;
@@ -13,6 +14,17 @@ typedef struct kvs_ttl_expire_task_s {
 	int64_t observed_expire_at_ms;
 	uint64_t enqueue_us;
 } kvs_ttl_expire_task_t;
+
+typedef struct kvs_replicated_command_task_s {
+	struct kvs_replicated_command_task_s *queue_next;
+	ms_op_t op;
+	char *key;
+	size_t key_len;
+	char *value;
+	size_t value_len;
+	int64_t expire_at_ms;
+	uint64_t enqueue_us;
+} kvs_replicated_command_task_t;
 
 typedef struct kvs_command_executor_stats_s {
 	uint64_t submitted_tasks;
@@ -88,6 +100,20 @@ typedef struct kvs_command_executor_stats_s {
 	uint64_t ttl_expire_wait_count;
 	uint64_t ttl_expire_wait_total_us;
 	uint64_t ttl_expire_wait_max_us;
+	uint64_t repl_task_submitted;
+	uint64_t repl_task_executed;
+	uint64_t repl_task_failed;
+	uint64_t repl_task_dropped;
+	uint64_t repl_task_submit_failed;
+	uint64_t repl_queue_depth;
+	uint64_t repl_queue_max_depth;
+	uint64_t repl_wait_count;
+	uint64_t repl_wait_total_us;
+	uint64_t repl_wait_max_us;
+	uint64_t repl_set_count;
+	uint64_t repl_del_count;
+	uint64_t repl_mod_count;
+	uint64_t repl_ttl_count;
 } kvs_command_executor_stats_t;
 
 typedef enum kvs_command_executor_drop_reason_e {
@@ -104,6 +130,12 @@ int kvs_command_executor_submit_prepared(kvs_command_task_t *task);
 int kvs_command_executor_submit_ttl_expire(const char *key,
                                            size_t key_len,
                                            int64_t observed_expire_at_ms);
+int kvs_command_executor_submit_replicated(ms_op_t op,
+                                           const char *key,
+                                           size_t key_len,
+                                           const char *value,
+                                           size_t value_len,
+                                           int64_t expire_at_ms);
 int kvs_command_executor_poll_response(kvs_response_task_t **resp);
 int kvs_command_executor_poll_response_for(int owner_type,
                                            int owner_poller_id,
