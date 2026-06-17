@@ -6,6 +6,7 @@
 #include "kvs_command_task.h"
 
 typedef struct kvs_embedding_worker_pool_stats_s {
+	uint64_t enabled;
 	uint64_t submitted_prepare_tasks;
 	uint64_t completed_prepare_tasks;
 	uint64_t failed_prepare_tasks;
@@ -17,9 +18,11 @@ typedef struct kvs_embedding_worker_pool_stats_s {
 	uint64_t prepare_count;
 	uint64_t prepare_total_us;
 	uint64_t prepare_max_us;
+	uint64_t prepare_queue_wait_count;
 	uint64_t prepare_queue_wait_total_us;
 	uint64_t prepare_queue_wait_max_us;
 	uint64_t prepared_queue_submit_count;
+	uint64_t prepared_queue_submit_failed;
 	uint64_t prepared_queue_submit_total_us;
 	uint64_t prepared_queue_submit_max_us;
 	uint64_t embedding_batch_enabled;
@@ -81,8 +84,10 @@ typedef struct kvs_embedding_worker_pool_stats_s {
 	uint64_t embedding_num_threads_effective;
 } kvs_embedding_worker_pool_stats_t;
 
+int kvs_embedding_worker_pool_init(int num_threads, int queue_capacity);
 int kvs_embedding_worker_pool_start(int num_threads, int queue_capacity);
 void kvs_embedding_worker_pool_stop(void);
+void kvs_embedding_worker_pool_destroy(void);
 int kvs_embedding_worker_pool_submit(kvs_command_task_t *task);
 int kvs_embedding_worker_pool_enabled(void);
 void kvs_embedding_worker_pool_get_stats(kvs_embedding_worker_pool_stats_t *out);

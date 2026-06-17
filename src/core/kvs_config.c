@@ -62,8 +62,9 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     cfg->embedding_inter_threads = 0;
     snprintf(cfg->embedding_ort_execution_mode, sizeof(cfg->embedding_ort_execution_mode), "%s", "sequential");
     cfg->embedding_worker_pool_enabled = 0;
-    cfg->embedding_worker_threads = 4;
+    cfg->embedding_worker_threads = 1;
     cfg->embedding_worker_queue_capacity = 1024;
+    cfg->embedding_prepare_queue_capacity = 1024;
     cfg->embedding_per_thread_runtime_enabled = 0;
     cfg->embedding_per_thread_runtime_fallback_mutex = 1;
     cfg->embedding_shared_ort_env_enabled = 1;
@@ -244,6 +245,15 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
                 1,
                 1048576
             );
+            cfg->embedding_prepare_queue_capacity = cfg->embedding_worker_queue_capacity;
+        } else if (strcasecmp(key, "embedding_prepare_queue_capacity") == 0) {
+            cfg->embedding_prepare_queue_capacity = parse_int_range(
+                val,
+                cfg->embedding_prepare_queue_capacity,
+                1,
+                1048576
+            );
+            cfg->embedding_worker_queue_capacity = cfg->embedding_prepare_queue_capacity;
         } else if (strcasecmp(key, "embedding_per_thread_runtime_enabled") == 0) {
             cfg->embedding_per_thread_runtime_enabled = parse_bool(
                 val,
@@ -480,6 +490,17 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                     1,
                     1048576
                 );
+                cfg->embedding_prepare_queue_capacity = cfg->embedding_worker_queue_capacity;
+            }
+        } else if (strcmp(argv[i], "--embedding_prepare_queue_capacity") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_prepare_queue_capacity = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_prepare_queue_capacity,
+                    1,
+                    1048576
+                );
+                cfg->embedding_worker_queue_capacity = cfg->embedding_prepare_queue_capacity;
             }
         } else if (strcmp(argv[i], "--embedding_per_thread_runtime_enabled") == 0) {
             if (i + 1 < argc) {

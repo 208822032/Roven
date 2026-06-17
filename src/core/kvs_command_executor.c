@@ -134,9 +134,10 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	uint64_t runtime_encode_avg_us = 0;
 	uint64_t tokenizer_avg_us = 0;
 	uint64_t ort_run_avg_us = 0;
-	uint64_t prepared_wait_avg_us = 0;
+	uint64_t executor_prepared_wait_avg_us = 0;
 	uint64_t prepared_task_execute_avg_us = 0;
 	uint64_t execute_sync_avg_us = 0;
+	uint64_t commit_latency_avg_us = 0;
 	uint64_t commit_or_search_avg_us = 0;
 	uint64_t finalize_response_avg_us = 0;
 	uint64_t batch_avg_size = 0;
@@ -196,7 +197,7 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		ort_run_avg_us = stats.ort_run_total_us / stats.runtime_encode_count;
 	}
 	if (exec_stats.prepared_wait_count > 0) {
-		prepared_wait_avg_us = exec_stats.prepared_wait_total_us /
+		executor_prepared_wait_avg_us = exec_stats.prepared_wait_total_us /
 			exec_stats.prepared_wait_count;
 	}
 	if (exec_stats.prepared_task_execute_count > 0) {
@@ -207,6 +208,10 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	if (exec_stats.execute_sync_count > 0) {
 		execute_sync_avg_us =
 			exec_stats.execute_sync_total_us / exec_stats.execute_sync_count;
+	}
+	if (exec_stats.commit_latency_count > 0) {
+		commit_latency_avg_us =
+			exec_stats.commit_latency_total_us / exec_stats.commit_latency_count;
 	}
 	if (exec_stats.commit_or_search_count > 0) {
 		commit_or_search_avg_us =
@@ -344,7 +349,8 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 
 	KVS_LOG_INFO(
 		"core",
-		"embedding worker pool stats: submitted=%llu completed=%llu failed=%llu queue_depth=%llu queue_max=%llu worker_threads=%llu submit_failed=%llu dispatch_failed=%llu prepare_count=%llu prepare_avg_us=%llu prepare_max_us=%llu prepare_queue_wait_avg_us=%llu prepare_queue_wait_max_us=%llu prepared_queue_submit_avg_us=%llu prepared_queue_submit_max_us=%llu per_thread_enabled=%llu contexts_created=%llu contexts_destroyed=%llu context_create_failed=%llu context_fallback=%llu encode_global_mutex=%llu encode_thread_context=%llu encode_current_inflight=%llu encode_max_inflight=%llu encode_avg_us=%llu encode_max_us=%llu runtime_encode_count=%llu embedding_encode_avg_us=%llu embedding_encode_max_us=%llu tokenizer_avg_us=%llu tokenizer_max_us=%llu ort_run_avg_us=%llu ort_run_max_us=%llu shared_ort_env_enabled=%llu shared_ort_env_created=%llu shared_ort_env_destroyed=%llu shared_ort_env_refcount_current=%llu shared_ort_env_refcount_max=%llu ort_session_created=%llu ort_session_destroyed=%llu resource_product=%llu worker_threads_effective=%llu embedding_num_threads_effective=%llu",
+		"embedding worker pool stats: enabled=%llu submitted=%llu completed=%llu failed=%llu queue_depth=%llu queue_max=%llu worker_threads=%llu submit_failed=%llu dispatch_failed=%llu prepare_count=%llu prepare_avg_us=%llu prepare_max_us=%llu prepare_wait_count=%llu prepare_queue_wait_avg_us=%llu prepare_queue_wait_max_us=%llu prepared_queue_submitted=%llu prepared_queue_failed=%llu prepared_queue_submit_avg_us=%llu prepared_queue_submit_max_us=%llu per_thread_enabled=%llu contexts_created=%llu contexts_destroyed=%llu context_create_failed=%llu context_fallback=%llu encode_global_mutex=%llu encode_thread_context=%llu encode_current_inflight=%llu encode_max_inflight=%llu encode_avg_us=%llu encode_max_us=%llu runtime_encode_count=%llu embedding_encode_avg_us=%llu embedding_encode_max_us=%llu tokenizer_avg_us=%llu tokenizer_max_us=%llu ort_run_avg_us=%llu ort_run_max_us=%llu shared_ort_env_enabled=%llu shared_ort_env_created=%llu shared_ort_env_destroyed=%llu shared_ort_env_refcount_current=%llu shared_ort_env_refcount_max=%llu ort_session_created=%llu ort_session_destroyed=%llu resource_product=%llu worker_threads_effective=%llu embedding_num_threads_effective=%llu",
+		(unsigned long long)stats.enabled,
 		(unsigned long long)stats.submitted_prepare_tasks,
 		(unsigned long long)stats.completed_prepare_tasks,
 		(unsigned long long)stats.failed_prepare_tasks,
@@ -356,8 +362,11 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		(unsigned long long)stats.prepare_count,
 		(unsigned long long)prepare_avg_us,
 		(unsigned long long)stats.prepare_max_us,
+		(unsigned long long)stats.prepare_queue_wait_count,
 		(unsigned long long)prepare_wait_avg_us,
 		(unsigned long long)stats.prepare_queue_wait_max_us,
+		(unsigned long long)stats.prepared_queue_submit_count,
+		(unsigned long long)stats.prepared_queue_submit_failed,
 		(unsigned long long)prepared_submit_avg_us,
 		(unsigned long long)stats.prepared_queue_submit_max_us,
 		(unsigned long long)stats.per_thread_context_enabled,
@@ -391,11 +400,15 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	);
 	KVS_LOG_INFO(
 		"core",
-		"embedding executor bottleneck stats: prepared_queue_depth=%llu prepared_queue_max=%llu prepared_wait_count=%llu prepared_wait_avg_us=%llu prepared_wait_max_us=%llu prepared_task_execute_count=%llu prepared_task_execute_avg_us=%llu prepared_task_execute_max_us=%llu execute_sync_count=%llu execute_sync_avg_us=%llu execute_sync_max_us=%llu commit_or_search_count=%llu commit_or_search_avg_us=%llu commit_or_search_max_us=%llu finalize_response_count=%llu finalize_response_avg_us=%llu finalize_response_max_us=%llu",
+		"embedding executor bottleneck stats: normal_task_executed=%llu prepare_task_submitted=%llu prepared_task_executed=%llu prepared_task_failed=%llu prepared_queue_depth=%llu prepared_queue_max=%llu prepared_wait_count=%llu prepared_wait_avg_us=%llu prepared_wait_max_us=%llu prepared_task_execute_count=%llu prepared_task_execute_avg_us=%llu prepared_task_execute_max_us=%llu execute_sync_count=%llu execute_sync_avg_us=%llu execute_sync_max_us=%llu commit_latency_count=%llu commit_latency_avg_us=%llu commit_latency_total_us=%llu commit_latency_max_us=%llu commit_or_search_count=%llu commit_or_search_avg_us=%llu commit_or_search_max_us=%llu finalize_response_count=%llu finalize_response_avg_us=%llu finalize_response_max_us=%llu",
+		(unsigned long long)exec_stats.normal_task_executed,
+		(unsigned long long)exec_stats.prepare_task_submitted,
+		(unsigned long long)exec_stats.prepared_task_executed,
+		(unsigned long long)exec_stats.prepared_task_failed,
 		(unsigned long long)exec_stats.prepared_queue_depth,
 		(unsigned long long)exec_stats.prepared_queue_max_depth,
 		(unsigned long long)exec_stats.prepared_wait_count,
-		(unsigned long long)prepared_wait_avg_us,
+		(unsigned long long)executor_prepared_wait_avg_us,
 		(unsigned long long)exec_stats.prepared_wait_max_us,
 		(unsigned long long)exec_stats.prepared_task_execute_count,
 		(unsigned long long)prepared_task_execute_avg_us,
@@ -403,6 +416,10 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		(unsigned long long)exec_stats.execute_sync_count,
 		(unsigned long long)execute_sync_avg_us,
 		(unsigned long long)exec_stats.execute_sync_max_us,
+		(unsigned long long)exec_stats.commit_latency_count,
+		(unsigned long long)commit_latency_avg_us,
+		(unsigned long long)exec_stats.commit_latency_total_us,
+		(unsigned long long)exec_stats.commit_latency_max_us,
 		(unsigned long long)exec_stats.commit_or_search_count,
 		(unsigned long long)commit_or_search_avg_us,
 		(unsigned long long)exec_stats.commit_or_search_max_us,
@@ -686,6 +703,12 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 			ret = kvs_command_task_execute_sync(task);
 			end_us = executor_now_us();
 			executor_record_timing(
+				&g_executor.stats.commit_latency_count,
+				&g_executor.stats.commit_latency_total_us,
+				&g_executor.stats.commit_latency_max_us,
+				end_us >= start_us ? end_us - start_us : 0
+			);
+			executor_record_timing(
 				&g_executor.stats.execute_sync_count,
 				&g_executor.stats.execute_sync_total_us,
 				&g_executor.stats.execute_sync_max_us,
@@ -743,7 +766,13 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 				}
 			}
 		}
+		if (ret == 0 || task->command_committed) {
+			executor_stats_add(&g_executor.stats.prepared_task_executed, 1);
+		} else {
+			executor_stats_add(&g_executor.stats.prepared_task_failed, 1);
+		}
 	} else {
+		executor_stats_add(&g_executor.stats.normal_task_executed, 1);
 		ret = kvs_command_task_prepare(task);
 		if (ret == 0) {
 			ret = kvs_command_task_execute_sync(task);
@@ -810,6 +839,7 @@ static int kvs_command_executor_dispatch_or_execute(kvs_command_task_t *task) {
 		task->prepare_dispatched = 1;
 		if (kvs_embedding_worker_pool_submit(task) == 0) {
 			executor_stats_add(&g_executor.stats.embedding_prepare_dispatched, 1);
+			executor_stats_add(&g_executor.stats.prepare_task_submitted, 1);
 			return 1;
 		}
 		task->prepare_dispatched = 0;
@@ -1129,6 +1159,10 @@ void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out) {
 	out->embedding_prepare_dispatched = __atomic_load_n(&g_executor.stats.embedding_prepare_dispatched, __ATOMIC_RELAXED);
 	out->embedding_prepare_inline = __atomic_load_n(&g_executor.stats.embedding_prepare_inline, __ATOMIC_RELAXED);
 	out->embedding_prepare_submit_failed = __atomic_load_n(&g_executor.stats.embedding_prepare_submit_failed, __ATOMIC_RELAXED);
+	out->normal_task_executed = executor_stats_load(&g_executor.stats.normal_task_executed);
+	out->prepare_task_submitted = executor_stats_load(&g_executor.stats.prepare_task_submitted);
+	out->prepared_task_executed = executor_stats_load(&g_executor.stats.prepared_task_executed);
+	out->prepared_task_failed = executor_stats_load(&g_executor.stats.prepared_task_failed);
 	out->prepared_wait_count = executor_stats_load(&g_executor.stats.prepared_wait_count);
 	out->prepared_wait_total_us = executor_stats_load(&g_executor.stats.prepared_wait_total_us);
 	out->prepared_wait_max_us = executor_stats_load(&g_executor.stats.prepared_wait_max_us);
@@ -1138,6 +1172,9 @@ void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out) {
 	out->execute_sync_count = executor_stats_load(&g_executor.stats.execute_sync_count);
 	out->execute_sync_total_us = executor_stats_load(&g_executor.stats.execute_sync_total_us);
 	out->execute_sync_max_us = executor_stats_load(&g_executor.stats.execute_sync_max_us);
+	out->commit_latency_count = executor_stats_load(&g_executor.stats.commit_latency_count);
+	out->commit_latency_total_us = executor_stats_load(&g_executor.stats.commit_latency_total_us);
+	out->commit_latency_max_us = executor_stats_load(&g_executor.stats.commit_latency_max_us);
 	out->commit_or_search_count = executor_stats_load(&g_executor.stats.commit_or_search_count);
 	out->commit_or_search_total_us = executor_stats_load(&g_executor.stats.commit_or_search_total_us);
 	out->commit_or_search_max_us = executor_stats_load(&g_executor.stats.commit_or_search_max_us);

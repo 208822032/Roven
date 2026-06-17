@@ -115,6 +115,7 @@ typedef struct kvs_config {
 	int embedding_worker_pool_enabled;
 	int embedding_worker_threads;
 	int embedding_worker_queue_capacity;
+	int embedding_prepare_queue_capacity;
 	int embedding_per_thread_runtime_enabled;
 	int embedding_per_thread_runtime_fallback_mutex;
 	int embedding_shared_ort_env_enabled;
@@ -225,6 +226,7 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path);
 //  --embedding_num_threads <n>
 //  --embedding_worker_pool_enabled <yes|no>
 //  --embedding_worker_threads <n>
+//  --embedding_prepare_queue_capacity <n>
 //  --embedding_per_thread_runtime_enabled <yes|no>
 //  --embedding_per_thread_runtime_fallback_mutex <yes|no>
 //  --embedding_shared_ort_env_enabled <yes|no>

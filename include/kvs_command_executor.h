@@ -28,6 +28,10 @@ typedef struct kvs_command_executor_stats_s {
 	uint64_t embedding_prepare_dispatched;
 	uint64_t embedding_prepare_inline;
 	uint64_t embedding_prepare_submit_failed;
+	uint64_t normal_task_executed;
+	uint64_t prepare_task_submitted;
+	uint64_t prepared_task_executed;
+	uint64_t prepared_task_failed;
 	uint64_t prepared_wait_count;
 	uint64_t prepared_wait_total_us;
 	uint64_t prepared_wait_max_us;
@@ -37,6 +41,9 @@ typedef struct kvs_command_executor_stats_s {
 	uint64_t execute_sync_count;
 	uint64_t execute_sync_total_us;
 	uint64_t execute_sync_max_us;
+	uint64_t commit_latency_count;
+	uint64_t commit_latency_total_us;
+	uint64_t commit_latency_max_us;
 	uint64_t commit_or_search_count;
 	uint64_t commit_or_search_total_us;
 	uint64_t commit_or_search_max_us;
