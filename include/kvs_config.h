@@ -118,6 +118,9 @@ typedef struct kvs_config {
 	int embedding_per_thread_runtime_enabled;
 	int embedding_per_thread_runtime_fallback_mutex;
 	int embedding_shared_ort_env_enabled;
+	int embedding_batch_enabled;
+	int embedding_batch_max_size;
+	int embedding_batch_max_wait_us;
 
 	// vector index 配置。正式语义缓存主路径固定为 HNSW；
 	// flat 仅作为 debug / 单元测试 baseline，sq8_flat 为实验性压缩索引。

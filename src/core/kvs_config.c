@@ -67,6 +67,9 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     cfg->embedding_per_thread_runtime_enabled = 0;
     cfg->embedding_per_thread_runtime_fallback_mutex = 1;
     cfg->embedding_shared_ort_env_enabled = 1;
+    cfg->embedding_batch_enabled = 0;
+    cfg->embedding_batch_max_size = 4;
+    cfg->embedding_batch_max_wait_us = 500;
 
     // 语义缓存主路径固定为 L2-normalized embedding + HNSW + inner product。
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
@@ -249,6 +252,25 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             cfg->embedding_shared_ort_env_enabled = parse_bool(
                 val,
                 cfg->embedding_shared_ort_env_enabled
+            );
+        } else if (strcasecmp(key, "embedding_batch_enabled") == 0) {
+            cfg->embedding_batch_enabled = parse_bool(
+                val,
+                cfg->embedding_batch_enabled
+            );
+        } else if (strcasecmp(key, "embedding_batch_max_size") == 0) {
+            cfg->embedding_batch_max_size = parse_int_range(
+                val,
+                cfg->embedding_batch_max_size,
+                1,
+                64
+            );
+        } else if (strcasecmp(key, "embedding_batch_max_wait_us") == 0) {
+            cfg->embedding_batch_max_wait_us = parse_int_range(
+                val,
+                cfg->embedding_batch_max_wait_us,
+                0,
+                1000000
             );
         } else if (strcasecmp(key, "vector_index_type") == 0) {
             if (strcasecmp(val, "flat") == 0 ||
@@ -434,6 +456,31 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                 cfg->embedding_shared_ort_env_enabled = parse_bool(
                     argv[++i],
                     cfg->embedding_shared_ort_env_enabled
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_enabled") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_enabled = parse_bool(
+                    argv[++i],
+                    cfg->embedding_batch_enabled
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_max_size") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_max_size = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_batch_max_size,
+                    1,
+                    64
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_max_wait_us") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_max_wait_us = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_batch_max_wait_us,
+                    0,
+                    1000000
                 );
             }
         } else if (strcmp(argv[i], "--vector_metric") == 0) {

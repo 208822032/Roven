@@ -15,7 +15,7 @@
 #include <string.h>
 #include <strings.h>
 
-static int kvs_vector_status_to_resp(int status, char *response) {
+int kvs_command_task_vector_status_to_resp(int status, char *response) {
 	switch (status) {
 		case KVS_VECTOR_OK:
 			return resp_generate_simple_string_n(response, '+', "OK", sizeof("OK") - 1);
@@ -30,6 +30,10 @@ static int kvs_vector_status_to_resp(int status, char *response) {
 		default:
 			return resp_generate_simple_string_n(response, '-', "ERR vector operation failed", sizeof("ERR vector operation failed") - 1);
 	}
+}
+
+static int kvs_vector_status_to_resp(int status, char *response) {
+	return kvs_command_task_vector_status_to_resp(status, response);
 }
 
 static int kvs_vector_search_prepared_to_resp(

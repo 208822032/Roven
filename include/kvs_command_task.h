@@ -78,5 +78,6 @@ int kvs_command_task_prepare(kvs_command_task_t *task);
 int kvs_command_task_execute_sync(kvs_command_task_t *task);
 void kvs_command_task_post_commit(kvs_command_task_t *task, int ret);
 void kvs_command_task_destroy(kvs_command_task_t *task);
+int kvs_command_task_vector_status_to_resp(int status, char *response);
 
 #endif /* KVS_COMMAND_TASK_H */

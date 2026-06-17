@@ -22,6 +22,17 @@ typedef struct kvs_embedding_worker_pool_stats_s {
 	uint64_t prepared_queue_submit_count;
 	uint64_t prepared_queue_submit_total_us;
 	uint64_t prepared_queue_submit_max_us;
+	uint64_t embedding_batch_enabled;
+	uint64_t embedding_batch_count;
+	uint64_t embedding_batch_items;
+	uint64_t embedding_batch_max_observed_size;
+	uint64_t embedding_batch_wait_total_us;
+	uint64_t embedding_batch_wait_max_us;
+	uint64_t embedding_batch_encode_total_us;
+	uint64_t embedding_batch_encode_max_us;
+	uint64_t embedding_batch_fallback_single_count;
+	uint64_t embedding_batch_failed;
+	uint64_t embedding_batch_provider_unsupported;
 	uint64_t per_thread_context_enabled;
 	uint64_t per_thread_context_created;
 	uint64_t per_thread_context_destroyed;

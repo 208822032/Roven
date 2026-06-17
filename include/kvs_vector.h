@@ -181,6 +181,18 @@ int kvs_vector_set_prepare(
 	kvs_vector_set_prepared_t *prepared
 );
 
+int kvs_vector_set_prepare_with_embedding(
+	const char *question,
+	size_t question_len,
+	const char *answer,
+	size_t answer_len,
+	const char *scope,
+	size_t scope_len,
+	const float *embedding,
+	int embedding_dim,
+	kvs_vector_set_prepared_t *prepared
+);
+
 int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared);
 
 void kvs_vector_search_prepared_reset(kvs_vector_search_prepared_t *prepared);
@@ -195,6 +207,16 @@ int kvs_vector_search_prepare(
 	kvs_vector_search_prepared_t *prepared
 );
 
+int kvs_vector_search_prepare_with_embedding(
+	const char *query,
+	size_t query_len,
+	const char *scope,
+	size_t scope_len,
+	const float *embedding,
+	int embedding_dim,
+	kvs_vector_search_prepared_t *prepared
+);
+
 int kvs_vector_search_with_prepared(
 	const kvs_vector_search_prepared_t *prepared,
 	int topk,
@@ -202,6 +224,14 @@ int kvs_vector_search_with_prepared(
 	kvs_vector_search_result_t *results,
 	size_t results_capacity,
 	size_t *results_count
+);
+
+int kvs_vector_embedding_generate_batch(
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	float **out_embeddings,
+	int *out_dim
 );
 
 int kvs_vector_get(

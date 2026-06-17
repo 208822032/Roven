@@ -158,6 +158,39 @@ EmbeddingErrorCode embedding_encode(
 	return EMBEDDING_OK;
 }
 
+EmbeddingErrorCode embedding_encode_batch(
+	EmbeddingHandle *handle,
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	float *outputs,
+	int output_dim
+) {
+	size_t i;
+
+	if (!handle) {
+		return EMBEDDING_ERR_NOT_INITIALIZED;
+	}
+	if (!texts || !text_lens || text_count == 0 || !outputs) {
+		return EMBEDDING_ERR_INVALID_ARGUMENT;
+	}
+
+	for (i = 0; i < text_count; ++i) {
+		EmbeddingErrorCode err = embedding_encode(
+			handle,
+			texts[i],
+			text_lens[i],
+			outputs + (i * (size_t)output_dim),
+			output_dim
+		);
+		if (err != EMBEDDING_OK) {
+			return err;
+		}
+	}
+
+	return EMBEDDING_OK;
+}
+
 int embedding_dimension(EmbeddingHandle *handle) {
 	if (!handle) {
 		return 0;

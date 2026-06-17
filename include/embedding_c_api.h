@@ -58,6 +58,15 @@ EmbeddingErrorCode embedding_encode(
 	int output_dim
 );
 
+EmbeddingErrorCode embedding_encode_batch(
+	EmbeddingHandle *handle,
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	float *outputs,
+	int output_dim
+);
+
 int embedding_dimension(EmbeddingHandle *handle);
 
 const char *embedding_last_error(EmbeddingHandle *handle);

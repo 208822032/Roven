@@ -847,22 +847,22 @@ int kvs_vector_embedding_generate_batch(
 			pthread_mutex_lock(&g_embedding_provider_encode_mu);
 			start_us = embedding_encode_enter();
 		}
-		for (i = 0; i < text_count; ++i) {
-			EmbeddingErrorCode err = embedding_encode(
+		{
+			EmbeddingErrorCode err = embedding_encode_batch(
 				handle,
-				texts[i],
-				text_lens[i],
-				embeddings + (i * provider_dim),
+				texts,
+				text_lens,
+				text_count,
+				embeddings,
 				(int)provider_dim
 			);
 			if (err != EMBEDDING_OK) {
 				KVS_LOG_ERROR(
 					KVS_VECTOR_LOG_MODULE,
-					"local_c embedding batch encode failed err=%d message=%s index=%zu text_len=%zu thread_context=%d",
+					"local_c embedding batch encode failed err=%d message=%s count=%zu thread_context=%d",
 					(int)err,
 					embedding_last_error(handle),
-					i,
-					text_lens[i],
+					text_count,
 					use_thread_context
 				);
 				embedding_encode_leave(start_us);

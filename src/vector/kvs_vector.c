@@ -1103,6 +1103,74 @@ void kvs_vector_search_prepared_destroy(kvs_vector_search_prepared_t *prepared) 
 	kvs_vector_search_prepared_reset(prepared);
 }
 
+int kvs_vector_set_prepare_with_embedding(
+	const char *question,
+	size_t question_len,
+	const char *answer,
+	size_t answer_len,
+	const char *scope,
+	size_t scope_len,
+	const float *embedding,
+	int embedding_dim,
+	kvs_vector_set_prepared_t *prepared
+) {
+	size_t copied_len = 0;
+	size_t embedding_bytes;
+	int ret;
+
+	if (!prepared) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	kvs_vector_set_prepared_reset(prepared);
+
+	ret = kvs_vector_validate_initialized();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	if (!question || question_len == 0 || !answer ||
+	    !embedding || embedding_dim <= 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	if (!scope) {
+		scope_len = 0;
+	}
+
+	prepared->question = kvs_vector_dup_string(question, question_len, &copied_len);
+	if (!prepared->question) {
+		goto oom;
+	}
+	prepared->question_len = question_len;
+
+	prepared->answer = kvs_vector_dup_string(answer, answer_len, &copied_len);
+	if (!prepared->answer) {
+		goto oom;
+	}
+	prepared->answer_len = answer_len;
+
+	if (scope && scope_len > 0) {
+		prepared->scope = kvs_vector_dup_string(scope, scope_len, &copied_len);
+		if (!prepared->scope) {
+			goto oom;
+		}
+		prepared->scope_len = scope_len;
+	}
+
+	embedding_bytes = (size_t)embedding_dim * sizeof(*prepared->embedding);
+	prepared->embedding = (float *)kvs_malloc(embedding_bytes);
+	if (!prepared->embedding) {
+		goto oom;
+	}
+	memcpy(prepared->embedding, embedding, embedding_bytes);
+	prepared->embedding_dim = embedding_dim;
+
+	return KVS_VECTOR_OK;
+
+oom:
+	kvs_vector_set_prepared_destroy(prepared);
+	return KVS_VECTOR_ERR;
+}
+
 int kvs_vector_set_prepare(
 	const char *question,
 	size_t question_len,
@@ -1174,6 +1242,65 @@ int kvs_vector_set_prepare(
 
 oom:
 	kvs_vector_set_prepared_destroy(prepared);
+	return KVS_VECTOR_ERR;
+}
+
+int kvs_vector_search_prepare_with_embedding(
+	const char *query,
+	size_t query_len,
+	const char *scope,
+	size_t scope_len,
+	const float *embedding,
+	int embedding_dim,
+	kvs_vector_search_prepared_t *prepared
+) {
+	size_t copied_len = 0;
+	size_t embedding_bytes;
+	int ret;
+
+	if (!prepared) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	kvs_vector_search_prepared_reset(prepared);
+
+	ret = kvs_vector_validate_initialized();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	if (!query || query_len == 0 || !embedding || embedding_dim <= 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	if (!scope) {
+		scope_len = 0;
+	}
+
+	prepared->query = kvs_vector_dup_string(query, query_len, &copied_len);
+	if (!prepared->query) {
+		goto oom;
+	}
+	prepared->query_len = query_len;
+
+	if (scope && scope_len > 0) {
+		prepared->scope = kvs_vector_dup_string(scope, scope_len, &copied_len);
+		if (!prepared->scope) {
+			goto oom;
+		}
+		prepared->scope_len = scope_len;
+	}
+
+	embedding_bytes = (size_t)embedding_dim * sizeof(*prepared->embedding);
+	prepared->embedding = (float *)kvs_malloc(embedding_bytes);
+	if (!prepared->embedding) {
+		goto oom;
+	}
+	memcpy(prepared->embedding, embedding, embedding_bytes);
+	prepared->embedding_dim = embedding_dim;
+
+	return KVS_VECTOR_OK;
+
+oom:
+	kvs_vector_search_prepared_destroy(prepared);
 	return KVS_VECTOR_ERR;
 }
 

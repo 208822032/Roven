@@ -1295,6 +1295,45 @@ static EmbeddingErrorCode embedding_create_int64_tensor(
 	return EMBEDDING_OK;
 }
 
+static EmbeddingErrorCode embedding_create_int64_batch_tensor(
+	EmbeddingHandle *handle,
+	int64_t *data,
+	size_t batch_size,
+	int seq_len,
+	OrtValue **value
+) {
+	OrtStatus *status;
+	int64_t shape[2];
+
+	if (batch_size == 0 || seq_len <= 0) {
+		embedding_set_error(handle, "invalid batch tensor shape");
+		return EMBEDDING_ERR_INVALID_ARGUMENT;
+	}
+
+	shape[0] = (int64_t)batch_size;
+	shape[1] = seq_len;
+
+	status = handle->ort->CreateTensorWithDataAsOrtValue(
+		handle->memory_info,
+		data,
+		batch_size * (size_t)seq_len * sizeof(*data),
+		shape,
+		2,
+		ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
+		value
+	);
+	if (status) {
+		return embedding_set_ort_error(
+			handle,
+			status,
+			"OrtCreateTensor failed for int64 batch input",
+			EMBEDDING_ERR_INFERENCE_FAILED
+		);
+	}
+
+	return EMBEDDING_OK;
+}
+
 static EmbeddingErrorCode embedding_copy_sentence_embedding(
 	EmbeddingHandle *handle,
 	OrtValue *value,
@@ -1399,6 +1438,120 @@ static EmbeddingErrorCode embedding_copy_sentence_embedding(
 	}
 
 	memcpy(output, data, (size_t)output_dim * sizeof(*output));
+
+cleanup:
+	if (shape_info) {
+		handle->ort->ReleaseTensorTypeAndShapeInfo(shape_info);
+	}
+	return result;
+}
+
+static EmbeddingErrorCode embedding_copy_sentence_embedding_batch(
+	EmbeddingHandle *handle,
+	OrtValue *value,
+	float *outputs,
+	size_t batch_size,
+	int output_dim
+) {
+	OrtStatus *status;
+	OrtTensorTypeAndShapeInfo *shape_info = NULL;
+	ONNXTensorElementDataType element_type =
+		ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+	size_t rank = 0;
+	int64_t dims[2] = {0, 0};
+	void *data = NULL;
+	EmbeddingErrorCode result = EMBEDDING_OK;
+
+	status = handle->ort->GetTensorTypeAndShape(value, &shape_info);
+	if (status) {
+		return embedding_set_ort_error(
+			handle,
+			status,
+			"failed to get batch sentence_embedding tensor shape",
+			EMBEDDING_ERR_INFERENCE_FAILED
+		);
+	}
+
+	status = handle->ort->GetTensorElementType(shape_info, &element_type);
+	if (status) {
+		result = embedding_set_ort_error(
+			handle,
+			status,
+			"failed to get batch sentence_embedding tensor type",
+			EMBEDDING_ERR_INFERENCE_FAILED
+		);
+		goto cleanup;
+	}
+	if (element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+		snprintf(
+			handle->last_error,
+			sizeof(handle->last_error),
+			"batch output tensor type mismatch: expected float32 got %s(%d)",
+			embedding_onnx_element_type_name(element_type),
+			(int)element_type
+		);
+		result = EMBEDDING_ERR_DIM_MISMATCH;
+		goto cleanup;
+	}
+
+	status = handle->ort->GetDimensionsCount(shape_info, &rank);
+	if (status) {
+		result = embedding_set_ort_error(
+			handle,
+			status,
+			"failed to get batch sentence_embedding rank",
+			EMBEDDING_ERR_INFERENCE_FAILED
+		);
+		goto cleanup;
+	}
+	if (rank != 2) {
+		snprintf(
+			handle->last_error,
+			sizeof(handle->last_error),
+			"batch output rank mismatch: expected 2 got %zu",
+			rank
+		);
+		result = EMBEDDING_ERR_DIM_MISMATCH;
+		goto cleanup;
+	}
+
+	status = handle->ort->GetDimensions(shape_info, dims, 2);
+	if (status) {
+		result = embedding_set_ort_error(
+			handle,
+			status,
+			"failed to get batch sentence_embedding dimensions",
+			EMBEDDING_ERR_INFERENCE_FAILED
+		);
+		goto cleanup;
+	}
+	if (dims[0] != (int64_t)batch_size || dims[1] != output_dim ||
+	    dims[1] != handle->embedding_dim) {
+		snprintf(
+			handle->last_error,
+			sizeof(handle->last_error),
+			"batch output dim mismatch: shape=[%lld,%lld] expected=[%zu,%d]",
+			(long long)dims[0],
+			(long long)dims[1],
+			batch_size,
+			handle->embedding_dim
+		);
+		result = EMBEDDING_ERR_DIM_MISMATCH;
+		goto cleanup;
+	}
+
+	status = handle->ort->GetTensorMutableData(value, &data);
+	if (status) {
+		result = embedding_set_ort_error(
+			handle,
+			status,
+			"failed to get batch sentence_embedding tensor data",
+			EMBEDDING_ERR_INFERENCE_FAILED
+		);
+		goto cleanup;
+	}
+
+	memcpy(outputs, data, batch_size * (size_t)output_dim * sizeof(*outputs));
 
 cleanup:
 	if (shape_info) {
@@ -1867,6 +2020,275 @@ cleanup:
 		embedding_resource_stats_add(
 			&g_onnx_resource_stats.encode_count,
 			1
+		);
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.embedding_encode_total_us,
+			total_us
+		);
+		embedding_resource_stats_update_max(
+			&g_onnx_resource_stats.embedding_encode_max_us,
+			total_us
+		);
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.tokenizer_total_us,
+			tokenize_us
+		);
+		embedding_resource_stats_update_max(
+			&g_onnx_resource_stats.tokenizer_max_us,
+			tokenize_us
+		);
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.ort_run_total_us,
+			ort_us
+		);
+		embedding_resource_stats_update_max(
+			&g_onnx_resource_stats.ort_run_max_us,
+			ort_us
+		);
+	}
+	if (profile_enabled) {
+		embedding_profile_record(
+			handle,
+			result == EMBEDDING_OK,
+			embedding_elapsed_us(total_start_us, embedding_now_us()),
+			tokenize_us,
+			tensor_us,
+			ort_us,
+			output_us
+		);
+		embedding_profile_leave(handle);
+	}
+	if (output_values[0]) {
+		handle->ort->ReleaseValue(output_values[0]);
+	}
+	if (input_values[2]) {
+		handle->ort->ReleaseValue(input_values[2]);
+	}
+	if (input_values[1]) {
+		handle->ort->ReleaseValue(input_values[1]);
+	}
+	if (input_values[0]) {
+		handle->ort->ReleaseValue(input_values[0]);
+	}
+	free(token_type_ids);
+	free(attention_mask);
+	free(input_ids);
+	return result;
+}
+
+EmbeddingErrorCode embedding_encode_batch(
+	EmbeddingHandle *handle,
+	const char **texts,
+	const size_t *text_lens,
+	size_t text_count,
+	float *outputs,
+	int output_dim
+) {
+	int64_t *input_ids = NULL;
+	int64_t *attention_mask = NULL;
+	int64_t *token_type_ids = NULL;
+	OrtValue *input_values[3] = {NULL, NULL, NULL};
+	OrtValue *output_values[1] = {NULL};
+	const char *input_names[3] = {
+		"input_ids",
+		"attention_mask",
+		"token_type_ids"
+	};
+	const char *output_names[1] = {"sentence_embedding"};
+	OrtStatus *status;
+	EmbeddingErrorCode result = EMBEDDING_OK;
+	int profile_enabled;
+	int seq_len = 0;
+	size_t i;
+	size_t token_count;
+	uint64_t total_start_us = 0;
+	uint64_t tokenize_start_us = 0;
+	uint64_t tensor_start_us = 0;
+	uint64_t ort_start_us = 0;
+	uint64_t output_start_us = 0;
+	uint64_t tokenize_us = 0;
+	uint64_t tensor_us = 0;
+	uint64_t ort_us = 0;
+	uint64_t output_us = 0;
+
+	if (!handle) {
+		return EMBEDDING_ERR_NOT_INITIALIZED;
+	}
+
+	profile_enabled = handle->profile_enabled;
+	total_start_us = embedding_now_us();
+	if (profile_enabled) {
+		embedding_profile_enter(handle);
+	}
+
+	if (!texts || !text_lens || text_count == 0 || !outputs) {
+		embedding_set_error(handle, "invalid batch input or output buffer");
+		result = EMBEDDING_ERR_INVALID_ARGUMENT;
+		goto cleanup;
+	}
+
+	if (output_dim != handle->embedding_dim) {
+		embedding_set_error(handle, "batch output dimension mismatch");
+		result = EMBEDDING_ERR_DIM_MISMATCH;
+		goto cleanup;
+	}
+
+	if (text_count > ((size_t)-1 / (size_t)handle->max_tokens)) {
+		embedding_set_error(handle, "batch size overflow");
+		result = EMBEDDING_ERR_INVALID_ARGUMENT;
+		goto cleanup;
+	}
+	token_count = text_count * (size_t)handle->max_tokens;
+
+	input_ids = (int64_t *)calloc(token_count, sizeof(*input_ids));
+	attention_mask = (int64_t *)calloc(token_count, sizeof(*attention_mask));
+	token_type_ids = (int64_t *)calloc(token_count, sizeof(*token_type_ids));
+	if (!input_ids || !attention_mask || !token_type_ids) {
+		embedding_set_error(handle, "failed to allocate ONNX batch input buffers");
+		result = EMBEDDING_ERR_OUT_OF_MEMORY;
+		goto cleanup;
+	}
+
+	tokenize_start_us = embedding_now_us();
+	for (i = 0; i < text_count; ++i) {
+		int item_seq_len = 0;
+
+		if (!texts[i] || text_lens[i] == 0) {
+			embedding_set_error(handle, "invalid batch text");
+			result = EMBEDDING_ERR_INVALID_ARGUMENT;
+			goto cleanup;
+		}
+		if (text_lens[i] > (size_t)handle->max_text_len) {
+			embedding_set_error(handle, "batch text exceeds max_text_len");
+			result = EMBEDDING_ERR_TEXT_TOO_LONG;
+			goto cleanup;
+		}
+
+		result = bert_tokenize(
+			handle,
+			texts[i],
+			text_lens[i],
+			input_ids + (i * (size_t)handle->max_tokens),
+			attention_mask + (i * (size_t)handle->max_tokens),
+			token_type_ids + (i * (size_t)handle->max_tokens),
+			handle->max_tokens,
+			&item_seq_len
+		);
+		if (result != EMBEDDING_OK) {
+			embedding_set_error(handle, "batch tokenization failed");
+			goto cleanup;
+		}
+		if (item_seq_len > seq_len) {
+			seq_len = item_seq_len;
+		}
+	}
+	tokenize_us = embedding_elapsed_us(tokenize_start_us, embedding_now_us());
+	if (seq_len <= 0) {
+		embedding_set_error(handle, "invalid batch token sequence length");
+		result = EMBEDDING_ERR_INVALID_ARGUMENT;
+		goto cleanup;
+	}
+
+	if (seq_len < handle->max_tokens) {
+		for (i = 0; i < text_count; ++i) {
+			size_t dst = i * (size_t)seq_len;
+			size_t src = i * (size_t)handle->max_tokens;
+			size_t bytes = (size_t)seq_len * sizeof(*input_ids);
+
+			memmove(input_ids + dst, input_ids + src, bytes);
+			memmove(attention_mask + dst, attention_mask + src, bytes);
+			memmove(token_type_ids + dst, token_type_ids + src, bytes);
+		}
+	}
+
+	if (profile_enabled) {
+		tensor_start_us = embedding_now_us();
+	}
+	result = embedding_create_int64_batch_tensor(
+		handle,
+		input_ids,
+		text_count,
+		seq_len,
+		&input_values[0]
+	);
+	if (result != EMBEDDING_OK) {
+		goto cleanup;
+	}
+	result = embedding_create_int64_batch_tensor(
+		handle,
+		attention_mask,
+		text_count,
+		seq_len,
+		&input_values[1]
+	);
+	if (result != EMBEDDING_OK) {
+		goto cleanup;
+	}
+	result = embedding_create_int64_batch_tensor(
+		handle,
+		token_type_ids,
+		text_count,
+		seq_len,
+		&input_values[2]
+	);
+	if (result != EMBEDDING_OK) {
+		goto cleanup;
+	}
+	if (profile_enabled) {
+		tensor_us = embedding_elapsed_us(tensor_start_us, embedding_now_us());
+	}
+
+	ort_start_us = embedding_now_us();
+	status = handle->ort->Run(
+		handle->session,
+		NULL,
+		input_names,
+		(const OrtValue * const *)input_values,
+		3,
+		output_names,
+		1,
+		output_values
+	);
+	ort_us = embedding_elapsed_us(ort_start_us, embedding_now_us());
+	if (status) {
+		result = embedding_set_ort_error(
+			handle,
+			status,
+			"OrtRun failed for batch sentence_embedding",
+			EMBEDDING_ERR_INFERENCE_FAILED
+		);
+		goto cleanup;
+	}
+	if (!output_values[0]) {
+		embedding_set_error(handle, "batch sentence_embedding output missing");
+		result = EMBEDDING_ERR_INFERENCE_FAILED;
+		goto cleanup;
+	}
+
+	if (profile_enabled) {
+		output_start_us = embedding_now_us();
+	}
+	result = embedding_copy_sentence_embedding_batch(
+		handle,
+		output_values[0],
+		outputs,
+		text_count,
+		output_dim
+	);
+	if (profile_enabled) {
+		output_us = embedding_elapsed_us(output_start_us, embedding_now_us());
+	}
+	if (result == EMBEDDING_OK) {
+		snprintf(handle->last_error, sizeof(handle->last_error), "%s", "OK");
+	}
+
+cleanup:
+	if (total_start_us > 0) {
+		uint64_t total_us = embedding_elapsed_us(total_start_us, embedding_now_us());
+
+		embedding_resource_stats_add(
+			&g_onnx_resource_stats.encode_count,
+			text_count
 		);
 		embedding_resource_stats_add(
 			&g_onnx_resource_stats.embedding_encode_total_us,

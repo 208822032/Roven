@@ -137,6 +137,9 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	uint64_t execute_sync_avg_us = 0;
 	uint64_t commit_or_search_avg_us = 0;
 	uint64_t finalize_response_avg_us = 0;
+	uint64_t batch_avg_size = 0;
+	uint64_t batch_wait_avg_us = 0;
+	uint64_t batch_encode_avg_us = 0;
 
 	memset(&stats, 0, sizeof(stats));
 	memset(&exec_stats, 0, sizeof(exec_stats));
@@ -182,6 +185,14 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		finalize_response_avg_us =
 			exec_stats.finalize_response_total_us /
 			exec_stats.finalize_response_count;
+	}
+	if (stats.embedding_batch_count > 0) {
+		batch_avg_size =
+			stats.embedding_batch_items / stats.embedding_batch_count;
+		batch_wait_avg_us =
+			stats.embedding_batch_wait_total_us / stats.embedding_batch_count;
+		batch_encode_avg_us =
+			stats.embedding_batch_encode_total_us / stats.embedding_batch_count;
 	}
 
 	KVS_LOG_INFO(
@@ -251,6 +262,22 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		(unsigned long long)exec_stats.finalize_response_count,
 		(unsigned long long)finalize_response_avg_us,
 		(unsigned long long)exec_stats.finalize_response_max_us
+	);
+	KVS_LOG_INFO(
+		"core",
+		"embedding batch stats: batch_enabled=%llu batch_count=%llu batch_items=%llu batch_avg_size=%llu batch_max_observed_size=%llu batch_wait_avg_us=%llu batch_wait_max_us=%llu batch_encode_avg_us=%llu batch_encode_max_us=%llu batch_fallback_single_count=%llu batch_failed=%llu batch_provider_unsupported=%llu",
+		(unsigned long long)stats.embedding_batch_enabled,
+		(unsigned long long)stats.embedding_batch_count,
+		(unsigned long long)stats.embedding_batch_items,
+		(unsigned long long)batch_avg_size,
+		(unsigned long long)stats.embedding_batch_max_observed_size,
+		(unsigned long long)batch_wait_avg_us,
+		(unsigned long long)stats.embedding_batch_wait_max_us,
+		(unsigned long long)batch_encode_avg_us,
+		(unsigned long long)stats.embedding_batch_encode_max_us,
+		(unsigned long long)stats.embedding_batch_fallback_single_count,
+		(unsigned long long)stats.embedding_batch_failed,
+		(unsigned long long)stats.embedding_batch_provider_unsupported
 	);
 }
 
