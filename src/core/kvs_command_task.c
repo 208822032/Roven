@@ -14,6 +14,16 @@
 
 #include <string.h>
 #include <strings.h>
+#include <time.h>
+
+static uint64_t kvs_command_task_now_us(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return 0;
+	}
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
 
 int kvs_command_task_vector_status_to_resp(int status, char *response) {
 	switch (status) {
@@ -418,25 +428,53 @@ int kvs_command_task_prepare(kvs_command_task_t *task) {
 }
 
 static int kvs_command_task_lock(kvs_command_task_t *task) {
+	uint64_t start_us;
+	uint64_t end_us;
+
 	task->response = kvs_response_task_buffer(task->response_task);
 
 	if (task->use_read_lock) {
+		start_us = kvs_command_task_now_us();
 		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
 			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 			return -1;
 		}
+		end_us = kvs_command_task_now_us();
+		task->lock_wait_us += end_us >= start_us ? end_us - start_us : 0;
+		task->lock_acquired_us = end_us;
 		task->lock_held = 1;
 		task->ctx.lock_mode = KVS_LOCK_MODE_READ;
 	} else if (task->use_write_lock) {
+		start_us = kvs_command_task_now_us();
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
 			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 			return -1;
 		}
+		end_us = kvs_command_task_now_us();
+		task->lock_wait_us += end_us >= start_us ? end_us - start_us : 0;
+		task->lock_acquired_us = end_us;
 		task->lock_held = 1;
 		task->ctx.lock_mode = KVS_LOCK_MODE_WRITE;
 	}
 
 	return 0;
+}
+
+static void kvs_command_task_unlock(kvs_command_task_t *task) {
+	uint64_t end_us;
+
+	if (!task || !task->lock_held) {
+		return;
+	}
+	end_us = kvs_command_task_now_us();
+	if (task->lock_acquired_us > 0) {
+		task->lock_hold_us += end_us >= task->lock_acquired_us ?
+			end_us - task->lock_acquired_us :
+			0;
+	}
+	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	task->lock_held = 0;
+	task->lock_acquired_us = 0;
 }
 
 static void kvs_command_task_capture_post_state(kvs_command_task_t *task, int ret) {
@@ -467,11 +505,15 @@ static int kvs_command_task_execute_handler(kvs_command_task_t *task) {
 		task->command_committed = (status == KVS_VECTOR_OK);
 		ret = kvs_vector_status_to_resp(status, task->response);
 	} else if (strcmp(task->cmd->name, "VSEARCH") == 0) {
+		uint64_t start_us = kvs_command_task_now_us();
+		uint64_t end_us;
 		ret = kvs_vector_search_prepared_to_resp(
 			&task->ctx,
 			&task->prepared_search,
 			task->response
 		);
+		end_us = kvs_command_task_now_us();
+		task->vsearch_search_us += end_us >= start_us ? end_us - start_us : 0;
 		task->command_committed = (ret >= 0);
 	} else {
 		ret = task->cmd->handler(&task->ctx, task->response);
@@ -490,15 +532,20 @@ int kvs_command_task_execute_sync(kvs_command_task_t *task) {
 
 	ret = kvs_command_task_execute_handler(task);
 	if (task->use_read_lock && ret == KVS_CMD_RETRY_WITH_WRITE_LOCK) {
-		pthread_rwlock_unlock(&g_kv_data_rwlock);
-		task->lock_held = 0;
+		kvs_command_task_unlock(task);
 		task->use_read_lock = 0;
 		task->use_write_lock = 1;
 
+		task->lock_acquired_us = 0;
+		uint64_t start_us = kvs_command_task_now_us();
+		uint64_t end_us;
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
 			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 			return task->status;
 		}
+		end_us = kvs_command_task_now_us();
+		task->lock_wait_us += end_us >= start_us ? end_us - start_us : 0;
+		task->lock_acquired_us = end_us;
 		task->lock_held = 1;
 		task->ctx.lock_mode = KVS_LOCK_MODE_WRITE;
 		ret = task->cmd->handler(&task->ctx, task->response);
@@ -508,8 +555,7 @@ int kvs_command_task_execute_sync(kvs_command_task_t *task) {
 	kvs_command_task_capture_post_state(task, ret);
 
 	if (task->lock_held) {
-		pthread_rwlock_unlock(&g_kv_data_rwlock);
-		task->lock_held = 0;
+		kvs_command_task_unlock(task);
 	}
 
 	task->status = ret;
@@ -523,6 +569,11 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 
 #if ENABLE_AOF
 	if (!aof_is_loading()) {
+		uint64_t start_us = 0;
+		uint64_t end_us = 0;
+		if (strcmp(task->cmd->name, "VSET") == 0) {
+			start_us = kvs_command_task_now_us();
+		}
 		if (strcmp(task->cmd->name, "EXPIRE") == 0) {
 			if (task->has_expire_at) {
 				char expire_buf[32];
@@ -536,6 +587,10 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 		} else {
 			aof_append(task->argc, task->argv, task->argv_lens);
 		}
+		if (strcmp(task->cmd->name, "VSET") == 0) {
+			end_us = kvs_command_task_now_us();
+			task->vset_aof_append_us += end_us >= start_us ? end_us - start_us : 0;
+		}
 	}
 #endif
 
@@ -544,6 +599,11 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 	}
 
 	if (global_dist_config.role == ROLE_MASTER && g_cfg.sync_mode == KVS_SYNC_TCP) {
+		uint64_t start_us = 0;
+		uint64_t end_us = 0;
+		if (strcmp(task->cmd->name, "VSET") == 0) {
+			start_us = kvs_command_task_now_us();
+		}
 		if (strcmp(task->cmd->name, "EXPIRE") == 0 ||
 		    strcmp(task->cmd->name, "PEXPIREAT") == 0) {
 			if (ret > 0) {
@@ -568,5 +628,30 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 				(task->argc > 2) ? task->argv_lens[2] : 0
 			);
 		}
+		if (strcmp(task->cmd->name, "VSET") == 0) {
+			end_us = kvs_command_task_now_us();
+			task->vset_replication_us += end_us >= start_us ? end_us - start_us : 0;
+		}
 	}
+}
+
+void kvs_command_task_get_vset_post_commit_timings(
+	const kvs_command_task_t *task,
+	uint64_t *aof_append_us,
+	uint64_t *replication_us,
+	uint64_t *dirty_mark_us
+) {
+	if (aof_append_us) {
+		*aof_append_us = task ? task->vset_aof_append_us : 0;
+	}
+	if (replication_us) {
+		*replication_us = task ? task->vset_replication_us : 0;
+	}
+	if (dirty_mark_us) {
+		*dirty_mark_us = task ? task->vset_dirty_mark_us : 0;
+	}
+}
+
+uint64_t kvs_command_task_get_vsearch_search_us(const kvs_command_task_t *task) {
+	return task ? task->vsearch_search_us : 0;
 }

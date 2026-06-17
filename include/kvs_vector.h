@@ -195,6 +195,67 @@ int kvs_vector_set_prepare_with_embedding(
 
 int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared);
 
+typedef struct kvs_vector_vset_commit_stats_s {
+	uint64_t vset_commit_count;
+	uint64_t vset_commit_total_us;
+	uint64_t vset_commit_max_us;
+	uint64_t vset_record_lookup_count;
+	uint64_t vset_record_lookup_total_us;
+	uint64_t vset_record_lookup_max_us;
+	uint64_t vset_record_insert_or_update_count;
+	uint64_t vset_record_insert_or_update_total_us;
+	uint64_t vset_record_insert_or_update_max_us;
+	uint64_t vset_vector_copy_count;
+	uint64_t vset_vector_copy_total_us;
+	uint64_t vset_vector_copy_max_us;
+	uint64_t vset_flat_index_update_count;
+	uint64_t vset_flat_index_update_total_us;
+	uint64_t vset_flat_index_update_max_us;
+	uint64_t vset_hnsw_add_count;
+	uint64_t vset_hnsw_add_total_us;
+	uint64_t vset_hnsw_add_max_us;
+	uint64_t vset_id_map_update_count;
+	uint64_t vset_id_map_update_total_us;
+	uint64_t vset_id_map_update_max_us;
+	uint64_t vset_scope_answer_question_update_count;
+	uint64_t vset_scope_answer_question_update_total_us;
+	uint64_t vset_scope_answer_question_update_max_us;
+	uint64_t vset_lock_wait_count;
+	uint64_t vset_lock_wait_total_us;
+	uint64_t vset_lock_wait_max_us;
+	uint64_t vset_lock_hold_count;
+	uint64_t vset_lock_hold_total_us;
+	uint64_t vset_lock_hold_max_us;
+	uint64_t vset_aof_append_count;
+	uint64_t vset_aof_append_total_us;
+	uint64_t vset_aof_append_max_us;
+	uint64_t vset_replication_count;
+	uint64_t vset_replication_total_us;
+	uint64_t vset_replication_max_us;
+	uint64_t vset_dirty_mark_count;
+	uint64_t vset_dirty_mark_total_us;
+	uint64_t vset_dirty_mark_max_us;
+	uint64_t vset_response_build_count;
+	uint64_t vset_response_build_total_us;
+	uint64_t vset_response_build_max_us;
+	uint64_t vset_response_push_count;
+	uint64_t vset_response_push_total_us;
+	uint64_t vset_response_push_max_us;
+	uint64_t vsearch_search_count;
+	uint64_t vsearch_search_total_us;
+	uint64_t vsearch_search_max_us;
+} kvs_vector_vset_commit_stats_t;
+
+void kvs_vector_vset_commit_stats_get(kvs_vector_vset_commit_stats_t *out);
+void kvs_vector_vset_record_lock_wait(uint64_t elapsed_us);
+void kvs_vector_vset_record_lock_hold(uint64_t elapsed_us);
+void kvs_vector_vset_record_aof_append(uint64_t elapsed_us);
+void kvs_vector_vset_record_replication(uint64_t elapsed_us);
+void kvs_vector_vset_record_dirty_mark(uint64_t elapsed_us);
+void kvs_vector_vset_record_response_build(uint64_t elapsed_us);
+void kvs_vector_vset_record_response_push(uint64_t elapsed_us);
+void kvs_vector_vsearch_record_search(uint64_t elapsed_us);
+
 void kvs_vector_search_prepared_reset(kvs_vector_search_prepared_t *prepared);
 
 void kvs_vector_search_prepared_destroy(kvs_vector_search_prepared_t *prepared);

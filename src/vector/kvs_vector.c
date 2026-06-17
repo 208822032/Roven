@@ -2,7 +2,179 @@
 #include "kvs_vector.h"
 #include "kvs_vector_distance.h"
 
+#include <time.h>
+
 kvs_vector_state_t g_vector_state;
+static kvs_vector_vset_commit_stats_t g_vset_commit_stats;
+
+static uint64_t kvs_vector_stats_add(uint64_t *field, uint64_t value) {
+	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
+}
+
+static uint64_t kvs_vector_stats_load(const uint64_t *field) {
+	return __atomic_load_n(field, __ATOMIC_RELAXED);
+}
+
+static void kvs_vector_stats_update_max(uint64_t *field, uint64_t value) {
+	uint64_t old_value = __atomic_load_n(field, __ATOMIC_RELAXED);
+
+	while (value > old_value) {
+		if (__atomic_compare_exchange_n(field,
+		                                &old_value,
+		                                value,
+		                                0,
+		                                __ATOMIC_RELAXED,
+		                                __ATOMIC_RELAXED)) {
+			break;
+		}
+	}
+}
+
+static uint64_t kvs_vector_now_us(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return 0;
+	}
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+static void kvs_vector_record_timing(
+	uint64_t *count,
+	uint64_t *total_us,
+	uint64_t *max_us,
+	uint64_t elapsed_us
+) {
+	kvs_vector_stats_add(count, 1);
+	kvs_vector_stats_add(total_us, elapsed_us);
+	kvs_vector_stats_update_max(max_us, elapsed_us);
+}
+
+void kvs_vector_vset_commit_stats_get(kvs_vector_vset_commit_stats_t *out) {
+	if (!out) {
+		return;
+	}
+	out->vset_commit_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_commit_count);
+	out->vset_commit_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_commit_total_us);
+	out->vset_commit_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_commit_max_us);
+	out->vset_record_lookup_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_record_lookup_count);
+	out->vset_record_lookup_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_record_lookup_total_us);
+	out->vset_record_lookup_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_record_lookup_max_us);
+	out->vset_record_insert_or_update_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_record_insert_or_update_count);
+	out->vset_record_insert_or_update_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_record_insert_or_update_total_us);
+	out->vset_record_insert_or_update_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_record_insert_or_update_max_us);
+	out->vset_vector_copy_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_vector_copy_count);
+	out->vset_vector_copy_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_vector_copy_total_us);
+	out->vset_vector_copy_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_vector_copy_max_us);
+	out->vset_flat_index_update_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_flat_index_update_count);
+	out->vset_flat_index_update_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_flat_index_update_total_us);
+	out->vset_flat_index_update_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_flat_index_update_max_us);
+	out->vset_hnsw_add_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_hnsw_add_count);
+	out->vset_hnsw_add_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_hnsw_add_total_us);
+	out->vset_hnsw_add_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_hnsw_add_max_us);
+	out->vset_id_map_update_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_id_map_update_count);
+	out->vset_id_map_update_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_id_map_update_total_us);
+	out->vset_id_map_update_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_id_map_update_max_us);
+	out->vset_scope_answer_question_update_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_scope_answer_question_update_count);
+	out->vset_scope_answer_question_update_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_scope_answer_question_update_total_us);
+	out->vset_scope_answer_question_update_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_scope_answer_question_update_max_us);
+	out->vset_lock_wait_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_lock_wait_count);
+	out->vset_lock_wait_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_lock_wait_total_us);
+	out->vset_lock_wait_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_lock_wait_max_us);
+	out->vset_lock_hold_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_lock_hold_count);
+	out->vset_lock_hold_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_lock_hold_total_us);
+	out->vset_lock_hold_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_lock_hold_max_us);
+	out->vset_aof_append_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_aof_append_count);
+	out->vset_aof_append_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_aof_append_total_us);
+	out->vset_aof_append_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_aof_append_max_us);
+	out->vset_replication_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_replication_count);
+	out->vset_replication_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_replication_total_us);
+	out->vset_replication_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_replication_max_us);
+	out->vset_dirty_mark_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_dirty_mark_count);
+	out->vset_dirty_mark_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_dirty_mark_total_us);
+	out->vset_dirty_mark_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_dirty_mark_max_us);
+	out->vset_response_build_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_response_build_count);
+	out->vset_response_build_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_response_build_total_us);
+	out->vset_response_build_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_response_build_max_us);
+	out->vset_response_push_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_response_push_count);
+	out->vset_response_push_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_response_push_total_us);
+	out->vset_response_push_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_response_push_max_us);
+	out->vsearch_search_count = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_search_count);
+	out->vsearch_search_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_search_total_us);
+	out->vsearch_search_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_search_max_us);
+}
+
+void kvs_vector_vset_record_lock_wait(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_lock_wait_count,
+		&g_vset_commit_stats.vset_lock_wait_total_us,
+		&g_vset_commit_stats.vset_lock_wait_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vset_record_lock_hold(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_lock_hold_count,
+		&g_vset_commit_stats.vset_lock_hold_total_us,
+		&g_vset_commit_stats.vset_lock_hold_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vset_record_aof_append(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_aof_append_count,
+		&g_vset_commit_stats.vset_aof_append_total_us,
+		&g_vset_commit_stats.vset_aof_append_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vset_record_replication(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_replication_count,
+		&g_vset_commit_stats.vset_replication_total_us,
+		&g_vset_commit_stats.vset_replication_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vset_record_dirty_mark(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_dirty_mark_count,
+		&g_vset_commit_stats.vset_dirty_mark_total_us,
+		&g_vset_commit_stats.vset_dirty_mark_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vset_record_response_build(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_response_build_count,
+		&g_vset_commit_stats.vset_response_build_total_us,
+		&g_vset_commit_stats.vset_response_build_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vset_record_response_push(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_response_push_count,
+		&g_vset_commit_stats.vset_response_push_total_us,
+		&g_vset_commit_stats.vset_response_push_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vsearch_record_search(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vsearch_search_count,
+		&g_vset_commit_stats.vsearch_search_total_us,
+		&g_vset_commit_stats.vsearch_search_max_us,
+		elapsed_us
+	);
+}
 
 // /*
 //  * 重置 VINFO 统计结构。
@@ -1619,16 +1791,33 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 	size_t record_index;
 	int was_deleted = 0;
 	int ret;
+	uint64_t commit_start_us = kvs_vector_now_us();
+	uint64_t start_us;
+	uint64_t end_us;
 
 	ret = kvs_vector_validate_initialized();
 	if (ret != KVS_VECTOR_OK) {
 		kvs_vector_set_prepared_destroy(prepared);
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_commit_count,
+			&g_vset_commit_stats.vset_commit_total_us,
+			&g_vset_commit_stats.vset_commit_max_us,
+			kvs_vector_now_us() >= commit_start_us ?
+				kvs_vector_now_us() - commit_start_us : 0
+		);
 		return ret;
 	}
 
 	if (!prepared || !prepared->question || prepared->question_len == 0 ||
 	    !prepared->answer || !prepared->embedding || prepared->embedding_dim <= 0) {
 		kvs_vector_set_prepared_destroy(prepared);
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_commit_count,
+			&g_vset_commit_stats.vset_commit_total_us,
+			&g_vset_commit_stats.vset_commit_max_us,
+			kvs_vector_now_us() >= commit_start_us ?
+				kvs_vector_now_us() - commit_start_us : 0
+		);
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
@@ -1637,51 +1826,135 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 	 * VSET inserted the same key while embedding was prepared, keep existing
 	 * semantics: update answer only and discard the unused embedding.
 	 */
+	start_us = kvs_vector_now_us();
 	record = kvs_vector_find_record(
 		prepared->question,
 		prepared->question_len,
 		prepared->scope,
 		prepared->scope_len
 	);
+	end_us = kvs_vector_now_us();
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_record_lookup_count,
+		&g_vset_commit_stats.vset_record_lookup_total_us,
+		&g_vset_commit_stats.vset_record_lookup_max_us,
+		end_us >= start_us ? end_us - start_us : 0
+	);
 	if (record) {
+		start_us = kvs_vector_now_us();
 		ret = kvs_vector_record_update_answer(
 			record,
 			prepared->answer,
 			prepared->answer_len
 		);
+		end_us = kvs_vector_now_us();
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_record_insert_or_update_count,
+			&g_vset_commit_stats.vset_record_insert_or_update_total_us,
+			&g_vset_commit_stats.vset_record_insert_or_update_max_us,
+			end_us >= start_us ? end_us - start_us : 0
+		);
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_scope_answer_question_update_count,
+			&g_vset_commit_stats.vset_scope_answer_question_update_total_us,
+			&g_vset_commit_stats.vset_scope_answer_question_update_max_us,
+			end_us >= start_us ? end_us - start_us : 0
+		);
 		kvs_vector_set_prepared_destroy(prepared);
+		end_us = kvs_vector_now_us();
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_commit_count,
+			&g_vset_commit_stats.vset_commit_total_us,
+			&g_vset_commit_stats.vset_commit_max_us,
+			end_us >= commit_start_us ? end_us - commit_start_us : 0
+		);
 		return ret;
 	}
 
 	store = &g_vector_state.store;
 
+	start_us = kvs_vector_now_us();
 	free_slot = kvs_vector_find_free_slot();
 	if (!free_slot) {
 		ret = kvs_vector_store_ensure_capacity(store, store->capacity + 1);
 		if (ret != KVS_VECTOR_OK) {
 			kvs_vector_set_prepared_destroy(prepared);
+			end_us = kvs_vector_now_us();
+			kvs_vector_record_timing(
+				&g_vset_commit_stats.vset_record_insert_or_update_count,
+				&g_vset_commit_stats.vset_record_insert_or_update_total_us,
+				&g_vset_commit_stats.vset_record_insert_or_update_max_us,
+				end_us >= start_us ? end_us - start_us : 0
+			);
+			kvs_vector_record_timing(
+				&g_vset_commit_stats.vset_commit_count,
+				&g_vset_commit_stats.vset_commit_total_us,
+				&g_vset_commit_stats.vset_commit_max_us,
+				end_us >= commit_start_us ? end_us - commit_start_us : 0
+			);
 			return ret;
 		}
 
 		free_slot = kvs_vector_find_free_slot();
 		if (!free_slot) {
 			kvs_vector_set_prepared_destroy(prepared);
+			end_us = kvs_vector_now_us();
+			kvs_vector_record_timing(
+				&g_vset_commit_stats.vset_record_insert_or_update_count,
+				&g_vset_commit_stats.vset_record_insert_or_update_total_us,
+				&g_vset_commit_stats.vset_record_insert_or_update_max_us,
+				end_us >= start_us ? end_us - start_us : 0
+			);
+			kvs_vector_record_timing(
+				&g_vset_commit_stats.vset_commit_count,
+				&g_vset_commit_stats.vset_commit_total_us,
+				&g_vset_commit_stats.vset_commit_max_us,
+				end_us >= commit_start_us ? end_us - commit_start_us : 0
+			);
 			return KVS_VECTOR_ERR;
 		}
 	}
 
 	was_deleted = (free_slot->state == KVS_VECTOR_RECORD_DELETED) ? 1 : 0;
 	record_index = (size_t)(free_slot - store->records);
+	end_us = kvs_vector_now_us();
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_record_insert_or_update_count,
+		&g_vset_commit_stats.vset_record_insert_or_update_total_us,
+		&g_vset_commit_stats.vset_record_insert_or_update_max_us,
+		end_us >= start_us ? end_us - start_us : 0
+	);
 
+	start_us = kvs_vector_now_us();
 	ret = kvs_vector_record_take_prepared_fields(free_slot, prepared);
+	end_us = kvs_vector_now_us();
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_vector_copy_count,
+		&g_vset_commit_stats.vset_vector_copy_total_us,
+		&g_vset_commit_stats.vset_vector_copy_max_us,
+		end_us >= start_us ? end_us - start_us : 0
+	);
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_scope_answer_question_update_count,
+		&g_vset_commit_stats.vset_scope_answer_question_update_total_us,
+		&g_vset_commit_stats.vset_scope_answer_question_update_max_us,
+		end_us >= start_us ? end_us - start_us : 0
+	);
 	if (ret != KVS_VECTOR_OK) {
 		if (was_deleted && store->deleted_records > 0) {
 			store->deleted_records--;
 		}
 		kvs_vector_set_prepared_destroy(prepared);
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_commit_count,
+			&g_vset_commit_stats.vset_commit_total_us,
+			&g_vset_commit_stats.vset_commit_max_us,
+			end_us >= commit_start_us ? end_us - commit_start_us : 0
+		);
 		return ret;
 	}
 
+	start_us = kvs_vector_now_us();
 	ret = kvs_vector_id_map_put(
 		&g_vector_state.id_map,
 		free_slot->question,
@@ -1690,36 +1963,38 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 		free_slot->scope_len,
 		record_index
 	);
+	end_us = kvs_vector_now_us();
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_id_map_update_count,
+		&g_vset_commit_stats.vset_id_map_update_total_us,
+		&g_vset_commit_stats.vset_id_map_update_max_us,
+		end_us >= start_us ? end_us - start_us : 0
+	);
 	if (ret != KVS_VECTOR_OK) {
 		kvs_vector_record_destroy(free_slot);
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_commit_count,
+			&g_vset_commit_stats.vset_commit_total_us,
+			&g_vset_commit_stats.vset_commit_max_us,
+			end_us >= commit_start_us ? end_us - commit_start_us : 0
+		);
 		return ret;
 	}
 
 	if (g_vector_state.index_type != KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
+		start_us = kvs_vector_now_us();
 		ret = kvs_vector_flat_index_add(
 			&g_vector_state.flat_index,
 			record_index,
 			free_slot->embedding,
 			free_slot->embedding_dim
 		);
-		if (ret != KVS_VECTOR_OK) {
-			kvs_vector_id_map_remove(
-				&g_vector_state.id_map,
-				free_slot->question,
-				free_slot->question_len,
-				free_slot->scope,
-				free_slot->scope_len
-			);
-			kvs_vector_record_destroy(free_slot);
-			return ret;
-		}
-	}
-
-	if (g_vector_state.index_type != KVS_VECTOR_INDEX_TYPE_FLAT) {
-		ret = kvs_vector_index_add_current(
-			record_index,
-			free_slot->embedding,
-			free_slot->embedding_dim
+		end_us = kvs_vector_now_us();
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_flat_index_update_count,
+			&g_vset_commit_stats.vset_flat_index_update_total_us,
+			&g_vset_commit_stats.vset_flat_index_update_max_us,
+			end_us >= start_us ? end_us - start_us : 0
 		);
 		if (ret != KVS_VECTOR_OK) {
 			kvs_vector_id_map_remove(
@@ -1730,16 +2005,76 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 				free_slot->scope_len
 			);
 			kvs_vector_record_destroy(free_slot);
+			kvs_vector_record_timing(
+				&g_vset_commit_stats.vset_commit_count,
+				&g_vset_commit_stats.vset_commit_total_us,
+				&g_vset_commit_stats.vset_commit_max_us,
+				end_us >= commit_start_us ? end_us - commit_start_us : 0
+			);
 			return ret;
 		}
 	}
 
+	if (g_vector_state.index_type != KVS_VECTOR_INDEX_TYPE_FLAT) {
+		start_us = kvs_vector_now_us();
+		ret = kvs_vector_index_add_current(
+			record_index,
+			free_slot->embedding,
+			free_slot->embedding_dim
+		);
+		end_us = kvs_vector_now_us();
+		kvs_vector_record_timing(
+			&g_vset_commit_stats.vset_hnsw_add_count,
+			&g_vset_commit_stats.vset_hnsw_add_total_us,
+			&g_vset_commit_stats.vset_hnsw_add_max_us,
+			end_us >= start_us ? end_us - start_us : 0
+		);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_vector_id_map_remove(
+				&g_vector_state.id_map,
+				free_slot->question,
+				free_slot->question_len,
+				free_slot->scope,
+				free_slot->scope_len
+			);
+			kvs_vector_record_destroy(free_slot);
+			kvs_vector_record_timing(
+				&g_vset_commit_stats.vset_commit_count,
+				&g_vset_commit_stats.vset_commit_total_us,
+				&g_vset_commit_stats.vset_commit_max_us,
+				end_us >= commit_start_us ? end_us - commit_start_us : 0
+			);
+			return ret;
+		}
+	}
+
+	start_us = kvs_vector_now_us();
 	if (was_deleted && store->deleted_records > 0) {
 		store->deleted_records--;
 	}
 
 	store->active_records++;
 	store->total_records = store->active_records + store->deleted_records;
+	end_us = kvs_vector_now_us();
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_record_insert_or_update_count,
+		&g_vset_commit_stats.vset_record_insert_or_update_total_us,
+		&g_vset_commit_stats.vset_record_insert_or_update_max_us,
+		end_us >= start_us ? end_us - start_us : 0
+	);
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_dirty_mark_count,
+		&g_vset_commit_stats.vset_dirty_mark_total_us,
+		&g_vset_commit_stats.vset_dirty_mark_max_us,
+		end_us >= start_us ? end_us - start_us : 0
+	);
+
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vset_commit_count,
+		&g_vset_commit_stats.vset_commit_total_us,
+		&g_vset_commit_stats.vset_commit_max_us,
+		end_us >= commit_start_us ? end_us - commit_start_us : 0
+	);
 
 	return KVS_VECTOR_OK;
 }

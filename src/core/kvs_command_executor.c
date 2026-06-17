@@ -6,6 +6,7 @@
 #include "kvs_globals.h"
 #include "kvs_log.h"
 #include "kvs_memory.h"
+#include "kvs_vector.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -125,6 +126,7 @@ static void kvs_command_executor_destroy_task(kvs_command_task_t *task) {
 static void kvs_command_executor_log_embedding_worker_stats(void) {
 	kvs_embedding_worker_pool_stats_t stats;
 	kvs_command_executor_stats_t exec_stats;
+	kvs_vector_vset_commit_stats_t vector_stats;
 	uint64_t prepare_avg_us = 0;
 	uint64_t prepare_wait_avg_us = 0;
 	uint64_t prepared_submit_avg_us = 0;
@@ -140,11 +142,41 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	uint64_t batch_avg_size = 0;
 	uint64_t batch_wait_avg_us = 0;
 	uint64_t batch_encode_avg_us = 0;
+	uint64_t batch_vset_avg_size = 0;
+	uint64_t batch_vset_wait_avg_us = 0;
+	uint64_t batch_vset_encode_avg_us = 0;
+	uint64_t batch_vsearch_avg_size = 0;
+	uint64_t batch_vsearch_wait_avg_us = 0;
+	uint64_t batch_vsearch_encode_avg_us = 0;
+	uint64_t vset_prepared_wait_avg_us = 0;
+	uint64_t vset_execute_sync_avg_us = 0;
+	uint64_t vset_post_commit_avg_us = 0;
+	uint64_t vset_finalize_response_avg_us = 0;
+	uint64_t vset_push_response_avg_us = 0;
+	uint64_t vsearch_execute_sync_avg_us = 0;
+	uint64_t vset_commit_avg_us = 0;
+	uint64_t vset_record_lookup_avg_us = 0;
+	uint64_t vset_record_insert_or_update_avg_us = 0;
+	uint64_t vset_vector_copy_avg_us = 0;
+	uint64_t vset_flat_index_update_avg_us = 0;
+	uint64_t vset_hnsw_add_avg_us = 0;
+	uint64_t vset_id_map_update_avg_us = 0;
+	uint64_t vset_scope_answer_question_update_avg_us = 0;
+	uint64_t vset_lock_wait_avg_us = 0;
+	uint64_t vset_lock_hold_avg_us = 0;
+	uint64_t vset_aof_append_avg_us = 0;
+	uint64_t vset_replication_avg_us = 0;
+	uint64_t vset_dirty_mark_avg_us = 0;
+	uint64_t vset_response_build_avg_us = 0;
+	uint64_t vset_response_push_avg_us = 0;
+	uint64_t vsearch_search_avg_us = 0;
 
 	memset(&stats, 0, sizeof(stats));
 	memset(&exec_stats, 0, sizeof(exec_stats));
+	memset(&vector_stats, 0, sizeof(vector_stats));
 	kvs_embedding_worker_pool_get_stats(&stats);
 	kvs_command_executor_get_stats(&exec_stats);
+	kvs_vector_vset_commit_stats_get(&vector_stats);
 	if (stats.prepare_count > 0) {
 		prepare_avg_us = stats.prepare_total_us / stats.prepare_count;
 		prepare_wait_avg_us = stats.prepare_queue_wait_total_us / stats.prepare_count;
@@ -193,6 +225,121 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 			stats.embedding_batch_wait_total_us / stats.embedding_batch_count;
 		batch_encode_avg_us =
 			stats.embedding_batch_encode_total_us / stats.embedding_batch_count;
+	}
+	if (stats.embedding_batch_vset_count > 0) {
+		batch_vset_avg_size =
+			stats.embedding_batch_vset_items / stats.embedding_batch_vset_count;
+		batch_vset_wait_avg_us =
+			stats.embedding_batch_vset_wait_total_us /
+			stats.embedding_batch_vset_count;
+		batch_vset_encode_avg_us =
+			stats.embedding_batch_vset_encode_total_us /
+			stats.embedding_batch_vset_count;
+	}
+	if (stats.embedding_batch_vsearch_count > 0) {
+		batch_vsearch_avg_size =
+			stats.embedding_batch_vsearch_items /
+			stats.embedding_batch_vsearch_count;
+		batch_vsearch_wait_avg_us =
+			stats.embedding_batch_vsearch_wait_total_us /
+			stats.embedding_batch_vsearch_count;
+		batch_vsearch_encode_avg_us =
+			stats.embedding_batch_vsearch_encode_total_us /
+			stats.embedding_batch_vsearch_count;
+	}
+	if (exec_stats.vset_prepared_tasks > 0) {
+		vset_prepared_wait_avg_us =
+			exec_stats.vset_prepared_wait_total_us / exec_stats.vset_prepared_tasks;
+	}
+	if (exec_stats.vset_execute_sync_count > 0) {
+		vset_execute_sync_avg_us =
+			exec_stats.vset_execute_sync_total_us / exec_stats.vset_execute_sync_count;
+	}
+	if (exec_stats.vset_post_commit_count > 0) {
+		vset_post_commit_avg_us =
+			exec_stats.vset_post_commit_total_us / exec_stats.vset_post_commit_count;
+	}
+	if (exec_stats.vset_finalize_response_count > 0) {
+		vset_finalize_response_avg_us =
+			exec_stats.vset_finalize_response_total_us / exec_stats.vset_finalize_response_count;
+	}
+	if (exec_stats.vset_push_response_count > 0) {
+		vset_push_response_avg_us =
+			exec_stats.vset_push_response_total_us / exec_stats.vset_push_response_count;
+	}
+	if (exec_stats.vsearch_execute_sync_count > 0) {
+		vsearch_execute_sync_avg_us =
+			exec_stats.vsearch_execute_sync_total_us / exec_stats.vsearch_execute_sync_count;
+	}
+	if (vector_stats.vset_commit_count > 0) {
+		vset_commit_avg_us =
+			vector_stats.vset_commit_total_us / vector_stats.vset_commit_count;
+	}
+	if (vector_stats.vset_record_lookup_count > 0) {
+		vset_record_lookup_avg_us =
+			vector_stats.vset_record_lookup_total_us / vector_stats.vset_record_lookup_count;
+	}
+	if (vector_stats.vset_record_insert_or_update_count > 0) {
+		vset_record_insert_or_update_avg_us =
+			vector_stats.vset_record_insert_or_update_total_us /
+			vector_stats.vset_record_insert_or_update_count;
+	}
+	if (vector_stats.vset_vector_copy_count > 0) {
+		vset_vector_copy_avg_us =
+			vector_stats.vset_vector_copy_total_us / vector_stats.vset_vector_copy_count;
+	}
+	if (vector_stats.vset_flat_index_update_count > 0) {
+		vset_flat_index_update_avg_us =
+			vector_stats.vset_flat_index_update_total_us /
+			vector_stats.vset_flat_index_update_count;
+	}
+	if (vector_stats.vset_hnsw_add_count > 0) {
+		vset_hnsw_add_avg_us =
+			vector_stats.vset_hnsw_add_total_us / vector_stats.vset_hnsw_add_count;
+	}
+	if (vector_stats.vset_id_map_update_count > 0) {
+		vset_id_map_update_avg_us =
+			vector_stats.vset_id_map_update_total_us /
+			vector_stats.vset_id_map_update_count;
+	}
+	if (vector_stats.vset_scope_answer_question_update_count > 0) {
+		vset_scope_answer_question_update_avg_us =
+			vector_stats.vset_scope_answer_question_update_total_us /
+			vector_stats.vset_scope_answer_question_update_count;
+	}
+	if (vector_stats.vset_lock_wait_count > 0) {
+		vset_lock_wait_avg_us =
+			vector_stats.vset_lock_wait_total_us / vector_stats.vset_lock_wait_count;
+	}
+	if (vector_stats.vset_lock_hold_count > 0) {
+		vset_lock_hold_avg_us =
+			vector_stats.vset_lock_hold_total_us / vector_stats.vset_lock_hold_count;
+	}
+	if (vector_stats.vset_aof_append_count > 0) {
+		vset_aof_append_avg_us =
+			vector_stats.vset_aof_append_total_us / vector_stats.vset_aof_append_count;
+	}
+	if (vector_stats.vset_replication_count > 0) {
+		vset_replication_avg_us =
+			vector_stats.vset_replication_total_us / vector_stats.vset_replication_count;
+	}
+	if (vector_stats.vset_dirty_mark_count > 0) {
+		vset_dirty_mark_avg_us =
+			vector_stats.vset_dirty_mark_total_us / vector_stats.vset_dirty_mark_count;
+	}
+	if (vector_stats.vset_response_build_count > 0) {
+		vset_response_build_avg_us =
+			vector_stats.vset_response_build_total_us /
+			vector_stats.vset_response_build_count;
+	}
+	if (vector_stats.vset_response_push_count > 0) {
+		vset_response_push_avg_us =
+			vector_stats.vset_response_push_total_us /
+			vector_stats.vset_response_push_count;
+	}
+	if (vector_stats.vsearch_search_count > 0) {
+		vsearch_search_avg_us =
+			vector_stats.vsearch_search_total_us / vector_stats.vsearch_search_count;
 	}
 
 	KVS_LOG_INFO(
@@ -278,6 +425,134 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		(unsigned long long)stats.embedding_batch_fallback_single_count,
 		(unsigned long long)stats.embedding_batch_failed,
 		(unsigned long long)stats.embedding_batch_provider_unsupported
+	);
+	KVS_LOG_INFO(
+		"core",
+		"embedding command batch stats: embedding_batch_vset_enabled=%llu embedding_batch_vsearch_enabled=%llu embedding_batch_vset_count=%llu embedding_batch_vset_items=%llu embedding_batch_vset_avg_size=%llu embedding_batch_vset_max_observed_size=%llu embedding_batch_vset_wait_avg_us=%llu embedding_batch_vset_wait_max_us=%llu embedding_batch_vset_encode_avg_us=%llu embedding_batch_vset_encode_max_us=%llu embedding_batch_vset_fallback_single_count=%llu embedding_batch_vsearch_count=%llu embedding_batch_vsearch_items=%llu embedding_batch_vsearch_avg_size=%llu embedding_batch_vsearch_max_observed_size=%llu embedding_batch_vsearch_wait_avg_us=%llu embedding_batch_vsearch_wait_max_us=%llu embedding_batch_vsearch_encode_avg_us=%llu embedding_batch_vsearch_encode_max_us=%llu embedding_batch_vsearch_fallback_single_count=%llu",
+		(unsigned long long)stats.embedding_batch_vset_enabled,
+		(unsigned long long)stats.embedding_batch_vsearch_enabled,
+		(unsigned long long)stats.embedding_batch_vset_count,
+		(unsigned long long)stats.embedding_batch_vset_items,
+		(unsigned long long)batch_vset_avg_size,
+		(unsigned long long)stats.embedding_batch_vset_max_observed_size,
+		(unsigned long long)batch_vset_wait_avg_us,
+		(unsigned long long)stats.embedding_batch_vset_wait_max_us,
+		(unsigned long long)batch_vset_encode_avg_us,
+		(unsigned long long)stats.embedding_batch_vset_encode_max_us,
+		(unsigned long long)stats.embedding_batch_vset_fallback_single_count,
+		(unsigned long long)stats.embedding_batch_vsearch_count,
+		(unsigned long long)stats.embedding_batch_vsearch_items,
+		(unsigned long long)batch_vsearch_avg_size,
+		(unsigned long long)stats.embedding_batch_vsearch_max_observed_size,
+		(unsigned long long)batch_vsearch_wait_avg_us,
+		(unsigned long long)stats.embedding_batch_vsearch_wait_max_us,
+		(unsigned long long)batch_vsearch_encode_avg_us,
+		(unsigned long long)stats.embedding_batch_vsearch_encode_max_us,
+		(unsigned long long)stats.embedding_batch_vsearch_fallback_single_count
+	);
+	KVS_LOG_INFO(
+		"core",
+		"vset executor breakdown stats: vset_prepared_tasks=%llu vset_prepared_wait_avg_us=%llu vset_prepared_wait_total_us=%llu vset_prepared_wait_max_us=%llu vset_execute_sync_count=%llu vset_execute_sync_avg_us=%llu vset_execute_sync_total_us=%llu vset_execute_sync_max_us=%llu vset_post_commit_count=%llu vset_post_commit_avg_us=%llu vset_post_commit_total_us=%llu vset_post_commit_max_us=%llu vset_finalize_response_count=%llu vset_finalize_response_avg_us=%llu vset_finalize_response_total_us=%llu vset_finalize_response_max_us=%llu vset_push_response_count=%llu vset_push_response_avg_us=%llu vset_push_response_total_us=%llu vset_push_response_max_us=%llu vsearch_execute_sync_count=%llu vsearch_execute_sync_avg_us=%llu vsearch_execute_sync_total_us=%llu vsearch_execute_sync_max_us=%llu",
+		(unsigned long long)exec_stats.vset_prepared_tasks,
+		(unsigned long long)vset_prepared_wait_avg_us,
+		(unsigned long long)exec_stats.vset_prepared_wait_total_us,
+		(unsigned long long)exec_stats.vset_prepared_wait_max_us,
+		(unsigned long long)exec_stats.vset_execute_sync_count,
+		(unsigned long long)vset_execute_sync_avg_us,
+		(unsigned long long)exec_stats.vset_execute_sync_total_us,
+		(unsigned long long)exec_stats.vset_execute_sync_max_us,
+		(unsigned long long)exec_stats.vset_post_commit_count,
+		(unsigned long long)vset_post_commit_avg_us,
+		(unsigned long long)exec_stats.vset_post_commit_total_us,
+		(unsigned long long)exec_stats.vset_post_commit_max_us,
+		(unsigned long long)exec_stats.vset_finalize_response_count,
+		(unsigned long long)vset_finalize_response_avg_us,
+		(unsigned long long)exec_stats.vset_finalize_response_total_us,
+		(unsigned long long)exec_stats.vset_finalize_response_max_us,
+		(unsigned long long)exec_stats.vset_push_response_count,
+		(unsigned long long)vset_push_response_avg_us,
+		(unsigned long long)exec_stats.vset_push_response_total_us,
+		(unsigned long long)exec_stats.vset_push_response_max_us,
+		(unsigned long long)exec_stats.vsearch_execute_sync_count,
+		(unsigned long long)vsearch_execute_sync_avg_us,
+		(unsigned long long)exec_stats.vsearch_execute_sync_total_us,
+		(unsigned long long)exec_stats.vsearch_execute_sync_max_us
+	);
+	KVS_LOG_INFO(
+		"core",
+		"vset commit breakdown stats: vset_commit_count=%llu vset_commit_avg_us=%llu vset_commit_total_us=%llu vset_commit_max_us=%llu vset_record_lookup_count=%llu vset_record_lookup_avg_us=%llu vset_record_lookup_total_us=%llu vset_record_lookup_max_us=%llu vset_record_insert_or_update_count=%llu vset_record_insert_or_update_avg_us=%llu vset_record_insert_or_update_total_us=%llu vset_record_insert_or_update_max_us=%llu vset_vector_copy_count=%llu vset_vector_copy_avg_us=%llu vset_vector_copy_total_us=%llu vset_vector_copy_max_us=%llu",
+		(unsigned long long)vector_stats.vset_commit_count,
+		(unsigned long long)vset_commit_avg_us,
+		(unsigned long long)vector_stats.vset_commit_total_us,
+		(unsigned long long)vector_stats.vset_commit_max_us,
+		(unsigned long long)vector_stats.vset_record_lookup_count,
+		(unsigned long long)vset_record_lookup_avg_us,
+		(unsigned long long)vector_stats.vset_record_lookup_total_us,
+		(unsigned long long)vector_stats.vset_record_lookup_max_us,
+		(unsigned long long)vector_stats.vset_record_insert_or_update_count,
+		(unsigned long long)vset_record_insert_or_update_avg_us,
+		(unsigned long long)vector_stats.vset_record_insert_or_update_total_us,
+		(unsigned long long)vector_stats.vset_record_insert_or_update_max_us,
+		(unsigned long long)vector_stats.vset_vector_copy_count,
+		(unsigned long long)vset_vector_copy_avg_us,
+		(unsigned long long)vector_stats.vset_vector_copy_total_us,
+		(unsigned long long)vector_stats.vset_vector_copy_max_us
+	);
+	KVS_LOG_INFO(
+		"core",
+		"vset index breakdown stats: vset_flat_index_update_count=%llu vset_flat_index_update_avg_us=%llu vset_flat_index_update_total_us=%llu vset_flat_index_update_max_us=%llu vset_hnsw_add_count=%llu vset_hnsw_add_avg_us=%llu vset_hnsw_add_total_us=%llu vset_hnsw_add_max_us=%llu vset_id_map_update_count=%llu vset_id_map_update_avg_us=%llu vset_id_map_update_total_us=%llu vset_id_map_update_max_us=%llu vset_scope_answer_question_update_count=%llu vset_scope_answer_question_update_avg_us=%llu vset_scope_answer_question_update_total_us=%llu vset_scope_answer_question_update_max_us=%llu",
+		(unsigned long long)vector_stats.vset_flat_index_update_count,
+		(unsigned long long)vset_flat_index_update_avg_us,
+		(unsigned long long)vector_stats.vset_flat_index_update_total_us,
+		(unsigned long long)vector_stats.vset_flat_index_update_max_us,
+		(unsigned long long)vector_stats.vset_hnsw_add_count,
+		(unsigned long long)vset_hnsw_add_avg_us,
+		(unsigned long long)vector_stats.vset_hnsw_add_total_us,
+		(unsigned long long)vector_stats.vset_hnsw_add_max_us,
+		(unsigned long long)vector_stats.vset_id_map_update_count,
+		(unsigned long long)vset_id_map_update_avg_us,
+		(unsigned long long)vector_stats.vset_id_map_update_total_us,
+		(unsigned long long)vector_stats.vset_id_map_update_max_us,
+		(unsigned long long)vector_stats.vset_scope_answer_question_update_count,
+		(unsigned long long)vset_scope_answer_question_update_avg_us,
+		(unsigned long long)vector_stats.vset_scope_answer_question_update_total_us,
+		(unsigned long long)vector_stats.vset_scope_answer_question_update_max_us
+	);
+	KVS_LOG_INFO(
+		"core",
+		"vset side-effect breakdown stats: vset_lock_wait_count=%llu vset_lock_wait_avg_us=%llu vset_lock_wait_total_us=%llu vset_lock_wait_max_us=%llu vset_lock_hold_count=%llu vset_lock_hold_avg_us=%llu vset_lock_hold_total_us=%llu vset_lock_hold_max_us=%llu vset_aof_append_count=%llu vset_aof_append_avg_us=%llu vset_aof_append_total_us=%llu vset_aof_append_max_us=%llu vset_replication_count=%llu vset_replication_avg_us=%llu vset_replication_total_us=%llu vset_replication_max_us=%llu vset_dirty_mark_count=%llu vset_dirty_mark_avg_us=%llu vset_dirty_mark_total_us=%llu vset_dirty_mark_max_us=%llu vset_response_build_count=%llu vset_response_build_avg_us=%llu vset_response_build_total_us=%llu vset_response_build_max_us=%llu vset_response_push_count=%llu vset_response_push_avg_us=%llu vset_response_push_total_us=%llu vset_response_push_max_us=%llu vsearch_search_count=%llu vsearch_search_avg_us=%llu vsearch_search_total_us=%llu vsearch_search_max_us=%llu",
+		(unsigned long long)vector_stats.vset_lock_wait_count,
+		(unsigned long long)vset_lock_wait_avg_us,
+		(unsigned long long)vector_stats.vset_lock_wait_total_us,
+		(unsigned long long)vector_stats.vset_lock_wait_max_us,
+		(unsigned long long)vector_stats.vset_lock_hold_count,
+		(unsigned long long)vset_lock_hold_avg_us,
+		(unsigned long long)vector_stats.vset_lock_hold_total_us,
+		(unsigned long long)vector_stats.vset_lock_hold_max_us,
+		(unsigned long long)vector_stats.vset_aof_append_count,
+		(unsigned long long)vset_aof_append_avg_us,
+		(unsigned long long)vector_stats.vset_aof_append_total_us,
+		(unsigned long long)vector_stats.vset_aof_append_max_us,
+		(unsigned long long)vector_stats.vset_replication_count,
+		(unsigned long long)vset_replication_avg_us,
+		(unsigned long long)vector_stats.vset_replication_total_us,
+		(unsigned long long)vector_stats.vset_replication_max_us,
+		(unsigned long long)vector_stats.vset_dirty_mark_count,
+		(unsigned long long)vset_dirty_mark_avg_us,
+		(unsigned long long)vector_stats.vset_dirty_mark_total_us,
+		(unsigned long long)vector_stats.vset_dirty_mark_max_us,
+		(unsigned long long)vector_stats.vset_response_build_count,
+		(unsigned long long)vset_response_build_avg_us,
+		(unsigned long long)vector_stats.vset_response_build_total_us,
+		(unsigned long long)vector_stats.vset_response_build_max_us,
+		(unsigned long long)vector_stats.vset_response_push_count,
+		(unsigned long long)vset_response_push_avg_us,
+		(unsigned long long)vector_stats.vset_response_push_total_us,
+		(unsigned long long)vector_stats.vset_response_push_max_us,
+		(unsigned long long)vector_stats.vsearch_search_count,
+		(unsigned long long)vsearch_search_avg_us,
+		(unsigned long long)vector_stats.vsearch_search_total_us,
+		(unsigned long long)vector_stats.vsearch_search_max_us
 	);
 }
 
@@ -365,6 +640,8 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 	kvs_response_task_t *resp;
 	int ret;
 	int prepared_task;
+	int is_vset_prepared;
+	int is_vsearch_prepared;
 	uint64_t total_start_us = 0;
 	uint64_t start_us = 0;
 	uint64_t end_us = 0;
@@ -373,6 +650,10 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 		return;
 	}
 	prepared_task = task->prepare_completed;
+	is_vset_prepared = prepared_task &&
+		task->prepared_kind == KVS_COMMAND_TASK_PREPARED_VSET;
+	is_vsearch_prepared = prepared_task &&
+		task->prepared_kind == KVS_COMMAND_TASK_PREPARED_VSEARCH;
 	if (prepared_task) {
 		total_start_us = executor_now_us();
 	}
@@ -410,6 +691,26 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 				&g_executor.stats.execute_sync_max_us,
 				end_us >= start_us ? end_us - start_us : 0
 			);
+			if (is_vset_prepared) {
+				executor_record_timing(
+					&g_executor.stats.vset_execute_sync_count,
+					&g_executor.stats.vset_execute_sync_total_us,
+					&g_executor.stats.vset_execute_sync_max_us,
+					end_us >= start_us ? end_us - start_us : 0
+				);
+				kvs_vector_vset_record_lock_wait(task->lock_wait_us);
+				kvs_vector_vset_record_lock_hold(task->lock_hold_us);
+			} else if (is_vsearch_prepared) {
+				executor_record_timing(
+					&g_executor.stats.vsearch_execute_sync_count,
+					&g_executor.stats.vsearch_execute_sync_total_us,
+					&g_executor.stats.vsearch_execute_sync_max_us,
+					end_us >= start_us ? end_us - start_us : 0
+				);
+				kvs_vector_vsearch_record_search(
+					kvs_command_task_get_vsearch_search_us(task)
+				);
+			}
 			start_us = executor_now_us();
 			kvs_command_task_post_commit(task, ret);
 			end_us = executor_now_us();
@@ -419,6 +720,28 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 				&g_executor.stats.commit_or_search_max_us,
 				end_us >= start_us ? end_us - start_us : 0
 			);
+			if (is_vset_prepared) {
+				uint64_t aof_us = 0;
+				uint64_t repl_us = 0;
+				uint64_t dirty_us = 0;
+				executor_record_timing(
+					&g_executor.stats.vset_post_commit_count,
+					&g_executor.stats.vset_post_commit_total_us,
+					&g_executor.stats.vset_post_commit_max_us,
+					end_us >= start_us ? end_us - start_us : 0
+				);
+				kvs_command_task_get_vset_post_commit_timings(
+					task,
+					&aof_us,
+					&repl_us,
+					&dirty_us
+				);
+				kvs_vector_vset_record_aof_append(aof_us);
+				kvs_vector_vset_record_replication(repl_us);
+				if (dirty_us > 0) {
+					kvs_vector_vset_record_dirty_mark(dirty_us);
+				}
+			}
 		}
 	} else {
 		ret = kvs_command_task_prepare(task);
@@ -438,12 +761,36 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 			&g_executor.stats.finalize_response_max_us,
 			end_us >= start_us ? end_us - start_us : 0
 		);
+		if (is_vset_prepared) {
+			executor_record_timing(
+				&g_executor.stats.vset_finalize_response_count,
+				&g_executor.stats.vset_finalize_response_total_us,
+				&g_executor.stats.vset_finalize_response_max_us,
+				end_us >= start_us ? end_us - start_us : 0
+			);
+			kvs_vector_vset_record_response_build(
+				end_us >= start_us ? end_us - start_us : 0
+			);
+		}
 	}
 	task->response_task = NULL;
 	kvs_command_task_destroy(task);
 	kvs_free(task);
 	executor_stats_add(&g_executor.stats.completed_tasks, 1);
+	start_us = is_vset_prepared ? executor_now_us() : 0;
 	kvs_command_executor_push_response(resp);
+	if (is_vset_prepared) {
+		end_us = executor_now_us();
+		executor_record_timing(
+			&g_executor.stats.vset_push_response_count,
+			&g_executor.stats.vset_push_response_total_us,
+			&g_executor.stats.vset_push_response_max_us,
+			end_us >= start_us ? end_us - start_us : 0
+		);
+		kvs_vector_vset_record_response_push(
+			end_us >= start_us ? end_us - start_us : 0
+		);
+	}
 	if (prepared_task) {
 		end_us = executor_now_us();
 		executor_record_timing(
@@ -492,14 +839,26 @@ static void *kvs_command_executor_thread_main(void *arg) {
 			task = kvs_command_executor_pop_command_locked();
 		} else if (task->prepared_enqueue_us > 0) {
 			uint64_t now_us = executor_now_us();
+			uint64_t wait_us = now_us >= task->prepared_enqueue_us ?
+				now_us - task->prepared_enqueue_us :
+				0;
 			executor_record_timing(
 				&g_executor.stats.prepared_wait_count,
 				&g_executor.stats.prepared_wait_total_us,
 				&g_executor.stats.prepared_wait_max_us,
-				now_us >= task->prepared_enqueue_us ?
-					now_us - task->prepared_enqueue_us :
-					0
+				wait_us
 			);
+			if (task->prepared_kind == KVS_COMMAND_TASK_PREPARED_VSET) {
+				executor_stats_add(&g_executor.stats.vset_prepared_tasks, 1);
+				executor_stats_add(
+					&g_executor.stats.vset_prepared_wait_total_us,
+					wait_us
+				);
+				executor_stats_update_max(
+					&g_executor.stats.vset_prepared_wait_max_us,
+					wait_us
+				);
+			}
 		}
 		pthread_mutex_unlock(&g_executor.cmd_mu);
 
@@ -785,6 +1144,24 @@ void kvs_command_executor_get_stats(kvs_command_executor_stats_t *out) {
 	out->finalize_response_count = executor_stats_load(&g_executor.stats.finalize_response_count);
 	out->finalize_response_total_us = executor_stats_load(&g_executor.stats.finalize_response_total_us);
 	out->finalize_response_max_us = executor_stats_load(&g_executor.stats.finalize_response_max_us);
+	out->vset_prepared_tasks = executor_stats_load(&g_executor.stats.vset_prepared_tasks);
+	out->vset_prepared_wait_total_us = executor_stats_load(&g_executor.stats.vset_prepared_wait_total_us);
+	out->vset_prepared_wait_max_us = executor_stats_load(&g_executor.stats.vset_prepared_wait_max_us);
+	out->vset_execute_sync_count = executor_stats_load(&g_executor.stats.vset_execute_sync_count);
+	out->vset_execute_sync_total_us = executor_stats_load(&g_executor.stats.vset_execute_sync_total_us);
+	out->vset_execute_sync_max_us = executor_stats_load(&g_executor.stats.vset_execute_sync_max_us);
+	out->vset_post_commit_count = executor_stats_load(&g_executor.stats.vset_post_commit_count);
+	out->vset_post_commit_total_us = executor_stats_load(&g_executor.stats.vset_post_commit_total_us);
+	out->vset_post_commit_max_us = executor_stats_load(&g_executor.stats.vset_post_commit_max_us);
+	out->vset_finalize_response_count = executor_stats_load(&g_executor.stats.vset_finalize_response_count);
+	out->vset_finalize_response_total_us = executor_stats_load(&g_executor.stats.vset_finalize_response_total_us);
+	out->vset_finalize_response_max_us = executor_stats_load(&g_executor.stats.vset_finalize_response_max_us);
+	out->vset_push_response_count = executor_stats_load(&g_executor.stats.vset_push_response_count);
+	out->vset_push_response_total_us = executor_stats_load(&g_executor.stats.vset_push_response_total_us);
+	out->vset_push_response_max_us = executor_stats_load(&g_executor.stats.vset_push_response_max_us);
+	out->vsearch_execute_sync_count = executor_stats_load(&g_executor.stats.vsearch_execute_sync_count);
+	out->vsearch_execute_sync_total_us = executor_stats_load(&g_executor.stats.vsearch_execute_sync_total_us);
+	out->vsearch_execute_sync_max_us = executor_stats_load(&g_executor.stats.vsearch_execute_sync_max_us);
 }
 
 void kvs_command_executor_record_response_drop(int reason) {

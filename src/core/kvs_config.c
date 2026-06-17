@@ -70,6 +70,12 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     cfg->embedding_batch_enabled = 0;
     cfg->embedding_batch_max_size = 4;
     cfg->embedding_batch_max_wait_us = 500;
+    cfg->embedding_batch_vset_enabled = 0;
+    cfg->embedding_batch_vsearch_enabled = 1;
+    cfg->embedding_batch_vset_max_size = 2;
+    cfg->embedding_batch_vset_max_wait_us = 0;
+    cfg->embedding_batch_vsearch_max_size = 4;
+    cfg->embedding_batch_vsearch_max_wait_us = 500;
 
     // 语义缓存主路径固定为 L2-normalized embedding + HNSW + inner product。
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
@@ -269,6 +275,44 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             cfg->embedding_batch_max_wait_us = parse_int_range(
                 val,
                 cfg->embedding_batch_max_wait_us,
+                0,
+                1000000
+            );
+        } else if (strcasecmp(key, "embedding_batch_vset_enabled") == 0) {
+            cfg->embedding_batch_vset_enabled = parse_bool(
+                val,
+                cfg->embedding_batch_vset_enabled
+            );
+        } else if (strcasecmp(key, "embedding_batch_vsearch_enabled") == 0) {
+            cfg->embedding_batch_vsearch_enabled = parse_bool(
+                val,
+                cfg->embedding_batch_vsearch_enabled
+            );
+        } else if (strcasecmp(key, "embedding_batch_vset_max_size") == 0) {
+            cfg->embedding_batch_vset_max_size = parse_int_range(
+                val,
+                cfg->embedding_batch_vset_max_size,
+                1,
+                64
+            );
+        } else if (strcasecmp(key, "embedding_batch_vset_max_wait_us") == 0) {
+            cfg->embedding_batch_vset_max_wait_us = parse_int_range(
+                val,
+                cfg->embedding_batch_vset_max_wait_us,
+                0,
+                1000000
+            );
+        } else if (strcasecmp(key, "embedding_batch_vsearch_max_size") == 0) {
+            cfg->embedding_batch_vsearch_max_size = parse_int_range(
+                val,
+                cfg->embedding_batch_vsearch_max_size,
+                1,
+                64
+            );
+        } else if (strcasecmp(key, "embedding_batch_vsearch_max_wait_us") == 0) {
+            cfg->embedding_batch_vsearch_max_wait_us = parse_int_range(
+                val,
+                cfg->embedding_batch_vsearch_max_wait_us,
                 0,
                 1000000
             );
@@ -479,6 +523,56 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                 cfg->embedding_batch_max_wait_us = parse_int_range(
                     argv[++i],
                     cfg->embedding_batch_max_wait_us,
+                    0,
+                    1000000
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_vset_enabled") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_vset_enabled = parse_bool(
+                    argv[++i],
+                    cfg->embedding_batch_vset_enabled
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_vsearch_enabled") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_vsearch_enabled = parse_bool(
+                    argv[++i],
+                    cfg->embedding_batch_vsearch_enabled
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_vset_max_size") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_vset_max_size = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_batch_vset_max_size,
+                    1,
+                    64
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_vset_max_wait_us") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_vset_max_wait_us = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_batch_vset_max_wait_us,
+                    0,
+                    1000000
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_vsearch_max_size") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_vsearch_max_size = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_batch_vsearch_max_size,
+                    1,
+                    64
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_batch_vsearch_max_wait_us") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_batch_vsearch_max_wait_us = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_batch_vsearch_max_wait_us,
                     0,
                     1000000
                 );

@@ -44,6 +44,13 @@ typedef struct kvs_command_task_s {
 	uint64_t prepared_enqueue_us;
 	kvs_command_task_prepared_kind_t prepared_kind;
 	void *prepared;
+	uint64_t lock_wait_us;
+	uint64_t lock_acquired_us;
+	uint64_t lock_hold_us;
+	uint64_t vset_aof_append_us;
+	uint64_t vset_replication_us;
+	uint64_t vset_dirty_mark_us;
+	uint64_t vsearch_search_us;
 
 	command_context_t ctx;
 	int use_read_lock;
@@ -77,6 +84,13 @@ int kvs_command_task_requires_embedding_prepare(const kvs_command_task_t *task);
 int kvs_command_task_prepare(kvs_command_task_t *task);
 int kvs_command_task_execute_sync(kvs_command_task_t *task);
 void kvs_command_task_post_commit(kvs_command_task_t *task, int ret);
+void kvs_command_task_get_vset_post_commit_timings(
+	const kvs_command_task_t *task,
+	uint64_t *aof_append_us,
+	uint64_t *replication_us,
+	uint64_t *dirty_mark_us
+);
+uint64_t kvs_command_task_get_vsearch_search_us(const kvs_command_task_t *task);
 void kvs_command_task_destroy(kvs_command_task_t *task);
 int kvs_command_task_vector_status_to_resp(int status, char *response);
 

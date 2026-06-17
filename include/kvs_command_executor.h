@@ -43,6 +43,24 @@ typedef struct kvs_command_executor_stats_s {
 	uint64_t finalize_response_count;
 	uint64_t finalize_response_total_us;
 	uint64_t finalize_response_max_us;
+	uint64_t vset_prepared_tasks;
+	uint64_t vset_prepared_wait_total_us;
+	uint64_t vset_prepared_wait_max_us;
+	uint64_t vset_execute_sync_count;
+	uint64_t vset_execute_sync_total_us;
+	uint64_t vset_execute_sync_max_us;
+	uint64_t vset_post_commit_count;
+	uint64_t vset_post_commit_total_us;
+	uint64_t vset_post_commit_max_us;
+	uint64_t vset_finalize_response_count;
+	uint64_t vset_finalize_response_total_us;
+	uint64_t vset_finalize_response_max_us;
+	uint64_t vset_push_response_count;
+	uint64_t vset_push_response_total_us;
+	uint64_t vset_push_response_max_us;
+	uint64_t vsearch_execute_sync_count;
+	uint64_t vsearch_execute_sync_total_us;
+	uint64_t vsearch_execute_sync_max_us;
 } kvs_command_executor_stats_t;
 
 typedef enum kvs_command_executor_drop_reason_e {
