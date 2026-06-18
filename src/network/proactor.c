@@ -20,6 +20,7 @@
 #include "kvs_command_task.h"
 #include "kvs_response_task.h"
 #include "kvs_async_net_adapter.h"
+#include "kvs_replication_fallback.h"
 #include "net_session.h" //通用会话层
 
 
@@ -502,8 +503,7 @@ static int proactor_session_handler(resp_parser_t* parser,
 
         if (global_dist_config.role == ROLE_SLAVE) {
             ext->is_replication = 1;
-            KVS_LOG_WARN("network",
-                         "proactor eBPF REPLSYNC uses legacy synchronous replication path; rwlock removal is not supported for this path");
+            KVS_LOG_INFO("network", "proactor synchronous handler accepted REPLSYNC");
 
             size_t ok_len = strlen(ok_resp);
             if (ok_len > response_buf_cap) ok_len = response_buf_cap;
@@ -565,6 +565,37 @@ static int proactor_command_is_replsync(net_session_t *session) {
     return parser->arg_index > 0 &&
            parser->tokens[0] &&
            strcasecmp(parser->tokens[0], "REPLSYNC") == 0;
+}
+
+static int proactor_append_inline_response(net_session_t *session,
+                                           const char *response,
+                                           size_t len) {
+    if (!session || !response) {
+        return -1;
+    }
+    if (session->send_buf.capacity - session->send_buf.size < len &&
+        netbuf_reserve(&session->send_buf, session->send_buf.size + len) < 0) {
+        return -1;
+    }
+    memcpy(session->send_buf.data + session->send_buf.size, response, len);
+    session->send_buf.size += len;
+    return 0;
+}
+
+static int proactor_finish_inline_fallback_command(conn_extension_t *ext,
+                                                   resp_parser_t *parser,
+                                                   size_t cmd_len,
+                                                   const char *response) {
+    net_session_t *session = &ext->session;
+
+    if (proactor_append_inline_response(session, response, strlen(response)) < 0) {
+        resp_parser_reset(parser);
+        return -1;
+    }
+    netbuf_consume_front(&session->recv_buf, cmd_len);
+    resp_parser_reset(parser);
+    post_send_if_needed(ext->ring, ext);
+    return 1;
 }
 
 static int proactor_async_validate_owner(
@@ -778,35 +809,18 @@ static void proactor_process_executor_responses(struct io_uring *ring) {
     }
 }
 
-static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t *ext) {
-    net_session_t *session;
-    resp_parser_t *parser;
+static int proactor_submit_command_task(struct io_uring *ring,
+                                        conn_extension_t *ext,
+                                        size_t cmd_len,
+                                        int is_replication) {
+    net_session_t *session = &ext->session;
+    resp_parser_t *parser = &session->resp_parser;
     kvs_response_task_t *resp = NULL;
     kvs_command_task_t *task = NULL;
-    size_t cmd_len = 0;
     uint64_t request_seq;
-    int parse_ret;
+    int old_sync_context;
     int build_ret;
 
-    if (!proactor_target_is_current(ext)) {
-        return -1;
-    }
-    session = &ext->session;
-    if (net_session_is_closing(session) || session->single_inflight) {
-        return 0;
-    }
-
-    parse_ret = net_session_parse_one_resp(ext->fd, session, &cmd_len);
-    if (parse_ret <= 0) {
-        return parse_ret;
-    }
-
-    if (ext->is_replication || proactor_command_is_replsync(session)) {
-        int processed = p_process_received_data(ext);
-        return processed < 0 ? -1 : processed;
-    }
-
-    parser = &session->resp_parser;
     resp = (kvs_response_task_t *)kvs_malloc(sizeof(*resp));
     task = (kvs_command_task_t *)kvs_malloc(sizeof(*task));
     if (resp) {
@@ -823,11 +837,18 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
         return proactor_fail_async_command(ext, parser, resp, task, "response_init");
     }
 
+    if (is_replication) {
+        task->sync_context = 2;
+        task->is_replication = 1;
+    }
+    old_sync_context = get_sync_context();
+    set_sync_context(is_replication ? 2 : 0);
     build_ret = kvs_command_task_build(task,
                                        parser->tokens,
                                        parser->arg_index,
                                        parser->token_lens,
                                        resp);
+    set_sync_context(old_sync_context);
     if (build_ret < 0 && task->status <= 0) {
         return proactor_fail_async_command(ext, parser, resp, task, "task_build");
     }
@@ -855,8 +876,8 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
     task->request_seq = request_seq;
     task->owner_type = KVS_ASYNC_NET_OWNER_PROACTOR;
     task->owner_poller_id = session->owner_poller_id;
-    task->sync_context = 0;
-    task->is_replication = 0;
+    task->sync_context = is_replication ? 2 : 0;
+    task->is_replication = is_replication ? 1 : 0;
 
     if (kvs_command_executor_submit(task) < 0) {
         net_session_end_inflight(session);
@@ -881,6 +902,83 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
 
     (void)ring;
     return 1;
+}
+
+static int proactor_handle_replication_fallback(struct io_uring *ring,
+                                                conn_extension_t *ext,
+                                                size_t cmd_len) {
+    net_session_t *session = &ext->session;
+    resp_parser_t *parser = &session->resp_parser;
+    kvs_replication_apply_t apply;
+    kvs_replication_fallback_kind_t kind;
+
+    kind = kvs_replication_fallback_classify(parser->tokens,
+                                             parser->arg_index,
+                                             parser->token_lens,
+                                             &apply);
+    if (kind == KVS_REPL_FALLBACK_REPLSYNC) {
+        extern distributed_config_t global_dist_config;
+
+        if (g_cfg.sync_mode == KVS_SYNC_EBPF &&
+            global_dist_config.role == ROLE_SLAVE) {
+            ext->is_replication = 1;
+            return proactor_finish_inline_fallback_command(ext, parser, cmd_len, "+OK\r\n");
+        }
+        return proactor_finish_inline_fallback_command(
+            ext,
+            parser,
+            cmd_len,
+            "-ERR REPLSYNC not allowed in current role\r\n"
+        );
+    }
+
+    if (kind == KVS_REPL_FALLBACK_REPLICATED_APPLY && ext->is_replication) {
+        if (kvs_command_executor_submit_replicated(apply.op,
+                                                  apply.key,
+                                                  apply.key_len,
+                                                  apply.value,
+                                                  apply.value_len,
+                                                  apply.expire_at_ms) != 0) {
+            resp_parser_reset(parser);
+            return -1;
+        }
+        return proactor_finish_inline_fallback_command(ext, parser, cmd_len, "+OK\r\n");
+    }
+
+    if (kind == KVS_REPL_FALLBACK_NORMAL_COMMAND) {
+        return proactor_submit_command_task(ring, ext, cmd_len, ext->is_replication ? 1 : 0);
+    }
+
+    KVS_LOG_WARN("network",
+                 "proactor eBPF replication fallback rejected command without synchronous handler: fd=%d",
+                 ext->fd);
+    resp_parser_reset(parser);
+    return -1;
+}
+
+static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t *ext) {
+    net_session_t *session;
+    size_t cmd_len = 0;
+    int parse_ret;
+
+    if (!proactor_target_is_current(ext)) {
+        return -1;
+    }
+    session = &ext->session;
+    if (net_session_is_closing(session) || session->single_inflight) {
+        return 0;
+    }
+
+    parse_ret = net_session_parse_one_resp(ext->fd, session, &cmd_len);
+    if (parse_ret <= 0) {
+        return parse_ret;
+    }
+
+    if (ext->is_replication || proactor_command_is_replsync(session)) {
+        return proactor_handle_replication_fallback(ring, ext, cmd_len);
+    }
+
+    return proactor_submit_command_task(ring, ext, cmd_len, 0);
 }
 
 

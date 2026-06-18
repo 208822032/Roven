@@ -311,10 +311,8 @@ int main(int argc, char *argv[]) {
     int mode = g_cfg.network_mode;
 
 	if (mode == NETWORK_NTYCO) {
-		KVS_LOG_WARN("core",
-			"network_mode=ntyco runs in legacy sync mode. "
-			"Commands bypass command executor. "
-			"rwlock removal is NOT supported in this mode.");
+		KVS_LOG_INFO("core",
+			"network_mode=ntyco routes commands through single command executor.");
 		KVS_LOG_INFO("core", "starting in NTYCO mode on port %d", g_cfg.port);
         ntyco_start(g_cfg.port, kvs_filter_protocol);
     } else if (mode == NETWORK_PROACTOR) {

@@ -53,9 +53,12 @@ doc = read("docs/route_c_perf_arch/56_stage10_11_rwlock_removal_readiness_reaudi
 main = find_func(kvstore, "main")
 reactor_handler = find_func(reactor, "reactor_session_handler")
 reactor_submit = find_func(reactor, "reactor_submit_async_command")
+reactor_fallback = find_func(reactor, "reactor_handle_replication_fallback")
 proactor_handler = find_func(proactor, "proactor_session_handler")
 proactor_process = find_func(proactor, "p_process_received_data")
 proactor_submit = find_func(proactor, "proactor_submit_async_command")
+proactor_fallback = find_func(proactor, "proactor_handle_replication_fallback")
+proactor_submit_task = find_func(proactor, "proactor_submit_command_task")
 proactor_fail = find_func(proactor, "proactor_fail_async_command")
 ttl_thread = find_func(ttl_bg, "ttl_scan_thread_main")
 executor_stop = find_func(executor, "kvs_command_executor_stop")
@@ -70,34 +73,40 @@ slave_connect = find_func(dist, "slave_connect_master")
 rdb_save = find_func(rdb, "kvs_rdb_save")
 aof_bg = find_func(aof_rewrite, "aof_rewrite_background")
 
-require("network_mode=ntyco runs in legacy sync mode" in main, "ntyco legacy warning missing")
-require("Commands bypass command executor" in main, "ntyco bypass warning missing")
-require("rwlock removal is NOT supported in this mode" in main, "ntyco no-rwlock-removal warning missing")
-require("ntyco_start(g_cfg.port, kvs_filter_protocol)" in main, "ntyco no longer uses sync kvs_filter_protocol handler")
+require("network_mode=ntyco routes commands through single command executor" in main,
+        "ntyco executor routing log missing")
+require("ntyco_start(g_cfg.port, kvs_filter_protocol)" in main,
+        "ntyco startup call missing")
 
 for handler_name, handler in [("reactor", reactor_handler), ("proactor", proactor_handler)]:
     require("REPLSYNC" in handler, f"{handler_name} REPLSYNC handler missing")
     require("ext->is_replication = 1" in handler, f"{handler_name} replication marker missing")
-    require("legacy synchronous replication path" in handler, f"{handler_name} eBPF legacy warning missing")
-    require("rwlock removal is not supported" in handler, f"{handler_name} eBPF no-rwlock-removal warning missing")
     require("set_sync_context(2)" in handler, f"{handler_name} replication sync context missing")
 
 require("ext->is_replication || reactor_command_is_replsync(session)" in reactor_submit,
         "reactor replication fallback branch missing")
-require("net_session_process_resp(fd, session, reactor_session_handler, ext)" in reactor_submit,
-        "reactor replication fallback no longer uses synchronous handler")
+require("reactor_handle_replication_fallback(fd, ext, cmd_len)" in reactor_submit,
+        "reactor replication fallback no longer uses explicit classifier")
+require("net_session_process_resp" not in reactor_submit and "reactor_session_handler" not in reactor_submit,
+        "reactor replication fallback still uses synchronous handler")
+require("kvs_command_executor_submit_replicated(" in reactor_fallback,
+        "reactor replication fallback no longer submits replicated task")
 
 require("ext->is_replication || proactor_command_is_replsync(session)" in proactor_submit,
         "proactor replication fallback branch missing")
-require("int processed = p_process_received_data(ext)" in proactor_submit,
-        "proactor replication fallback no longer uses p_process_received_data")
+require("proactor_handle_replication_fallback(ring, ext, cmd_len)" in proactor_submit,
+        "proactor replication fallback no longer uses explicit classifier")
+require("p_process_received_data" not in proactor_submit,
+        "proactor replication fallback still uses p_process_received_data")
 require("net_session_process_resp" in proactor_process and "proactor_session_handler" in proactor_process,
         "proactor p_process_received_data no longer executes sync handler")
 require("return p_process_received_data(ext) < 0 ? -1 : 1;" not in proactor_submit,
         "proactor async failure still falls back to p_process_received_data")
 require("p_process_received_data" not in proactor_fail,
         "proactor fail-fast helper must not call p_process_received_data")
-require("proactor executor submit failed fast without synchronous fallback" in proactor_submit,
+require("kvs_command_executor_submit_replicated(" in proactor_fallback,
+        "proactor replication fallback no longer submits replicated task")
+require("proactor executor submit failed fast without synchronous fallback" in proactor_submit_task,
         "proactor submit failure fail-fast log missing")
 
 for forbidden in [

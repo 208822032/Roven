@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -18,11 +19,16 @@
 #include "kvs_log.h"
 #include "resp_protocol.h"
 #include "distributed.h"
+#include "kvs_command_executor.h"
+#include "kvs_command_task.h"
+#include "kvs_response_task.h"
+#include "kvs_async_net_adapter.h"
+#include "kvs_replication_fallback.h"
 
 extern int g_shutdown_flag;  
 
 typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *response);
-static msg_handler kvs_handler = NULL;
+static uint64_t g_ntyco_next_session_id = 1;
 
 // 每个连接的上下文
 typedef struct ntyco_conn_ctx {
@@ -66,6 +72,7 @@ static int ntyco_init_conn_ctx(ntyco_conn_ctx_t *ctx, int fd) {
                          8 * 1024 * 1024) < 0) {
         return -1;
     }
+    net_session_set_identity(&ctx->session, g_ntyco_next_session_id++, 1, fd);
 
     // TCP 优化
     ntyco_set_tcp_nodelay(fd);
@@ -88,74 +95,253 @@ static void ntyco_free_conn_ctx(ntyco_conn_ctx_t *ctx) {
     kvs_free(ctx);
 }
 
-static int ntyco_session_handler(resp_parser_t *parser,
-                                 char *response_buf,
-                                 size_t response_buf_cap,
-                                 void *user_data) {
-    ntyco_conn_ctx_t *ctx = (ntyco_conn_ctx_t *)user_data;
-
-    if (!parser || parser->arg_index <= 0 || !parser->tokens[0]) {
-        const char *err = "-ERR invalid command\r\n";
-        size_t len = strlen(err);
-        if (len > response_buf_cap) len = response_buf_cap;
-        memcpy(response_buf, err, len);
-        return (int)len;
+static int ntyco_append_inline_response(net_session_t *session,
+                                        const char *response,
+                                        size_t len) {
+    if (!session || !response) {
+        return -1;
     }
-
-    char *cmd_name = parser->tokens[0];
-
-    // 单独处理 REPLSYNC
-    if (g_cfg.sync_mode == KVS_SYNC_EBPF && strcasecmp(cmd_name, "REPLSYNC") == 0) {
-        extern distributed_config_t global_dist_config;
-
-        const char *ok_resp  = "+OK\r\n";
-        const char *err_resp = "-ERR REPLSYNC not allowed in current role\r\n";
-
-        if (global_dist_config.role == ROLE_SLAVE) {
-            ctx->is_replication = 1;
-            size_t ok_len = strlen(ok_resp);
-            if (ok_len > response_buf_cap) ok_len = response_buf_cap;
-            memcpy(response_buf, ok_resp, ok_len);
-            return (int)ok_len;
-        } else {
-            size_t err_len = strlen(err_resp);
-            if (err_len > response_buf_cap) err_len = response_buf_cap;
-            memcpy(response_buf, err_resp, err_len);
-            return (int)err_len;
-        }
+    if (session->send_buf.capacity - session->send_buf.size < len &&
+        netbuf_reserve(&session->send_buf, session->send_buf.size + len) < 0) {
+        return -1;
     }
-
-    int old_ctx = get_sync_context();
-    if (ctx->is_replication) {
-        set_sync_context(2); // 复制上下文
-    } else {
-        set_sync_context(0); // 普通上下文
-    }
-
-    int resp_len = kvs_handler(parser->tokens,
-                               parser->arg_index,
-                               parser->token_lens,
-                               response_buf);
-
-    set_sync_context(old_ctx);
-
-    if (resp_len < 0 || (size_t)resp_len > response_buf_cap) {
-        const char *err = "-ERR internal handler error\r\n";
-        size_t len = strlen(err);
-        if (len > response_buf_cap) len = response_buf_cap;
-        memcpy(response_buf, err, len);
-        return (int)len;
-    }
-
-    return resp_len;
+    memcpy(session->send_buf.data + session->send_buf.size, response, len);
+    session->send_buf.size += len;
+    return 0;
 }
 
+static int ntyco_finish_inline_command(ntyco_conn_ctx_t *ctx,
+                                       size_t cmd_len,
+                                       const char *response) {
+    resp_parser_t *parser = &ctx->session.resp_parser;
+
+    if (ntyco_append_inline_response(&ctx->session, response, strlen(response)) < 0) {
+        resp_parser_reset(parser);
+        return -1;
+    }
+    netbuf_consume_front(&ctx->session.recv_buf, cmd_len);
+    resp_parser_reset(parser);
+    return 1;
+}
+
+static int ntyco_poll_executor_response(ntyco_conn_ctx_t *ctx,
+                                        kvs_response_task_t **out) {
+    kvs_response_task_t *resp = NULL;
+    int ret;
+
+    if (!out) {
+        return -1;
+    }
+    *out = NULL;
+    ret = kvs_command_executor_poll_response_for_owner(
+        KVS_ASYNC_NET_OWNER_NTYCO,
+        ctx->fd,
+        &resp
+    );
+    if (ret <= 0 || !resp) {
+        return ret;
+    }
+    if (resp->fd != ctx->fd ||
+        resp->session_id != ctx->session.session_id ||
+        resp->generation != ctx->session.generation) {
+        net_session_end_inflight(resp->session);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        return 0;
+    }
+    *out = resp;
+    return 1;
+}
+
+static int ntyco_wait_executor_response(ntyco_conn_ctx_t *ctx) {
+    net_session_t *session = &ctx->session;
+    struct timespec req;
+
+    req.tv_sec = 0;
+    req.tv_nsec = 1000000;
+    while (!g_shutdown_flag && !net_session_is_closing(session)) {
+        kvs_response_task_t *resp = NULL;
+        int ret = ntyco_poll_executor_response(ctx, &resp);
+        if (ret < 0) {
+            return -1;
+        }
+        if (ret > 0 && resp) {
+            size_t len = kvs_response_task_length(resp);
+            char *buf = kvs_response_task_buffer(resp);
+
+            if (len > 0) {
+                if (ntyco_append_inline_response(session, buf, len) < 0) {
+                    net_session_end_inflight(session);
+                    kvs_response_task_destroy(resp);
+                    kvs_free(resp);
+                    return -1;
+                }
+            }
+            net_session_end_inflight(session);
+            kvs_response_task_destroy(resp);
+            kvs_free(resp);
+            return 1;
+        }
+        nanosleep(&req, NULL);
+    }
+    return -1;
+}
+
+static int ntyco_submit_command_task(ntyco_conn_ctx_t *ctx,
+                                     size_t cmd_len,
+                                     int is_replication) {
+    net_session_t *session = &ctx->session;
+    resp_parser_t *parser = &session->resp_parser;
+    kvs_response_task_t *resp = NULL;
+    kvs_command_task_t *task = NULL;
+    uint64_t request_seq;
+    int old_sync_context;
+    int build_ret;
+
+    resp = (kvs_response_task_t *)kvs_malloc(sizeof(*resp));
+    task = (kvs_command_task_t *)kvs_malloc(sizeof(*task));
+    if (!resp || !task) {
+        if (resp) kvs_free(resp);
+        if (task) kvs_free(task);
+        resp_parser_reset(parser);
+        return -1;
+    }
+    memset(resp, 0, sizeof(*resp));
+    memset(task, 0, sizeof(*task));
+
+    if (kvs_response_task_init_owned(resp, KVS_MAX_RESPONSE_LENGTH) < 0) {
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return -1;
+    }
+
+    old_sync_context = get_sync_context();
+    set_sync_context(is_replication ? 2 : 0);
+    build_ret = kvs_command_task_build(task,
+                                       parser->tokens,
+                                       parser->arg_index,
+                                       parser->token_lens,
+                                       resp);
+    set_sync_context(old_sync_context);
+    if (build_ret < 0 && task->status <= 0) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return -1;
+    }
+    if (kvs_command_task_copy_argv(task) < 0) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return -1;
+    }
+
+    request_seq = net_session_next_request_seq(session);
+    if (!net_session_try_begin_inflight(session)) {
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        resp_parser_reset(parser);
+        return 0;
+    }
+
+    task->session = session;
+    task->session_owner = NULL;
+    task->session_release = NULL;
+    task->fd = ctx->fd;
+    task->session_id = session->session_id;
+    task->generation = session->generation;
+    task->request_seq = request_seq;
+    task->owner_type = KVS_ASYNC_NET_OWNER_NTYCO;
+    task->owner_poller_id = ctx->fd;
+    task->sync_context = is_replication ? 2 : 0;
+    task->is_replication = is_replication ? 1 : 0;
+
+    netbuf_consume_front(&session->recv_buf, cmd_len);
+    resp_parser_reset(parser);
+
+    if (kvs_command_executor_submit(task) < 0) {
+        net_session_end_inflight(session);
+        task->session = NULL;
+        kvs_command_task_destroy(task);
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+        kvs_free(task);
+        return -1;
+    }
+
+    return ntyco_wait_executor_response(ctx);
+}
 
 static int ntyco_process_received_data(ntyco_conn_ctx_t *ctx) {
-    return net_session_process_resp(ctx->fd,
-                                    &ctx->session,
-                                    ntyco_session_handler,
-                                    ctx);
+    net_session_t *session;
+    resp_parser_t *parser;
+    size_t cmd_len = 0;
+    int parse_ret;
+
+    if (!ctx) {
+        return -1;
+    }
+    session = &ctx->session;
+    if (net_session_is_closing(session) || session->single_inflight) {
+        return 0;
+    }
+
+    parse_ret = net_session_parse_one_resp(ctx->fd, session, &cmd_len);
+    if (parse_ret <= 0) {
+        return parse_ret;
+    }
+
+    parser = &session->resp_parser;
+    if (ctx->is_replication || (parser->arg_index > 0 &&
+        parser->tokens[0] && strcasecmp(parser->tokens[0], "REPLSYNC") == 0)) {
+        kvs_replication_apply_t apply;
+        kvs_replication_fallback_kind_t kind;
+
+        kind = kvs_replication_fallback_classify(parser->tokens,
+                                                 parser->arg_index,
+                                                 parser->token_lens,
+                                                 &apply);
+        if (kind == KVS_REPL_FALLBACK_REPLSYNC) {
+            extern distributed_config_t global_dist_config;
+
+            if (g_cfg.sync_mode == KVS_SYNC_EBPF &&
+                global_dist_config.role == ROLE_SLAVE) {
+                ctx->is_replication = 1;
+                return ntyco_finish_inline_command(ctx, cmd_len, "+OK\r\n");
+            }
+            return ntyco_finish_inline_command(
+                ctx,
+                cmd_len,
+                "-ERR REPLSYNC not allowed in current role\r\n"
+            );
+        }
+        if (kind == KVS_REPL_FALLBACK_REPLICATED_APPLY && ctx->is_replication) {
+            if (kvs_command_executor_submit_replicated(apply.op,
+                                                      apply.key,
+                                                      apply.key_len,
+                                                      apply.value,
+                                                      apply.value_len,
+                                                      apply.expire_at_ms) != 0) {
+                resp_parser_reset(parser);
+                return -1;
+            }
+            return ntyco_finish_inline_command(ctx, cmd_len, "+OK\r\n");
+        }
+        if (kind != KVS_REPL_FALLBACK_NORMAL_COMMAND) {
+            resp_parser_reset(parser);
+            return -1;
+        }
+        return ntyco_submit_command_task(ctx, cmd_len, ctx->is_replication ? 1 : 0);
+    }
+
+    return ntyco_submit_command_task(ctx, cmd_len, 0);
 }
 
 static void ntyco_conn_routine(void *arg) {
@@ -360,7 +546,7 @@ static int ntyco_init_server(unsigned short port) {
 
 
 int ntyco_start(unsigned short port, msg_handler handler) {
-    kvs_handler = handler;
+    (void)handler;
 
     int listen_fd = ntyco_init_server(port);
     if (listen_fd < 0) {

@@ -315,6 +315,7 @@ int kvs_command_task_build(
 	task->response = response;
 	task->response_cap = kvs_response_task_capacity(response_task);
 	task->owns_argv = 0;
+	task->sync_context = get_sync_context();
 
 	if (tokens[0] == NULL || count == 0) {
 		task->status = resp_generate_simple_string_n(response, '-', "Invalid command", sizeof("Invalid command") - 1);
@@ -525,11 +526,14 @@ static int kvs_command_task_execute_handler(kvs_command_task_t *task) {
 
 int kvs_command_task_execute_sync(kvs_command_task_t *task) {
 	int ret;
+	int old_sync_context;
 
 	if (kvs_command_task_lock(task) < 0) {
 		return task->status;
 	}
 
+	old_sync_context = get_sync_context();
+	set_sync_context(task->sync_context);
 	ret = kvs_command_task_execute_handler(task);
 	if (task->use_read_lock && ret == KVS_CMD_RETRY_WITH_WRITE_LOCK) {
 		kvs_command_task_unlock(task);
@@ -541,6 +545,7 @@ int kvs_command_task_execute_sync(kvs_command_task_t *task) {
 		uint64_t end_us;
 		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
 			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+			set_sync_context(old_sync_context);
 			return task->status;
 		}
 		end_us = kvs_command_task_now_us();
@@ -551,6 +556,7 @@ int kvs_command_task_execute_sync(kvs_command_task_t *task) {
 		ret = task->cmd->handler(&task->ctx, task->response);
 		task->command_committed = (ret >= 0);
 	}
+	set_sync_context(old_sync_context);
 
 	kvs_command_task_capture_post_state(task, ret);
 
@@ -594,7 +600,7 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 	}
 #endif
 
-	if (get_sync_context() == 2) {
+	if (task->sync_context == 2) {
 		return;
 	}
 

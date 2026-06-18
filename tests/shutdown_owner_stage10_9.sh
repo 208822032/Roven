@@ -98,7 +98,9 @@ aof_bg = find_func(aof_rewrite, "aof_rewrite_background")
 aof_buffer = find_func(aof_rewrite, "aof_rewrite_buffer_write")
 aof_buffer_unlocked = find_func(aof_rewrite, "aof_rewrite_buffer_write_unlocked")
 reactor_submit = find_func(reactor, "reactor_submit_async_command")
+reactor_submit_task = find_func(reactor, "reactor_submit_command_task")
 proactor_submit = find_func(proactor, "proactor_submit_async_command")
+proactor_submit_task = find_func(proactor, "proactor_submit_command_task")
 
 shutdown_pos = main.index("shutdown requested, saving data")
 ttl_pos = main.index("kvs_ttl_background_stop()", shutdown_pos)
@@ -160,9 +162,9 @@ require("pthread_join(global_dist_config.master_thread" in dist_shutdown and
 
 require("return p_process_received_data(ext) < 0 ? -1 : 1;" not in proactor_submit,
         "proactor async submit failure must not fall back to synchronous handler")
-require("kvs_command_executor_submit(task)" in reactor_submit,
+require("kvs_command_executor_submit(task)" in reactor_submit_task,
         "reactor normal path must submit to executor")
-require("kvs_command_executor_submit(task)" in proactor_submit,
+require("kvs_command_executor_submit(task)" in proactor_submit_task,
         "proactor normal path must submit to executor")
 
 for phrase in [
@@ -171,9 +173,10 @@ for phrase in [
     "RDB final save",
     "AOF final save and rewrite",
     "TCP slave connect thread owner is not fully joined",
-    "eBPF REPLSYNC/is_replication remains a legacy synchronous replication path",
+    "eBPF REPLSYNC/is_replication fallback",
 ]:
-    require(phrase in doc, f"Stage 10.9 doc missing phrase: {phrase}")
+    require(phrase in doc or phrase in read("docs/route_c_perf_arch/58_stage10_12_ebpf_replication_fallback_executorization.md"),
+            f"shutdown/eBPF docs missing phrase: {phrase}")
 
 print("Stage 10.9 shutdown owner static audit passed")
 PY

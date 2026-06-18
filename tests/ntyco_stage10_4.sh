@@ -229,11 +229,11 @@ test_ntyco_startup_warning() {
   echo "--- test_ntyco_startup_warning ---"
 
   if [[ -f "${SERVER_LOG}" ]]; then
-    if grep -q "legacy sync mode\|bypass command executor\|rwlock removal" "${SERVER_LOG}" 2>/dev/null; then
-      echo "  OK: Startup warning found in log"
-      grep -i "legacy\|bypass\|rwlock" "${SERVER_LOG}" | head -3
+    if grep -q "routes commands through single command executor" "${SERVER_LOG}" 2>/dev/null; then
+      echo "  OK: Startup executor routing log found"
+      grep -i "single command executor" "${SERVER_LOG}" | head -3
     else
-      echo "  WARN: Startup warning not found (checking KVS_LOG_WARN visibility)"
+      echo "  WARN: Startup executor routing log not found"
       echo "  Log excerpt (first 20 lines):"
       head -20 "${SERVER_LOG}"
     fi
