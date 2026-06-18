@@ -132,34 +132,35 @@ require("ttl_scan_task = g_executor.ttl_scan_head" in executor_stop and
         "executor stop no longer drains/drops ttl_scan_task")
 require("kvs_command_executor_execute_ttl_scan(ttl_scan_task)" in executor,
         "executor no longer consumes ttl_scan_task")
-require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in execute_ttl_scan,
+require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in execute_ttl_scan or
+        "kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in execute_ttl_scan,
         "ttl_scan_task no longer uses retained write lock inside executor")
 
 require("KVS_CMD_RETRY_WITH_WRITE_LOCK" in execute_sync,
         "command task lazy expire retry path missing")
-require("pthread_rwlock_rdlock(&g_kv_data_rwlock)" in task and
-        "pthread_rwlock_wrlock(&g_kv_data_rwlock)" in task,
-        "command task retained lock sites missing")
+require("kvs_owner_rwlock_rdlock(&g_kv_data_rwlock" in task and
+        "kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in task,
+        "command task retained lock sites must use owner wrapper")
 
 require("kvs_command_executor_submit_replicated(" in slave_connect,
         "TCP slave apply no longer submits replicated command task")
-require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in execute_repl,
-        "replicated command task no longer uses retained write lock in executor")
+require("kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in execute_repl,
+        "replicated command task no longer uses retained write lock wrapper in executor")
 
 require("kvs_command_executor_build_full_sync_snapshot(&snapshot)" in slave_sync,
         "master full sync no longer uses executor snapshot")
-require("pthread_rwlock_rdlock(&g_kv_data_rwlock)" in build_full_sync,
-        "full sync snapshot retained read lock missing")
+require("kvs_owner_rwlock_rdlock(&g_kv_data_rwlock" in build_full_sync,
+        "full sync snapshot retained read lock wrapper missing")
 
 require("kvs_command_executor_build_rdb_snapshot(&snapshot)" in rdb_save,
         "RDB save no longer uses executor snapshot")
-require("pthread_rwlock_rdlock(&g_kv_data_rwlock)" in build_rdb,
-        "RDB snapshot retained read lock missing")
+require("kvs_owner_rwlock_rdlock(&g_kv_data_rwlock" in build_rdb,
+        "RDB snapshot retained read lock wrapper missing")
 
 require("kvs_command_executor_build_aof_rewrite_snapshot(&snapshot)" in aof_bg,
         "AOF rewrite no longer uses executor snapshot")
-require("pthread_rwlock_rdlock(&g_kv_data_rwlock)" in build_aof,
-        "AOF snapshot retained read lock missing")
+require("kvs_owner_rwlock_rdlock(&g_kv_data_rwlock" in build_aof,
+        "AOF snapshot retained read lock wrapper missing")
 
 shutdown_pos = main.index("shutdown requested, saving data")
 ttl_stop_pos = main.index("kvs_ttl_background_stop()", shutdown_pos)

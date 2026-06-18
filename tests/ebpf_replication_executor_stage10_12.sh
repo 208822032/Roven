@@ -111,7 +111,7 @@ require("kvs_command_executor_submit_replicated(" in dist,
 
 require("kvs_command_executor_build_full_sync_snapshot" in executor_h,
         "full sync snapshot API missing")
-require("pthread_rwlock_rdlock(&g_kv_data_rwlock)" in build_full_sync,
+require("kvs_owner_rwlock_rdlock(&g_kv_data_rwlock" in build_full_sync,
         "full sync snapshot must remain executor-built under retained read lock")
 require("kvs_command_executor_build_full_sync_snapshot(&snapshot)" in dist,
         "master full sync must still use executor snapshot")
@@ -150,10 +150,10 @@ require("KVS_ASYNC_NET_OWNER_NTYCO" in ntyco and
         "kvs_command_executor_submit(task)" in ntyco,
         "ntyco source should route normal commands through executor after Stage 10.13")
 
-require("g_kv_data_rwlock" in task and "pthread_rwlock_rdlock(&g_kv_data_rwlock)" in task,
+require("g_kv_data_rwlock" in task and "kvs_owner_rwlock_rdlock(&g_kv_data_rwlock" in task,
         "g_kv_data_rwlock read lock removed or weakened")
-require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in task and
-        "pthread_rwlock_wrlock(&g_kv_data_rwlock)" in executor,
+require("kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in task and
+        "kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in executor,
         "g_kv_data_rwlock write lock removed or weakened")
 
 print("Stage 10.12 eBPF replication fallback executorization static audit passed")

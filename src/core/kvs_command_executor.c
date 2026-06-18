@@ -8,6 +8,7 @@
 #include "kvs_globals.h"
 #include "kvs_log.h"
 #include "kvs_memory.h"
+#include "kvs_owner_lock.h"
 #include "kvs_aof.h"
 #include "kvs_distributed.h"
 #include "kvs_vector.h"
@@ -426,6 +427,7 @@ static void kvs_command_executor_aof_snapshot_task_complete(
 static void kvs_command_executor_log_embedding_worker_stats(void) {
 	kvs_embedding_worker_pool_stats_t stats;
 	kvs_command_executor_stats_t exec_stats;
+	kvs_owner_lock_stats_t owner_stats;
 	kvs_vector_vset_commit_stats_t vector_stats;
 	uint64_t prepare_avg_us = 0;
 	uint64_t prepare_wait_avg_us = 0;
@@ -474,9 +476,11 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 
 	memset(&stats, 0, sizeof(stats));
 	memset(&exec_stats, 0, sizeof(exec_stats));
+	memset(&owner_stats, 0, sizeof(owner_stats));
 	memset(&vector_stats, 0, sizeof(vector_stats));
 	kvs_embedding_worker_pool_get_stats(&stats);
 	kvs_command_executor_get_stats(&exec_stats);
+	kvs_owner_lock_get_stats(&owner_stats);
 	kvs_vector_vset_commit_stats_get(&vector_stats);
 	if (stats.prepare_count > 0) {
 		prepare_avg_us = stats.prepare_total_us / stats.prepare_count;
@@ -647,6 +651,20 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 			vector_stats.vsearch_search_total_us / vector_stats.vsearch_search_count;
 	}
 
+	KVS_LOG_INFO(
+		"core",
+		"owner rwlock stats: weak_mode=%llu total_calls=%llu rdlock_calls=%llu wrlock_calls=%llu unlock_calls=%llu executor_thread_hits=%llu non_executor_thread_calls=%llu strict_assertion_failures=%llu weak_noop_calls=%llu weak_fallback_calls=%llu",
+		(unsigned long long)kvs_owner_lock_weak_mode_enabled(),
+		(unsigned long long)owner_stats.total_calls,
+		(unsigned long long)owner_stats.rdlock_calls,
+		(unsigned long long)owner_stats.wrlock_calls,
+		(unsigned long long)owner_stats.unlock_calls,
+		(unsigned long long)owner_stats.executor_thread_hits,
+		(unsigned long long)owner_stats.non_executor_thread_calls,
+		(unsigned long long)owner_stats.strict_assertion_failures,
+		(unsigned long long)owner_stats.weak_noop_calls,
+		(unsigned long long)owner_stats.weak_fallback_calls
+	);
 	KVS_LOG_INFO(
 		"core",
 		"embedding worker pool stats: enabled=%llu submitted=%llu completed=%llu failed=%llu queue_depth=%llu queue_max=%llu worker_threads=%llu submit_failed=%llu dispatch_failed=%llu prepare_count=%llu prepare_avg_us=%llu prepare_max_us=%llu prepare_wait_count=%llu prepare_queue_wait_avg_us=%llu prepare_queue_wait_max_us=%llu prepared_queue_submitted=%llu prepared_queue_failed=%llu prepared_queue_submit_avg_us=%llu prepared_queue_submit_max_us=%llu per_thread_enabled=%llu contexts_created=%llu contexts_destroyed=%llu context_create_failed=%llu context_fallback=%llu encode_global_mutex=%llu encode_thread_context=%llu encode_current_inflight=%llu encode_max_inflight=%llu encode_avg_us=%llu encode_max_us=%llu runtime_encode_count=%llu embedding_encode_avg_us=%llu embedding_encode_max_us=%llu tokenizer_avg_us=%llu tokenizer_max_us=%llu ort_run_avg_us=%llu ort_run_max_us=%llu shared_ort_env_enabled=%llu shared_ort_env_created=%llu shared_ort_env_destroyed=%llu shared_ort_env_refcount_current=%llu shared_ort_env_refcount_max=%llu ort_session_created=%llu ort_session_destroyed=%llu resource_product=%llu worker_threads_effective=%llu embedding_num_threads_effective=%llu",
@@ -2354,7 +2372,7 @@ static void kvs_command_executor_execute_repl(kvs_replicated_command_task_t *tas
 		);
 	}
 
-	if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+	if (kvs_owner_rwlock_wrlock(&g_kv_data_rwlock, "executor.replicated.write") != 0) {
 		executor_stats_add(&g_executor.stats.repl_task_failed, 1);
 		kvs_command_executor_destroy_repl_task(task);
 		return;
@@ -2362,7 +2380,7 @@ static void kvs_command_executor_execute_repl(kvs_replicated_command_task_t *tas
 	old_sync_context = get_sync_context();
 	set_sync_context(1);
 	ret = kvs_command_executor_apply_repl_store(task);
-	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.replicated.write");
 
 	if (ret == 0) {
 #if ENABLE_AOF
@@ -2398,7 +2416,7 @@ static void kvs_command_executor_execute_ttl(kvs_ttl_expire_task_t *task) {
 		);
 	}
 
-	if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+	if (kvs_owner_rwlock_wrlock(&g_kv_data_rwlock, "executor.ttl_expire.write") != 0) {
 		executor_stats_add(&g_executor.stats.ttl_expire_task_failed, 1);
 		kvs_command_executor_destroy_ttl_task(task);
 		return;
@@ -2408,7 +2426,7 @@ static void kvs_command_executor_execute_ttl(kvs_ttl_expire_task_t *task) {
 		task->key_len,
 		task->observed_expire_at_ms
 	);
-	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.ttl_expire.write");
 
 	if (ret > 0) {
 		executor_stats_add(&g_executor.stats.ttl_expire_deleted_keys, 1);
@@ -2689,13 +2707,13 @@ static void kvs_command_executor_execute_ttl_scan(kvs_ttl_scan_task_t *task) {
 		);
 	}
 
-	if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+	if (kvs_owner_rwlock_wrlock(&g_kv_data_rwlock, "executor.ttl_scan.write") != 0) {
 		executor_stats_add(&g_executor.stats.ttl_scan_task_failed, 1);
 		kvs_command_executor_destroy_ttl_scan_task(task);
 		return;
 	}
 	(void)kvs_command_executor_run_ttl_scan(task->budget);
-	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.ttl_scan.write");
 
 	executor_stats_add(&g_executor.stats.ttl_scan_task_executed, 1);
 	kvs_command_executor_destroy_ttl_scan_task(task);
@@ -2710,12 +2728,12 @@ static void kvs_command_executor_execute_full_sync_snapshot(
 		return;
 	}
 
-	if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+	if (kvs_owner_rwlock_rdlock(&g_kv_data_rwlock, "executor.full_sync_snapshot.read") != 0) {
 		kvs_command_executor_snapshot_task_complete(task, -1, NULL);
 		return;
 	}
 	snapshot = kvs_command_executor_create_full_sync_snapshot();
-	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.full_sync_snapshot.read");
 
 	if (!snapshot) {
 		kvs_command_executor_snapshot_task_complete(task, -1, NULL);
@@ -2734,12 +2752,12 @@ static void kvs_command_executor_execute_rdb_snapshot(
 		return;
 	}
 
-	if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+	if (kvs_owner_rwlock_rdlock(&g_kv_data_rwlock, "executor.rdb_snapshot.read") != 0) {
 		kvs_command_executor_rdb_snapshot_task_complete(task, -1, NULL);
 		return;
 	}
 	snapshot = kvs_command_executor_create_rdb_snapshot();
-	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.rdb_snapshot.read");
 
 	if (!snapshot) {
 		kvs_command_executor_rdb_snapshot_task_complete(task, -1, NULL);
@@ -2758,12 +2776,12 @@ static void kvs_command_executor_execute_aof_snapshot(
 		return;
 	}
 
-	if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+	if (kvs_owner_rwlock_rdlock(&g_kv_data_rwlock, "executor.aof_rewrite_snapshot.read") != 0) {
 		kvs_command_executor_aof_snapshot_task_complete(task, -1, NULL);
 		return;
 	}
 	snapshot = kvs_command_executor_create_aof_snapshot();
-	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.aof_rewrite_snapshot.read");
 
 	if (!snapshot) {
 		kvs_command_executor_aof_snapshot_task_complete(task, -1, NULL);
@@ -2979,6 +2997,7 @@ static int kvs_command_executor_dispatch_or_execute(kvs_command_task_t *task) {
 
 static void *kvs_command_executor_thread_main(void *arg) {
 	(void)arg;
+	kvs_owner_lock_set_executor_thread();
 
 	for (;;) {
 		kvs_command_task_t *task;
@@ -3448,11 +3467,11 @@ int kvs_command_executor_build_full_sync_snapshot(kvs_full_sync_snapshot_t **out
 	if (kvs_command_executor_is_current_thread()) {
 		kvs_full_sync_snapshot_t *snapshot = NULL;
 
-		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+		if (kvs_owner_rwlock_rdlock(&g_kv_data_rwlock, "executor.full_sync_snapshot.read") != 0) {
 			return -1;
 		}
 		snapshot = kvs_command_executor_create_full_sync_snapshot();
-		pthread_rwlock_unlock(&g_kv_data_rwlock);
+		kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.full_sync_snapshot.read");
 		if (!snapshot) {
 			return -1;
 		}
@@ -3525,11 +3544,11 @@ int kvs_command_executor_build_rdb_snapshot(kvs_rdb_snapshot_t **out) {
 	if (kvs_command_executor_is_current_thread()) {
 		kvs_rdb_snapshot_t *snapshot = NULL;
 
-		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+		if (kvs_owner_rwlock_rdlock(&g_kv_data_rwlock, "executor.rdb_snapshot.read") != 0) {
 			return -1;
 		}
 		snapshot = kvs_command_executor_create_rdb_snapshot();
-		pthread_rwlock_unlock(&g_kv_data_rwlock);
+		kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.rdb_snapshot.read");
 		if (!snapshot) {
 			return -1;
 		}
@@ -3602,11 +3621,11 @@ int kvs_command_executor_build_aof_rewrite_snapshot(kvs_aof_rewrite_snapshot_t *
 	if (kvs_command_executor_is_current_thread()) {
 		kvs_aof_rewrite_snapshot_t *snapshot = NULL;
 
-		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+		if (kvs_owner_rwlock_rdlock(&g_kv_data_rwlock, "executor.aof_rewrite_snapshot.read") != 0) {
 			return -1;
 		}
 		snapshot = kvs_command_executor_create_aof_snapshot();
-		pthread_rwlock_unlock(&g_kv_data_rwlock);
+		kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.aof_rewrite_snapshot.read");
 		if (!snapshot) {
 			return -1;
 		}

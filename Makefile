@@ -105,6 +105,7 @@ BASE_SRCS = \
 	$(SRC_CORE)/kvs_command_task.c $(SRC_CORE)/kvs_response_task.c \
 	$(SRC_CORE)/kvs_command_executor.c \
 	$(SRC_CORE)/kvs_replication_fallback.c \
+	$(SRC_CORE)/kvs_owner_lock.c \
 	$(SRC_CORE)/kvs_embedding_worker_pool.c \
 	$(SRC_CORE)/kvs_ttl_background.c \
 	$(SRC_STORAGE)/kvs_array.c   $(SRC_STORAGE)/kvs_rbtree.c     \

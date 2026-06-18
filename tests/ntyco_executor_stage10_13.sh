@@ -83,8 +83,10 @@ require("(void)handler" in start,
         "ntyco_start must not retain kvs_filter_protocol handler")
 require("network_mode=ntyco routes commands through single command executor" in main_src,
         "ntyco startup log must describe executor routing")
-require("pthread_rwlock_rdlock(&g_kv_data_rwlock)" in task and
-        "pthread_rwlock_wrlock(&g_kv_data_rwlock)" in task,
+require(("pthread_rwlock_rdlock(&g_kv_data_rwlock)" in task or
+         "kvs_owner_rwlock_rdlock(&g_kv_data_rwlock" in task) and
+        ("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in task or
+         "kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in task),
         "g_kv_data_rwlock must remain retained")
 require("kvs_command_executor_submit_replicated" in executor,
         "replicated command executor path missing")

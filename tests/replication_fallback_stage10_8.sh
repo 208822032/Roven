@@ -132,8 +132,8 @@ require("kvs_command_task_post_commit(&task" in kvs_filter,
         "kvs_filter_protocol no longer runs post_commit on synchronous path")
 require("KVS_CMD_RETRY_WITH_WRITE_LOCK" in execute_sync,
         "execute_sync no longer contains read-to-write retry path")
-require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in execute_sync,
-        "execute_sync no longer uses g_kv_data_rwlock write lock")
+require("kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in execute_sync,
+        "execute_sync no longer uses g_kv_data_rwlock write lock wrapper")
 
 require("kvs_command_executor_submit_replicated(" in distributed,
         "TCP slave apply no longer submits replicated command task to executor")

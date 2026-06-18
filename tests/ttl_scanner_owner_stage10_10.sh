@@ -115,7 +115,8 @@ require("ttl_scan_task_submitted" in submit_scan and "ttl_scan_queue_depth" in s
         "ttl_scan_task submit must maintain stats/depth")
 require("ttl_scan_head" in exec_thread and "kvs_command_executor_execute_ttl_scan" in exec_thread,
         "executor thread must consume ttl_scan_task")
-require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in exec_scan,
+require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in exec_scan or
+        "kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in exec_scan,
         "executor must own TTL scan under write lock for current stage")
 for token in [
     "kvs_get_global_array",

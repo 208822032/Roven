@@ -9,6 +9,7 @@
 #include "kvs_config.h"
 #include "kvs_globals.h"
 #include "kvs_log.h"
+#include "kvs_owner_lock.h"
 #include "kvs_vector.h"
 #include "kvs_aof.h"
 
@@ -189,7 +190,7 @@ void kvs_command_task_destroy(kvs_command_task_t *task) {
 	}
 
 	if (task->lock_held) {
-		pthread_rwlock_unlock(&g_kv_data_rwlock);
+		kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "command_task.destroy");
 		task->lock_held = 0;
 	}
 
@@ -436,7 +437,7 @@ static int kvs_command_task_lock(kvs_command_task_t *task) {
 
 	if (task->use_read_lock) {
 		start_us = kvs_command_task_now_us();
-		if (pthread_rwlock_rdlock(&g_kv_data_rwlock) != 0) {
+		if (kvs_owner_rwlock_rdlock(&g_kv_data_rwlock, "command_task.execute.read") != 0) {
 			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 			return -1;
 		}
@@ -447,7 +448,7 @@ static int kvs_command_task_lock(kvs_command_task_t *task) {
 		task->ctx.lock_mode = KVS_LOCK_MODE_READ;
 	} else if (task->use_write_lock) {
 		start_us = kvs_command_task_now_us();
-		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
+		if (kvs_owner_rwlock_wrlock(&g_kv_data_rwlock, "command_task.execute.write") != 0) {
 			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
 			return -1;
 		}
@@ -473,7 +474,7 @@ static void kvs_command_task_unlock(kvs_command_task_t *task) {
 			end_us - task->lock_acquired_us :
 			0;
 	}
-	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "command_task.execute.unlock");
 	task->lock_held = 0;
 	task->lock_acquired_us = 0;
 }
@@ -543,10 +544,10 @@ int kvs_command_task_execute_sync(kvs_command_task_t *task) {
 		task->lock_acquired_us = 0;
 		uint64_t start_us = kvs_command_task_now_us();
 		uint64_t end_us;
-		if (pthread_rwlock_wrlock(&g_kv_data_rwlock) != 0) {
-			task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
-			set_sync_context(old_sync_context);
-			return task->status;
+			if (kvs_owner_rwlock_wrlock(&g_kv_data_rwlock, "command_task.lazy_expire.retry") != 0) {
+				task->status = resp_generate_simple_string_n(task->response, '-', "Failed to acquire data lock", sizeof("Failed to acquire data lock") - 1);
+				set_sync_context(old_sync_context);
+				return task->status;
 		}
 		end_us = kvs_command_task_now_us();
 		task->lock_wait_us += end_us >= start_us ? end_us - start_us : 0;
