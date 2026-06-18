@@ -334,6 +334,30 @@ static void proactor_log_executor_stats(void) {
                  (unsigned long long)proactor_stats_load(&proactor_executor_stats.pipeline_restore_submit_count));
 }
 
+static int proactor_fail_async_command(conn_extension_t *ext,
+                                       resp_parser_t *parser,
+                                       kvs_response_task_t *resp,
+                                       kvs_command_task_t *task,
+                                       const char *reason) {
+    if (task) {
+        kvs_command_task_destroy(task);
+        kvs_free(task);
+    }
+    if (resp) {
+        kvs_response_task_destroy(resp);
+        kvs_free(resp);
+    }
+    if (parser) {
+        resp_parser_reset(parser);
+    }
+    proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
+    KVS_LOG_WARN("network",
+                 "proactor async command failed fast without synchronous fallback: fd=%d reason=%s",
+                 ext ? ext->fd : -1,
+                 reason ? reason : "unknown");
+    return -1;
+}
+
 static void proactor_cancel_executor_eventfd(struct io_uring *ring) {
     struct io_uring_sqe *sqe;
     io_uring_op_t *op = proactor_executor_event_op;
@@ -478,6 +502,8 @@ static int proactor_session_handler(resp_parser_t* parser,
 
         if (global_dist_config.role == ROLE_SLAVE) {
             ext->is_replication = 1;
+            KVS_LOG_WARN("network",
+                         "proactor eBPF REPLSYNC uses legacy synchronous replication path; rwlock removal is not supported for this path");
 
             size_t ok_len = strlen(ok_resp);
             if (ok_len > response_buf_cap) ok_len = response_buf_cap;
@@ -783,20 +809,18 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
     parser = &session->resp_parser;
     resp = (kvs_response_task_t *)kvs_malloc(sizeof(*resp));
     task = (kvs_command_task_t *)kvs_malloc(sizeof(*task));
-    if (!resp || !task) {
-        if (resp) kvs_free(resp);
-        if (task) kvs_free(task);
-        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
-        return p_process_received_data(ext) < 0 ? -1 : 1;
+    if (resp) {
+        memset(resp, 0, sizeof(*resp));
     }
-    memset(resp, 0, sizeof(*resp));
-    memset(task, 0, sizeof(*task));
+    if (task) {
+        memset(task, 0, sizeof(*task));
+    }
+    if (!resp || !task) {
+        return proactor_fail_async_command(ext, parser, resp, task, "alloc");
+    }
 
     if (kvs_response_task_init_owned(resp, KVS_MAX_RESPONSE_LENGTH) < 0) {
-        kvs_free(resp);
-        kvs_free(task);
-        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
-        return p_process_received_data(ext) < 0 ? -1 : 1;
+        return proactor_fail_async_command(ext, parser, resp, task, "response_init");
     }
 
     build_ret = kvs_command_task_build(task,
@@ -805,20 +829,10 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
                                        parser->token_lens,
                                        resp);
     if (build_ret < 0 && task->status <= 0) {
-        kvs_command_task_destroy(task);
-        kvs_response_task_destroy(resp);
-        kvs_free(resp);
-        kvs_free(task);
-        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
-        return p_process_received_data(ext) < 0 ? -1 : 1;
+        return proactor_fail_async_command(ext, parser, resp, task, "task_build");
     }
     if (kvs_command_task_copy_argv(task) < 0) {
-        kvs_command_task_destroy(task);
-        kvs_response_task_destroy(resp);
-        kvs_free(resp);
-        kvs_free(task);
-        proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
-        return p_process_received_data(ext) < 0 ? -1 : 1;
+        return proactor_fail_async_command(ext, parser, resp, task, "copy_argv");
     }
 
     request_seq = net_session_next_request_seq(session);
@@ -856,7 +870,10 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
         kvs_free(task);
         proactor_stats_add(&proactor_executor_stats.async_submit_failed, 1);
         proactor_stats_add(&proactor_executor_stats.async_fallback_count, 1);
-        return p_process_received_data(ext) < 0 ? -1 : 1;
+        KVS_LOG_WARN("network",
+                     "proactor executor submit failed fast without synchronous fallback: fd=%d",
+                     ext->fd);
+        return -1;
     }
 
     netbuf_consume_front(&session->recv_buf, cmd_len);

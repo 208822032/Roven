@@ -308,6 +308,8 @@ static int reactor_session_handler(resp_parser_t* parser,
             if(global_dist_config.role == ROLE_SLAVE){
                 //将该连接标记为复制连接
                 ext->is_replication = 1;
+                KVS_LOG_WARN("net",
+                             "reactor eBPF REPLSYNC uses legacy synchronous replication path; rwlock removal is not supported for this path");
 
                 //回复+OK
                 size_t ok_len = strlen(ok_resp);
