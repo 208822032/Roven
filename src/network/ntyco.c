@@ -24,11 +24,19 @@
 #include "kvs_response_task.h"
 #include "kvs_async_net_adapter.h"
 #include "kvs_replication_fallback.h"
-
-extern int g_shutdown_flag;  
+#include "kvs_shutdown.h"
 
 typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *response);
 static uint64_t g_ntyco_next_session_id = 1;
+static int g_ntyco_listen_fd = -1;
+
+static void ntyco_close_listen_fd(void) {
+    int listen_fd = __atomic_exchange_n(&g_ntyco_listen_fd, -1, __ATOMIC_ACQ_REL);
+
+    if (listen_fd >= 0) {
+        nty_close(listen_fd);
+    }
+}
 
 // 每个连接的上下文
 typedef struct ntyco_conn_ctx {
@@ -159,7 +167,7 @@ static int ntyco_wait_executor_response(ntyco_conn_ctx_t *ctx) {
 
     req.tv_sec = 0;
     req.tv_nsec = 1000000;
-    while (!g_shutdown_flag && !net_session_is_closing(session)) {
+    while (!net_session_is_closing(session)) {
         kvs_response_task_t *resp = NULL;
         int ret = ntyco_poll_executor_response(ctx, &resp);
         if (ret < 0) {
@@ -182,9 +190,12 @@ static int ntyco_wait_executor_response(ntyco_conn_ctx_t *ctx) {
             kvs_free(resp);
             return 1;
         }
+        if (kvs_shutdown_requested()) {
+            return 0;
+        }
         nanosleep(&req, NULL);
     }
-    return -1;
+    return 0;
 }
 
 static int ntyco_submit_command_task(ntyco_conn_ctx_t *ctx,
@@ -349,37 +360,12 @@ static void ntyco_conn_routine(void *arg) {
     netbuf_t *recv_buf = &ctx->session.recv_buf;
     netbuf_t *send_buf = &ctx->session.send_buf;
 
-    struct pollfd pfd;
-    pfd.fd = ctx->fd;
-    // events 在循环内动态设置
-
-    while (!g_shutdown_flag) {
-        // 1. 准备监听事件
-        pfd.events = POLLIN; // 始终关注可读
+    while (!kvs_shutdown_requested()) {
         if (send_buf->size > 0) {
-            pfd.events |= POLLOUT; // 有数据才关注可写
-        }
-
-        // 2. 使用标准 poll 等待事件 (替代原来的单向逻辑)
-        int ret = poll(&pfd, 1, -1);
-        if (ret < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-
-        if (pfd.revents & (POLLERR | POLLHUP)) {
-            break;
-        }
-
-        // 3. 处理发送 (如果可写且有数据)
-        if ((pfd.revents & POLLOUT) && send_buf->size > 0) {
             size_t bytes_left = send_buf->size - ctx->send_offset;
-
-            size_t to_try = bytes_left;
-
-            ssize_t sent = send(ctx->fd,
-                                send_buf->data + ctx->send_offset,
-                                to_try, 0);
+            ssize_t sent = nty_send(ctx->fd,
+                                    send_buf->data + ctx->send_offset,
+                                    bytes_left, 0);
             if (sent > 0) {
                 ctx->send_offset += (size_t)sent;
                 if (ctx->send_offset == send_buf->size) {
@@ -387,56 +373,54 @@ static void ntyco_conn_routine(void *arg) {
                     send_buf->size = 0;
                 }
             } else if (sent < 0) {
-                if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                    // 缓冲区满，下次循环再试
-                } else {
-                    break; // 真正的错误
-                }
-            }
-            
-        }
-
-        // 4. 处理接收 (如果可读)
-        if (pfd.revents & POLLIN) {
-            // 扩容检查-
-            size_t min_space = 64 * 1024;
-            if (recv_buf->capacity - recv_buf->size < min_space) {
-                if (netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0) {
-                    KVS_LOG_ERROR("ntyco", "failed to reserve recv buffer for fd %d", ctx->fd);
+                if (errno != EINTR &&
+                    errno != EAGAIN &&
+                    errno != EWOULDBLOCK) {
                     break;
                 }
+                continue;
             }
+        }
 
-            size_t remaining = recv_buf->capacity - recv_buf->size;
-            if (remaining == 0) {
-                KVS_LOG_ERROR("ntyco", "no recv buffer remaining for fd %d", ctx->fd);
+        // 扩容检查-
+        size_t min_space = 64 * 1024;
+        if (recv_buf->capacity - recv_buf->size < min_space) {
+            if (netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0) {
+                KVS_LOG_ERROR("ntyco", "failed to reserve recv buffer for fd %d", ctx->fd);
                 break;
             }
+        }
 
-            // 使用原生 recv
-            ssize_t n = recv(ctx->fd,
+        size_t remaining = recv_buf->capacity - recv_buf->size;
+        if (remaining == 0) {
+            KVS_LOG_ERROR("ntyco", "no recv buffer remaining for fd %d", ctx->fd);
+            break;
+        }
+
+        ssize_t n = nty_recv(ctx->fd,
                              recv_buf->data + recv_buf->size,
                              remaining,
                              0);
-            if (n > 0) {
-                recv_buf->size += (size_t)n;
+        if (n > 0) {
+            recv_buf->size += (size_t)n;
 
-                while(1) {
-                    int cmd_cnt = ntyco_process_received_data(ctx);
-                    if (cmd_cnt < 0) {
-                        KVS_LOG_ERROR("ntyco", "process error for fd %d", ctx->fd);
-                        goto out;
-                    } else if (cmd_cnt == 0) {
-                        break;
-                    }
-                }
-            } else if (n == 0) {
-                // 对端关闭
-                break;
-            } else {
-                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            while(1) {
+                int cmd_cnt = ntyco_process_received_data(ctx);
+                if (cmd_cnt < 0) {
+                    KVS_LOG_ERROR("ntyco", "process error for fd %d", ctx->fd);
+                    goto out;
+                } else if (cmd_cnt == 0) {
                     break;
                 }
+            }
+        } else if (n == 0) {
+            // 对端关闭
+            break;
+        } else {
+            if (errno != EINTR &&
+                errno != EAGAIN &&
+                errno != EWOULDBLOCK) {
+                break;
             }
         }
     }
@@ -453,13 +437,16 @@ static void ntyco_accept_routine(void *arg) {
     int listen_fd = (int)(intptr_t)arg;
 
 
-    while (!g_shutdown_flag) {
+    while (!kvs_shutdown_requested()) {
         struct sockaddr_in clientaddr;
         socklen_t len = sizeof(clientaddr);
         int connfd = nty_accept(listen_fd,
                                 (struct sockaddr *)&clientaddr,
                                 &len);  // nty_accept 内部自动 poll+挂起:contentReference[oaicite:11]{index=11}
         if (connfd < 0) {
+            if (kvs_shutdown_requested()) {
+                break;
+            }
             if (errno == EAGAIN || errno == EINTR) {
                 continue;
             } else {
@@ -543,6 +530,14 @@ static int ntyco_init_server(unsigned short port) {
     return sockfd;
 }
 
+void ntyco_request_shutdown(void) {
+    int listen_fd = __atomic_load_n(&g_ntyco_listen_fd, __ATOMIC_ACQUIRE);
+
+    if (listen_fd >= 0) {
+        shutdown(listen_fd, SHUT_RDWR);
+    }
+}
+
 
 
 int ntyco_start(unsigned short port, msg_handler handler) {
@@ -552,6 +547,7 @@ int ntyco_start(unsigned short port, msg_handler handler) {
     if (listen_fd < 0) {
         return -1;
     }
+    __atomic_store_n(&g_ntyco_listen_fd, listen_fd, __ATOMIC_RELEASE);
 
     // 创建 accept 协程
     nty_coroutine *accept_co = NULL;
@@ -559,15 +555,16 @@ int ntyco_start(unsigned short port, msg_handler handler) {
                              ntyco_accept_routine,
                              (void *)(intptr_t)listen_fd) != 0) {
         KVS_LOG_ERROR("ntyco", "create accept coroutine failed");
+        __atomic_store_n(&g_ntyco_listen_fd, -1, __ATOMIC_RELEASE);
         nty_close(listen_fd);
         return -1;
     }
 
-    // 进入调度循环：单线程 epoll+协程，直到没有协程可跑或你设置 g_shutdown_flag 后连接都退出:contentReference[oaicite:14]{index=14}
+    // 进入调度循环：单线程 epoll+协程，直到没有协程可跑或显式 shutdown 后连接都退出:contentReference[oaicite:14]{index=14}
     nty_schedule_run();
 
     // 调度退出之后，关闭 listen_fd
-    nty_close(listen_fd);
+    ntyco_close_listen_fd();
 
     KVS_LOG_INFO("ntyco", "NtyCo network exited");
     return 0;

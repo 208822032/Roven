@@ -104,7 +104,9 @@ typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *r
 extern int reactor_start(unsigned short port, msg_handler handler);
 extern int proactor_start(unsigned short port, msg_handler handler);
 extern int ntyco_start(unsigned short port, msg_handler handler);
-extern int g_shutdown_flag;
+int kvs_shutdown_requested(void);
+void kvs_shutdown_request(void);
+void kvs_shutdown_reset_for_init(void);
 
 
 
@@ -626,7 +628,7 @@ typedef struct {
     pthread_mutex_t mutex;     // 缓冲区互斥锁
     pthread_cond_t cond;       // 条件变量(用于后台线程)
     pthread_t bgthread;        // 后台线程ID
-    volatile int stop;         // 停止标志
+    int stop;                  // 停止标志 (atomic access for cross-thread)
 
 	//重写相关字段
     int rewrite_in_progress;   // 重写进行中标志

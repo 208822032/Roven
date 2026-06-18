@@ -36,7 +36,7 @@ static void *tcp_backend_worker(void *arg)
     (void)arg;
     // printf("[SYNC_TCP] backend worker started\n");
 
-    while (g_tcp_running) {
+    while (__atomic_load_n(&g_tcp_running, __ATOMIC_ACQUIRE)) {
         void *item = NULL;
         int r = msg_queue_pop(&g_tcp_queue, &item);
         if (r != 0) {
@@ -122,7 +122,7 @@ static void *tcp_backend_worker(void *arg)
     (void)arg;
     // printf("[SYNC_TCP] backend worker started\n");
 
-    while (g_tcp_running) {
+    while (__atomic_load_n(&g_tcp_running, __ATOMIC_ACQUIRE)) {
         void *item = NULL;
         int r = msg_queue_pop(&g_tcp_queue, &item);
         if (r != 0) {
@@ -192,11 +192,11 @@ int sync_backend_init(int sync_port){
         KVS_LOG_ERROR("dist", "msg_queue_init failed");
         return -1;
     }
-    g_tcp_running = 1;
+    __atomic_store_n(&g_tcp_running, 1, __ATOMIC_RELEASE);
 
     if (pthread_create(&g_tcp_thread, NULL, tcp_backend_worker, NULL) != 0) {
         KVS_LOG_ERROR_ERRNO("dist", "create worker thread failed");
-        g_tcp_running = 0;
+        __atomic_store_n(&g_tcp_running, 0, __ATOMIC_RELEASE);
         msg_queue_destroy(&g_tcp_queue);
         return -1;
     }
@@ -206,7 +206,7 @@ int sync_backend_init(int sync_port){
 // 向所有 slave 广播一条已经编码好的 master_slave_proto 消息
 int sync_backend_broadcast(const void *data, size_t len){
     if (!data || len == 0) return -1;
-    if (!g_tcp_running)   return -1;
+    if (!__atomic_load_n(&g_tcp_running, __ATOMIC_ACQUIRE))   return -1;
 
     if(len > KVS_MAX_RESPONSE_SIZE){
         KVS_LOG_ERROR("dist", "message too large to broadcast: %zu bytes", len);
@@ -234,7 +234,7 @@ int sync_backend_broadcast(const void *data, size_t len){
 
 int sync_backend_broadcast_owned(void *msg_ptr){
     if (!msg_ptr) return -1;
-    if (!g_tcp_running) return -1;
+    if (!__atomic_load_n(&g_tcp_running, __ATOMIC_ACQUIRE)) return -1;
 
     sync_msg_t *msg = (sync_msg_t *)msg_ptr;
     if (msg->len == 0 || msg->len > KVS_MAX_RESPONSE_SIZE) {
@@ -251,7 +251,7 @@ int sync_backend_broadcast_owned(void *msg_ptr){
 
 // 关闭 / 清理
 void sync_backend_shutdown(void){
-    g_tcp_running = 0;
+    __atomic_store_n(&g_tcp_running, 0, __ATOMIC_RELEASE);
     pthread_join(g_tcp_thread, NULL);
     msg_queue_destroy(&g_tcp_queue);
 }

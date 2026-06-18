@@ -33,8 +33,12 @@
 # ============================================================================
 
 # ── 编译工具链 ───────────────────────────────────────────────────────────
-CC       = gcc
-CXX      = g++
+ifeq ($(origin CC), default)
+CC = gcc
+endif
+ifeq ($(origin CXX), default)
+CXX = g++
+endif
 CLANG   ?= $(shell which clang-11 2>/dev/null || which clang 2>/dev/null || echo clang)
 
 # ── 项目根 & 目录 ────────────────────────────────────────────────────────
@@ -90,7 +94,7 @@ JEMALLOC_INCLUDE := $(JEMALLOC_DIR)/include
 JEMALLOC_LIB     := $(JEMALLOC_DIR)/lib/libjemalloc.a
 
 # ── NtyCo 协程库 ─────────────────────────────────────────────────────────
-NTYCO_DIR      := NtyCo
+NTYCO_DIR      := third_party/NtyCo
 NTYCO_CORE_DIR := $(NTYCO_DIR)/core
 NTYCO_LIB      := $(NTYCO_DIR)/libntyco.a
 NTYCO_OBJS     := $(NTYCO_DIR)/objs/nty_socket.o \
@@ -137,11 +141,11 @@ AVX2_CFLAGS := $(if $(filter x86_64,$(UNAME_M)),-mavx2,)
 EXTRA_CFLAGS ?=
 OPT_CFLAGS   ?= -O2
 CXXFLAGS      = -I ./include -I ./src -g -std=c++17
-CFLAGS        = -I ./NtyCo/core/ -I ./include -I ./src \
+CFLAGS        = -I ./third_party/NtyCo/core/ -I ./include -I ./src \
                 -I $(JEMALLOC_INCLUDE) \
                 -DSYNC_MODE=$(SYNC_MODE) \
                 -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS)
-LDFLAGS       = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -lm \
+LDFLAGS       = -L ./third_party/NtyCo/ -lntyco -lpthread -luring -ldl -lm \
                 $(EXTRA_LIBS) $(JEMALLOC_LIB) $(ONNX_LDFLAGS)
 
 # ── eBPF 配置 ────────────────────────────────────────────────────────────
@@ -291,9 +295,10 @@ setup-embedding:
 setup-onnx: setup-embedding
 
 _init_submodules:
-	@if [ ! -f NtyCo/Makefile ]; then \
-		echo "[setup] 初始化 git submodules..."; \
-		git submodule update --init --recursive; \
+	@if [ ! -d third_party/NtyCo/core ]; then \
+		echo "[setup] NtyCo vendored source missing: third_party/NtyCo/"; \
+		echo "[setup] Run: cp -a <NtyCo backup> third_party/NtyCo/"; \
+		exit 1; \
 	fi
 	@if [ ! -f $(JEMALLOC_LIB) ]; then \
 		echo "[setup] 构建 jemalloc..."; \

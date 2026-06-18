@@ -3,6 +3,7 @@
 #include "resp_protocol.h"
 #include "distributed.h"
 #include "kvstore.h"
+#include "kvs_shutdown.h"
 #include "kvs_vector_distance.h"
 #include <string.h>
 #include <strings.h>
@@ -1440,7 +1441,8 @@ int handle_sort(command_context_t *ctx, char *response){
 
 }
 int handle_quit(command_context_t *ctx, char *response){
-    g_shutdown_flag = 1;
+    (void)ctx;
+    kvs_shutdown_request();
     return resp_generate_simple_string_n(response, '+', "Server shutting down...", sizeof("Server shutting down...") - 1);
 }
 

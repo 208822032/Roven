@@ -98,7 +98,9 @@ require("kvs_command_executor_submit_ttl_scan(32)" in ttl_thread,
         "TTL background must submit ttl_scan_task")
 require("global_dist_config.role == ROLE_SLAVE" in ttl_thread,
         "slave TTL scanner trigger must remain disabled")
-require("g_ttl_scan_stop = 1" in ttl_stop and "pthread_join(g_ttl_scan_thread" in ttl_stop,
+require(("__atomic_store_n(&g_ttl_scan_stop, 1" in ttl_stop or
+         "g_ttl_scan_stop = 1" in ttl_stop) and
+        "pthread_join(g_ttl_scan_thread" in ttl_stop,
         "TTL scanner stop must join trigger thread")
 
 for token in [

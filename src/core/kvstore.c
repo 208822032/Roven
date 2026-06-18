@@ -13,12 +13,13 @@
 #include "kvs_command_task.h"
 #include "kvs_command_executor.h"
 #include "kvs_response_task.h"
+#include "kvs_server.h"
 
 #include <strings.h>
 
 pthread_rwlock_t g_kv_data_rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
-int g_shutdown_flag = 0;
+static int g_shutdown_flag = 0;
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -46,6 +47,19 @@ void set_sync_context(int context) {
 }
 int get_sync_context() {
 	return sync_context;
+}
+
+int kvs_shutdown_requested(void) {
+	return __atomic_load_n(&g_shutdown_flag, __ATOMIC_ACQUIRE);
+}
+
+void kvs_shutdown_request(void) {
+	__atomic_store_n(&g_shutdown_flag, 1, __ATOMIC_RELEASE);
+	ntyco_request_shutdown();
+}
+
+void kvs_shutdown_reset_for_init(void) {
+	__atomic_store_n(&g_shutdown_flag, 0, __ATOMIC_RELEASE);
 }
 
 
@@ -167,11 +181,14 @@ static kvs_log_level_t kvs_parse_log_level_value(const char *value, int *valid) 
 
 // 信号处理函数
 void handle_signal(int sig) {
-	g_shutdown_flag = 1;
+	(void)sig;
+	kvs_shutdown_request();
 }
 
 #if 1
 int main(int argc, char *argv[]) {
+	kvs_shutdown_reset_for_init();
+
 	// 初始化全局配置为默认值（g_cfg 在 kvs_globals.c 中定义）
 	kvs_config_init_default(&g_cfg);
 

@@ -5,6 +5,7 @@
 #include <errno.h>
 #include "kvs_api.h"
 #include "kvs_aof_internal.h"
+#include "kvs_globals.h"
 #include "resp_protocol.h"
 #include "distributed.h"
 #include "kvs_log.h"
@@ -126,7 +127,7 @@ int aof_init(const char *filename, int fsync_mode){
     }
 
     //创建后台同步线程
-    aof_state.stop = 0;
+    __atomic_store_n(&aof_state.stop, 0, __ATOMIC_RELEASE);
     if(pthread_create(&aof_state.bgthread, NULL, (void*(*)(void *))aof_background_fsync, NULL) != 0){
         KVS_LOG_ERROR_ERRNO("persistence", "failed to create AOF background thread");
         pthread_mutex_destroy(&aof_state.rewrite_mutex);
@@ -142,7 +143,7 @@ int aof_init(const char *filename, int fsync_mode){
     // 初始化 COW 机制
     if (pthread_rwlock_init(&aof_state.data_rwlock, NULL) != 0) {
         KVS_LOG_ERROR_ERRNO("persistence", "failed to initialize data RW lock");
-        aof_state.stop = 1;
+        __atomic_store_n(&aof_state.stop, 1, __ATOMIC_RELEASE);
         pthread_cond_signal(&aof_state.cond);
         pthread_join(aof_state.bgthread, NULL);
         pthread_mutex_destroy(&aof_state.rewrite_mutex);
@@ -182,10 +183,10 @@ void aof_append(int argc, char **argv, size_t *arg_lens){
     if(!aof_state.initialized) return;
     if(aof_state.loading) return; //正在加载AOF时不记录
 
-    // Proactor 模式下禁用 COW 保护机制，避免阻塞异步 I/O
-    #if (NETWORK_SELECT != NETWORK_PROACTOR)
-    //COW保护 如果正在重写 添加COW保护
-    if(aof_state.rewrite_in_progress && aof_state.cow_snapshot_ready){
+    // Reactor/NtyCo fork 重写期间：live AOF 和 rewrite buffer 双写。
+    if(aof_state.rewrite_in_progress &&
+       aof_state.cow_snapshot_ready &&
+       g_cfg.network_mode != NETWORK_PROACTOR){
         if(pthread_rwlock_rdlock(&aof_state.data_rwlock) == 0){
             pthread_mutex_lock(&aof_state.mutex);
 
@@ -206,14 +207,12 @@ void aof_append(int argc, char **argv, size_t *arg_lens){
         }
         return; //COW模式下提前返回
     }
-    #endif
-    // Proactor 重写期间：只写入重写缓冲区，避免与快照竞争
-    #if (NETWORK_SELECT == NETWORK_PROACTOR)
-    if (aof_state.rewrite_in_progress) {
+    // Proactor 线程重写期间：snapshot 已经构造完成，只记录增量命令。
+    if (aof_state.rewrite_in_progress &&
+        g_cfg.network_mode == NETWORK_PROACTOR) {
         aof_rewrite_append_command(argc, argv);
         return;
     }
-    #endif
 
     /* 预估本次命令写入长度，用于判断是否走直写路径 */
     size_t estimated_len = 0;
@@ -573,7 +572,7 @@ void aof_free(void){
 
 
     //停止后台线程
-    aof_state.stop = 1;
+    __atomic_store_n(&aof_state.stop, 1, __ATOMIC_RELEASE);
     pthread_cond_signal(&aof_state.cond);
     pthread_join(aof_state.bgthread, NULL);
 
@@ -621,7 +620,7 @@ void aof_free(void){
 
 //后台同步线程函数
 void aof_background_fsync(void *arg){
-    while(!aof_state.stop){
+    while(!__atomic_load_n(&aof_state.stop, __ATOMIC_ACQUIRE)){
         pthread_mutex_lock(&aof_state.mutex);
         
         //等待条件变量或超时
@@ -650,4 +649,3 @@ void aof_background_fsync(void *arg){
 int aof_is_loading(void){
     return aof_state.loading;
 }
-

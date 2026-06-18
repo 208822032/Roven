@@ -21,6 +21,7 @@
 #include "kvs_response_task.h"
 #include "kvs_async_net_adapter.h"
 #include "kvs_replication_fallback.h"
+#include "kvs_shutdown.h"
 #include "net_session.h" //通用会话层
 
 
@@ -30,8 +31,6 @@
 #define EVENT_EXECUTOR_EVENTFD 3
 
 #define PROACTOR_CONNECTION_SIZE 1024
-
-extern int g_shutdown_flag; // 声明全局关闭标志
 
 typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *response);
 static msg_handler kvs_handler;
@@ -270,7 +269,7 @@ static int proactor_arm_executor_eventfd(struct io_uring *ring) {
     io_uring_op_t *op;
     struct io_uring_sqe *sqe;
 
-    if (event_fd < 0 || g_shutdown_flag) {
+    if (event_fd < 0 || kvs_shutdown_requested()) {
         return 0;
     }
     if (proactor_executor_event_pending) {
@@ -985,7 +984,7 @@ static int proactor_submit_async_command(struct io_uring *ring, conn_extension_t
 void proactor_wait(void) {
     // 简单实现：等待1秒或直到关闭标志被设置
     struct timespec req = {0, 10000000}; // 10ms
-    while (!g_shutdown_flag) {
+    while (!kvs_shutdown_requested()) {
         nanosleep(&req, NULL);
     }
 }
@@ -1198,7 +1197,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
     }
 	
 	// int nready;
-	while (!g_shutdown_flag) {
+	while (!kvs_shutdown_requested()) {
 
 		if (io_uring_submit(&ring) < 0) {
             KVS_LOG_ERROR_ERRNO("network", "io_uring_submit failed");
@@ -1213,7 +1212,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
 		// conn_extension_t *ctx = (conn_extension_t *)io_uring_cqe_get_data(cqe);
         io_uring_op_t *op = (io_uring_op_t *)io_uring_cqe_get_data(cqe);
 
-		if (g_shutdown_flag) {
+		if (kvs_shutdown_requested()) {
 			io_uring_cqe_seen(&ring, cqe);
             proactor_op_release(op);
 			break;
@@ -1319,7 +1318,7 @@ int proactor_start(unsigned short port, msg_handler handler) {
                               "proactor executor eventfd poll CQE failed: res=%d",
                               cqe->res);
             }
-            if (!g_shutdown_flag) {
+            if (!kvs_shutdown_requested()) {
                 if (proactor_arm_executor_eventfd(&ring) < 0) {
                     proactor_stats_add(&proactor_executor_stats.executor_eventfd_rearm_failed, 1);
                     KVS_LOG_ERROR("network",

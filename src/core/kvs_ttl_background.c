@@ -5,17 +5,17 @@
 #include <time.h>
 
 static pthread_t g_ttl_scan_thread;
-static volatile int g_ttl_scan_running = 0;
-static volatile int g_ttl_scan_stop = 0;
+static int g_ttl_scan_running = 0;
+static int g_ttl_scan_stop   = 0;
 
 static void *ttl_scan_thread_main(void *arg) {
 	(void)arg;
 
-	while (!g_ttl_scan_stop) {
+	while (!__atomic_load_n(&g_ttl_scan_stop, __ATOMIC_ACQUIRE)) {
 		struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
 		nanosleep(&ts, NULL);
 
-		if (g_ttl_scan_stop) {
+		if (__atomic_load_n(&g_ttl_scan_stop, __ATOMIC_ACQUIRE)) {
 			break;
 		}
 		if (global_dist_config.role == ROLE_SLAVE) {
@@ -28,22 +28,22 @@ static void *ttl_scan_thread_main(void *arg) {
 }
 
 int kvs_ttl_background_start(void) {
-	if (g_ttl_scan_running) {
+	if (__atomic_load_n(&g_ttl_scan_running, __ATOMIC_ACQUIRE)) {
 		return 0;
 	}
-	g_ttl_scan_stop = 0;
+	__atomic_store_n(&g_ttl_scan_stop, 0, __ATOMIC_RELEASE);
 	if (pthread_create(&g_ttl_scan_thread, NULL, ttl_scan_thread_main, NULL) != 0) {
 		return -1;
 	}
-	g_ttl_scan_running = 1;
+	__atomic_store_n(&g_ttl_scan_running, 1, __ATOMIC_RELEASE);
 	return 0;
 }
 
 void kvs_ttl_background_stop(void) {
-	if (!g_ttl_scan_running) {
+	if (!__atomic_load_n(&g_ttl_scan_running, __ATOMIC_ACQUIRE)) {
 		return;
 	}
-	g_ttl_scan_stop = 1;
+	__atomic_store_n(&g_ttl_scan_stop, 1, __ATOMIC_RELEASE);
 	pthread_join(g_ttl_scan_thread, NULL);
-	g_ttl_scan_running = 0;
+	__atomic_store_n(&g_ttl_scan_running, 0, __ATOMIC_RELEASE);
 }

@@ -106,15 +106,15 @@ require("global_dist_config.slave_connect_thread_started = 0" in distributed_shu
 require("pthread_mutex_destroy(&global_dist_config.slave_mutex)" in distributed_shutdown,
         "distributed_shutdown must destroy slave mutex after join boundary")
 
-require("if (g_shutdown_flag)" in slave_connect_thread,
+require("if (kvs_shutdown_requested())" in slave_connect_thread,
         "slave_connect_thread must avoid starting connect after shutdown")
 require("distributed_set_slave_master_sockfd(sock)" in slave_connect_master,
         "slave_connect_master must publish master socket fd")
 require("distributed_clear_slave_master_sockfd(sock)" in slave_connect_master,
         "slave_connect_master must clear master socket fd")
-require("while(!g_shutdown_flag)" in slave_connect_master,
+require("while(!kvs_shutdown_requested())" in slave_connect_master,
         "slave receive loop must observe shutdown flag")
-require("should_apply && !g_shutdown_flag" in slave_connect_master,
+require("should_apply && !kvs_shutdown_requested()" in slave_connect_master,
         "slave connect thread must not submit replicated tasks during shutdown")
 require("kvs_command_executor_submit_replicated(" in slave_connect_master,
         "TCP slave apply must still submit replicated tasks to executor")

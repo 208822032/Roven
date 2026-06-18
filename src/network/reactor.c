@@ -29,6 +29,7 @@
 #include "kvs_response_task.h"
 #include "kvs_async_net_adapter.h"
 #include "kvs_replication_fallback.h"
+#include "kvs_shutdown.h"
 
 #include "net_session.h" //通用会话层
 
@@ -1067,8 +1068,8 @@ int reactor_start(unsigned short port, msg_handler handler) {
     }
 
 	struct epoll_event events[1024] = {0};
-	while (!g_shutdown_flag) { // mainloop
-        if(g_shutdown_flag) break;
+	while (!kvs_shutdown_requested()) { // mainloop
+        if(kvs_shutdown_requested()) break;
 
 		int nready = epoll_wait(epfd, events, 1024, -1); //-1
 		if (nready < 0 && errno != EINTR) {

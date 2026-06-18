@@ -73,6 +73,8 @@ cmake-build-*/
 /third_party/onnxruntime/
 /third_party/libbpf/**/*.o
 /third_party/libbpf/**/*.so*
+/third_party/NtyCo/objs/
+/third_party/NtyCo/libntyco.a
 
 # Local embedding / model artifacts. Do not commit model weights.
 /models/

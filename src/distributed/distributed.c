@@ -16,6 +16,7 @@
 #include "kvstore.h"
 #include "kvs_command_executor.h"
 #include "sync_backend.h"
+#include "kvs_shutdown.h"
 #include <stdint.h>
 #include "kvs_log.h"
 
@@ -206,11 +207,11 @@ void *master_sync_server(void *arg){
 
     KVS_LOG_INFO("dist", "master sync server listening on port %d", global_dist_config.sync_port);
 
-    global_dist_config.master_listen_fd = server_fd;
+    __atomic_store_n(&global_dist_config.master_listen_fd, server_fd, __ATOMIC_RELEASE);
 
-    while (!g_shutdown_flag) {
+    while (!kvs_shutdown_requested()) {
         if ((client_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
-            if (g_shutdown_flag) break;
+            if (kvs_shutdown_requested()) break;
             KVS_LOG_ERROR_ERRNO("dist", "accept failed in master sync server");
             continue;
         }
@@ -250,7 +251,7 @@ void *master_sync_server(void *arg){
     }
 
     close(server_fd);
-    global_dist_config.master_listen_fd = -1;
+    __atomic_store_n(&global_dist_config.master_listen_fd, -1, __ATOMIC_RELEASE);
     KVS_LOG_INFO("dist", "master sync server stopped");
     return NULL;
 }
@@ -258,7 +259,7 @@ void *master_sync_server(void *arg){
 void* slave_connect_thread(void *arg) {
     // 等待主节点初始化完成
     sleep(1);
-    if (g_shutdown_flag) {
+    if (kvs_shutdown_requested()) {
         return NULL;
     }
     slave_connect_master();
@@ -268,10 +269,11 @@ void* slave_connect_thread(void *arg) {
 void distributed_shutdown(void) {
     if (global_dist_config.role == ROLE_MASTER) {
         // 1. 唤醒并停止 master_sync_server 线程
-        if (global_dist_config.master_listen_fd >= 0) {
-            shutdown(global_dist_config.master_listen_fd, SHUT_RDWR);
-            close(global_dist_config.master_listen_fd);
-            global_dist_config.master_listen_fd = -1;
+        int master_fd = __atomic_load_n(&global_dist_config.master_listen_fd, __ATOMIC_ACQUIRE);
+        if (master_fd >= 0) {
+            shutdown(master_fd, SHUT_RDWR);
+            close(master_fd);
+            __atomic_store_n(&global_dist_config.master_listen_fd, -1, __ATOMIC_RELEASE);
         }
         if (global_dist_config.master_thread_started) {
             pthread_join(global_dist_config.master_thread, NULL);
@@ -338,7 +340,7 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
 
     global_dist_config.role = role;
     global_dist_config.sync_port = sync_port;
-    global_dist_config.master_listen_fd = -1;
+    __atomic_store_n(&global_dist_config.master_listen_fd, -1, __ATOMIC_RELEASE);
     global_dist_config.slave_master_sockfd = -1;
     pthread_mutex_init(&global_dist_config.slave_mutex, NULL);
 
@@ -421,7 +423,7 @@ void slave_connect_master(){
     size_t recv_len = 0;
 
     //解析命令
-    while(!g_shutdown_flag){
+    while(!kvs_shutdown_requested()){
         if(recv_len >= buf_cap){
             size_t new_cap = buf_cap * 2;
             if(new_cap < buf_cap){
@@ -543,7 +545,7 @@ void slave_connect_master(){
                     break;
             }
 
-            if (should_apply && !g_shutdown_flag) {
+            if (should_apply && !kvs_shutdown_requested()) {
                 if (kvs_command_executor_submit_replicated(
                         op,
                         key,

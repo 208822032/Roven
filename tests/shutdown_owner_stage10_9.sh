@@ -152,7 +152,9 @@ for token in [
 ]:
     require(token in executor_stop, f"executor stop missing queue cleanup token {token}")
 
-require("g_ttl_scan_stop = 1" in ttl_stop and "pthread_join(g_ttl_scan_thread" in ttl_stop,
+require(("__atomic_store_n(&g_ttl_scan_stop, 1" in ttl_stop or
+         "g_ttl_scan_stop = 1" in ttl_stop) and
+        "pthread_join(g_ttl_scan_thread" in ttl_stop,
         "TTL background stop must request stop and join scanner")
 require("pthread_join(g_pool.threads[i]" in worker_stop,
         "embedding worker pool stop must join worker threads")

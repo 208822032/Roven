@@ -13,6 +13,7 @@
 #include "kvs_log.h"
 #include "resp_protocol.h"
 #include "distributed.h"
+#include "kvs_shutdown.h"
 #include "net_session.h" // 通用会话层
 
 // 单次发送上限：防止一轮循环把时间都耗在 send 上
@@ -24,8 +25,6 @@ static nty_coroutine *co = NULL;
 
 typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *response);
 static msg_handler kvs_handler;
-
-extern int g_shutdown_flag;
 
 // 管理每个连接的解析状态
 typedef struct {
@@ -145,7 +144,7 @@ void server_reader(void *arg) {
 
     set_tcp_options(fd);
 
-    while (!g_shutdown_flag) {
+    while (!kvs_shutdown_requested()) {
 
         netbuf_t *recv_buf = &ctx.session.recv_buf;
 
@@ -326,7 +325,7 @@ void server(void *arg) {
 
     KVS_LOG_INFO("ntyco", "ntyco listen port : %d", port);
 
-    while (!g_shutdown_flag) {
+    while (!kvs_shutdown_requested()) {
         socklen_t len = sizeof(remote);
         int cli_fd = accept(fd, (struct sockaddr *)&remote, &len);
         if (cli_fd < 0) {
@@ -353,10 +352,10 @@ int ntyco_start(unsigned short port, msg_handler handler) {
     nty_coroutine_create(&co, server, &port);
 
     // 调度循环，支持关闭标志
-    while (!g_shutdown_flag) {
-        KVS_LOG_DEBUG("ntyco", "schedule_run enter, flag=%d", g_shutdown_flag);
+    while (!kvs_shutdown_requested()) {
+        KVS_LOG_DEBUG("ntyco", "schedule_run enter, flag=%d", kvs_shutdown_requested());
         nty_schedule_run();
-        KVS_LOG_DEBUG("ntyco", "schedule_run return, flag=%d", g_shutdown_flag);
+        KVS_LOG_DEBUG("ntyco", "schedule_run return, flag=%d", kvs_shutdown_requested());
         usleep(10000);       // 10ms 休眠，避免空转
     }
 

@@ -22,6 +22,7 @@ run_suite() {
     tests/ttl_scanner_owner_stage10_10.sh
     tests/shutdown_owner_stage10_9.sh
     tests/slave_connect_owner_stage10_9a.sh
+    tests/shutdown_flag_atomic_stage12.sh
     tests/replication_fallback_stage10_8.sh
     bash tests/replicated_command_task_stage10_3.sh
     tests/ttl_executor_stage10_1.sh
@@ -29,6 +30,8 @@ run_suite() {
     bash tests/master_full_sync_stage10_5.sh
     bash tests/rdb_snapshot_stage10_6.sh
     bash tests/aof_rewrite_snapshot_stage10_7.sh
+    bash tests/aofrewrite_cow_snapshot_stage12.sh
+    bash tests/ntyco_mixed_shutdown_stage12.sh
   )
   echo "stage12 correctness mode=${label}: ok"
 }

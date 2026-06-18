@@ -28,12 +28,12 @@ extern aof_state_t aof_state;
 static int acquire_cow_snapshot(void){
     if(!aof_state.rewrite_in_progress) return -1;
 
-    // Proactor 模式下不使用 COW 机制，直接返回成功
-    #if (NETWORK_SELECT == NETWORK_PROACTOR)
-    aof_state.cow_snapshot_ready = 0;
-    KVS_LOG_INFO("aof", "Proactor mode: COW snapshot disabled");
-    return 0;
-    #endif
+    // Proactor 运行时使用 snapshot + rewrite buffer，不进入 fork/COW 路径。
+    if (g_cfg.network_mode == NETWORK_PROACTOR) {
+        aof_state.cow_snapshot_ready = 0;
+        KVS_LOG_INFO("aof", "Proactor mode: COW snapshot disabled");
+        return 0;
+    }
 
     //获取写锁阻塞新的写操作
     if(pthread_rwlock_wrlock(&aof_state.data_rwlock) != 0){
@@ -56,11 +56,11 @@ static int acquire_cow_snapshot(void){
 
 //释放COW快照保护 在子进程fork后调用
 static void release_cow_snapshot(void){
-    #if (NETWORK_SELECT == NETWORK_PROACTOR)
-    aof_state.cow_snapshot_ready = 0;
-    return;
-    #endif
-    
+    if (g_cfg.network_mode == NETWORK_PROACTOR) {
+        aof_state.cow_snapshot_ready = 0;
+        return;
+    }
+
     aof_state.cow_snapshot_ready = 0;
     pthread_rwlock_unlock(&aof_state.data_rwlock);
     // printf("COW snapshot released\n");
@@ -488,11 +488,7 @@ void aof_rewrite_append_command(int argc, char **argv){
 
 //检测是否使用 proactor 模式
 static int is_proactor_mode(void) {
-#if (NETWORK_SELECT == NETWORK_PROACTOR)
-    return 1;
-#else
-    return 0;
-#endif
+    return g_cfg.network_mode == NETWORK_PROACTOR;
 }
 
 //线程方式的 AOF 重写（用于 Proactor 模式）
@@ -511,30 +507,29 @@ static void* aof_rewrite_thread(void *arg) {
         pthread_exit(NULL);
     }
 
-#if (NETWORK_SELECT == NETWORK_PROACTOR)
     // 仅保护 AOF rewrite 自身状态，不保护 global store。
-    if (pthread_rwlock_rdlock(&aof_state.data_rwlock) != 0) {
+    if (is_proactor_mode() &&
+        pthread_rwlock_rdlock(&aof_state.data_rwlock) != 0) {
         KVS_LOG_ERROR_ERRNO("aof", "rewrite thread: rdlock failed");
         close(fd);
         aof_state.rewrite_in_progress = 0;
         pthread_exit(NULL);
     }
-#endif
 
     // 写入 snapshot 到临时文件
     if (!ctx || !ctx->snapshot || write_snapshot_to_tempfile(fd, ctx->snapshot) == -1) {
-#if (NETWORK_SELECT == NETWORK_PROACTOR)
-        pthread_rwlock_unlock(&aof_state.data_rwlock);
-#endif
+        if (is_proactor_mode()) {
+            pthread_rwlock_unlock(&aof_state.data_rwlock);
+        }
         close(fd);
         aof_state.rewrite_in_progress = 0;
         pthread_exit(NULL);
     }
 
-#if (NETWORK_SELECT == NETWORK_PROACTOR)
     // 遍历完成后释放读锁
-    pthread_rwlock_unlock(&aof_state.data_rwlock);
-#endif   
+    if (is_proactor_mode()) {
+        pthread_rwlock_unlock(&aof_state.data_rwlock);
+    }
 
     // 确保数据刷到磁盘
     if (fsync(fd) == -1) {
@@ -652,14 +647,13 @@ void aof_rewrite_background(void){
 
     // Reactor/NtyCo 模式使用 fork + COW 机制
     // 获取 COW 快照保护
+    aof_state.rewrite_in_progress = 1;
     if (acquire_cow_snapshot() != 0) {
         kvs_aof_rewrite_snapshot_destroy(snapshot);
         aof_state.rewrite_in_progress = 0;
         KVS_LOG_ERROR("aof", "failed to acquire COW snapshot");
         return;
     }
-
-    aof_state.rewrite_in_progress = 1;
 
     pid_t childpid = fork();
     if(childpid == 0){
@@ -701,7 +695,6 @@ void aof_rewrite_background(void){
 
         //父进程
         aof_state.rewrite_child_pid = childpid;
-        aof_state.rewrite_in_progress = 1;
 
         // printf("AOF rewrite started with pid %d\n", childpid);
 

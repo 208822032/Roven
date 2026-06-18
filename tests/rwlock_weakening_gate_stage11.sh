@@ -142,7 +142,7 @@ for phrase in [
     require(phrase in doc, f"Stage 11 doc missing phrase: {phrase}")
 
 staged = subprocess.check_output(["git", "diff", "--cached", "--name-only"], text=True)
-for artifact in ["NtyCo/libntyco.a", "workspace/"]:
+for artifact in ["third_party/NtyCo/libntyco.a", "NtyCo/libntyco.a", "workspace/"]:
     require(artifact not in staged, f"artifact should not be staged for commit: {artifact}")
 
 print("Stage 11 rwlock weakening gate static audit passed")

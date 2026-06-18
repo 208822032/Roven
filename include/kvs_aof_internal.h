@@ -24,7 +24,7 @@ typedef struct aof_state_s {
     pthread_mutex_t mutex;     // 缓冲区互斥锁
     pthread_cond_t cond;       // 条件变量(用于后台线程)
     pthread_t bgthread;        // 后台线程ID
-    volatile int stop;         // 停止标志
+    int stop;                  // 停止标志 (atomic access for cross-thread)
 
     int loading; //正在AOF load/replay
     int pause_rewrite; //暂停rewrite触发

@@ -6,6 +6,5 @@ typedef int (*msg_handler)(char **tokens, int count, size_t *token_lens, char *r
 int reactor_start(unsigned short port, msg_handler handler);
 int proactor_start(unsigned short port, msg_handler handler);
 int ntyco_start(unsigned short port, msg_handler handler);
-
-extern int g_shutdown_flag;
+void ntyco_request_shutdown(void);
 
