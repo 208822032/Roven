@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Stage 12/13: Weak rwlock correctness gate
+# Stage 13 update: default is now weak-lock.
+#   - Default (unset or KVLITE_ROUTE_C_WEAK_RWLOCK=1): weak-lock mode
+#   - KVLITE_ROUTE_C_WEAK_RWLOCK=0: real-lock rollback mode
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -6,14 +10,16 @@ cd "${ROOT_DIR}"
 
 run_suite() {
   local label="$1"
-  local weak="$2"
+  local mode="$2"  # "weak" = default weak-lock, "real" = real-lock rollback
 
-  echo "stage12 correctness mode=${label}: begin"
+  echo "stage12/13 correctness mode=${label}: begin"
   (
-    if [[ "${weak}" == "1" ]]; then
-      export KVLITE_ROUTE_C_WEAK_RWLOCK=1
+    if [[ "${mode}" == "real" ]]; then
+      # Stage 13: real-lock rollback requires explicit disable
+      export KVLITE_ROUTE_C_WEAK_RWLOCK=0
     else
-      unset KVLITE_ROUTE_C_WEAK_RWLOCK
+      # Stage 13: default is weak-lock (unset → weak, or explicit KVLITE_ROUTE_C_WEAK_RWLOCK=1)
+      export KVLITE_ROUTE_C_WEAK_RWLOCK=1
     fi
     tests/rwlock_weakening_gate_stage11.sh
     tests/full_executor_coverage_closeout_stage10_14.sh
@@ -33,10 +39,10 @@ run_suite() {
     bash tests/aofrewrite_cow_snapshot_stage12.sh
     bash tests/ntyco_mixed_shutdown_stage12.sh
   )
-  echo "stage12 correctness mode=${label}: ok"
+  echo "stage12/13 correctness mode=${label}: ok"
 }
 
-run_suite "real-lock" 0
-run_suite "weak-lock" 1
+run_suite "weak-lock (default)" "weak"
+run_suite "real-lock (rollback)" "real"
 
-echo "Stage 12 weak rwlock correctness suite passed"
+echo "Stage 12/13 weak rwlock correctness suite passed"

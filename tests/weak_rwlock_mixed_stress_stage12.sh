@@ -376,10 +376,11 @@ run_mode_once() {
   SERVER_PORT="${port}"
   write_conf "${mode}" "${port}" "${conf}" "${mode_dir}"
   echo "stage12 mixed mode=${label} network=${mode}: start port=${port}"
+  # Stage 13: default is weak-lock. real-lock rollback requires KVLITE_ROUTE_C_WEAK_RWLOCK=0.
   if [[ "${weak}" == "1" ]]; then
     KVLITE_ROUTE_C_WEAK_RWLOCK=1 KVLITE_EMBEDDING_PROFILE=1 "${KV_BIN}" --config "${conf}" >"${log}" 2>&1 &
   else
-    env -u KVLITE_ROUTE_C_WEAK_RWLOCK KVLITE_EMBEDDING_PROFILE=1 "${KV_BIN}" --config "${conf}" >"${log}" 2>&1 &
+    KVLITE_ROUTE_C_WEAK_RWLOCK=0 KVLITE_EMBEDDING_PROFILE=1 "${KV_BIN}" --config "${conf}" >"${log}" 2>&1 &
   fi
   SERVER_PID=$!
   wait_for_ready "${port}"
@@ -404,10 +405,11 @@ run_persistence_and_replication() {
   local weak="$2"
   echo "stage12 mixed mode=${label}: persistence/replication begin"
   (
+    # Stage 13: default is weak-lock. real-lock rollback requires KVLITE_ROUTE_C_WEAK_RWLOCK=0.
     if [[ "${weak}" == "1" ]]; then
       export KVLITE_ROUTE_C_WEAK_RWLOCK=1
     else
-      unset KVLITE_ROUTE_C_WEAK_RWLOCK
+      export KVLITE_ROUTE_C_WEAK_RWLOCK=0
     fi
     bash tests/rdb_snapshot_stage10_6.sh
     bash tests/aof_rewrite_snapshot_stage10_7.sh

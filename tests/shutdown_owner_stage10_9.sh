@@ -114,8 +114,10 @@ require(shutdown_pos < ttl_pos < aof_pos < rdb_pos < exec_stop_pos < destroy_pos
 require("distributed_shutdown()" in dest and "kvs_vector_destroy()" in dest and
         dest.index("distributed_shutdown()") < dest.index("kvs_vector_destroy()"),
         "distributed_shutdown must precede vector/store destroy")
-require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in dest,
-        "destroy still needs explicit rwlock protection")
+# Stage 13: dest_kvengine routes through owner rwlock wrapper.
+# The shutdown path falls back to real lock on non-executor thread.
+require("kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in dest,
+        "destroy must use owner rwlock wrapper for protection")
 
 require("kvs_command_executor_build_rdb_snapshot(&snapshot)" in rdb_save,
         "RDB save must build snapshot via command executor")

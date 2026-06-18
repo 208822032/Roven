@@ -12,6 +12,7 @@
 #include "kvs_vector.h"
 #include "kvs_command_task.h"
 #include "kvs_command_executor.h"
+#include "kvs_owner_lock.h"
 #include "kvs_response_task.h"
 #include "kvs_server.h"
 
@@ -138,7 +139,8 @@ void dest_kvengine(void) {
 #endif
 
 	// 2. 加写锁，确保销毁期间无命令线程并发访问数据结构
-	pthread_rwlock_wrlock(&g_kv_data_rwlock);
+	// Stage 13: route through owner rwlock wrapper
+	kvs_owner_rwlock_wrlock(&g_kv_data_rwlock, "shutdown.destroy.write");
 
 #if ENABLE_ARRAY
 	kvs_array_destory(&global_array);
@@ -155,7 +157,7 @@ void dest_kvengine(void) {
 
 	kvs_vector_destroy();
 
-	pthread_rwlock_unlock(&g_kv_data_rwlock);
+	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "shutdown.destroy.write");
 
 	// 3. 最后销毁内存池（确保 distributed_shutdown / aof_free 中的 kvs_free 先执行）
 	mem_destroy();

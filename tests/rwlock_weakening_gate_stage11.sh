@@ -93,9 +93,11 @@ for forbidden in [
             f"kvs_command_task.c still contains naked target lock call: {forbidden}")
 
 executor_exceptions = find_func(kvstore, "dest_kvengine")
-require("pthread_rwlock_wrlock(&g_kv_data_rwlock)" in executor_exceptions and
-        "pthread_rwlock_unlock(&g_kv_data_rwlock)" in executor_exceptions,
-        "destroy boundary must retain real naked pthread lock")
+# Stage 13: dest_kvengine now routes through owner rwlock wrapper.
+# The destroy boundary still performs a real lock via fallback on non-executor thread.
+require("kvs_owner_rwlock_wrlock(&g_kv_data_rwlock" in executor_exceptions and
+        "kvs_owner_rwlock_unlock(&g_kv_data_rwlock" in executor_exceptions,
+        "destroy boundary must use owner rwlock wrapper")
 
 for forbidden in [
     "pthread_rwlock_rdlock(&g_kv_data_rwlock)",

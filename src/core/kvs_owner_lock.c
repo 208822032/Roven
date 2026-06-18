@@ -20,11 +20,17 @@ static int kvs_owner_lock_read_weak_mode(void) {
 		return g_owner_weak_mode;
 	}
 	value = getenv("KVLITE_ROUTE_C_WEAK_RWLOCK");
-	g_owner_weak_mode = value &&
-		(strcmp(value, "1") == 0 ||
-		 strcasecmp(value, "true") == 0 ||
-		 strcasecmp(value, "yes") == 0 ||
-		 strcasecmp(value, "on") == 0);
+	if (value) {
+		g_owner_weak_mode =
+			(strcmp(value, "1") == 0 ||
+			 strcasecmp(value, "true") == 0 ||
+			 strcasecmp(value, "yes") == 0 ||
+			 strcasecmp(value, "on") == 0);
+	} else {
+		/* Stage 13: weak-lock is now the default.
+		 * Set KVLITE_ROUTE_C_WEAK_RWLOCK=0 to roll back to real-lock mode. */
+		g_owner_weak_mode = 1;
+	}
 	return g_owner_weak_mode;
 }
 
