@@ -37,6 +37,11 @@ typedef struct {
     int master_thread_started;
     int master_listen_fd;
 
+    // slave_connect_thread 生命周期管理
+    pthread_t slave_connect_thread;
+    int slave_connect_thread_started;
+    int slave_master_sockfd;
+
 } distributed_config_t;
 
 extern distributed_config_t global_dist_config;

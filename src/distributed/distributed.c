@@ -53,6 +53,20 @@ static int master_sync_key_expire_at(const char *key, size_t key_len, int64_t ex
     return master_sync_command("PEXPIREAT", key, key_len, expire_buf, strlen(expire_buf));
 }
 
+static void distributed_set_slave_master_sockfd(int sockfd) {
+    pthread_mutex_lock(&global_dist_config.slave_mutex);
+    global_dist_config.slave_master_sockfd = sockfd;
+    pthread_mutex_unlock(&global_dist_config.slave_mutex);
+}
+
+static void distributed_clear_slave_master_sockfd(int sockfd) {
+    pthread_mutex_lock(&global_dist_config.slave_mutex);
+    if (global_dist_config.slave_master_sockfd == sockfd) {
+        global_dist_config.slave_master_sockfd = -1;
+    }
+    pthread_mutex_unlock(&global_dist_config.slave_mutex);
+}
+
 static const char *master_full_sync_snapshot_entry_command(
     kvs_full_sync_snapshot_backend_t backend
 ) {
@@ -244,6 +258,9 @@ void *master_sync_server(void *arg){
 void* slave_connect_thread(void *arg) {
     // 等待主节点初始化完成
     sleep(1);
+    if (g_shutdown_flag) {
+        return NULL;
+    }
     slave_connect_master();
     return NULL;
 }
@@ -289,7 +306,27 @@ void distributed_shutdown(void) {
             global_dist_config.slave_count = 0;
         }
     } else if (global_dist_config.role == ROLE_SLAVE) {
-        // slave 连接线程在 master 断开后自己退出
+        pthread_t connect_thread;
+        int should_join = 0;
+        int master_sockfd = -1;
+
+        pthread_mutex_lock(&global_dist_config.slave_mutex);
+        should_join = global_dist_config.slave_connect_thread_started;
+        connect_thread = global_dist_config.slave_connect_thread;
+        master_sockfd = global_dist_config.slave_master_sockfd;
+        pthread_mutex_unlock(&global_dist_config.slave_mutex);
+
+        if (master_sockfd >= 0) {
+            shutdown(master_sockfd, SHUT_RDWR);
+        }
+
+        if (should_join) {
+            pthread_join(connect_thread, NULL);
+            pthread_mutex_lock(&global_dist_config.slave_mutex);
+            global_dist_config.slave_connect_thread_started = 0;
+            global_dist_config.slave_master_sockfd = -1;
+            pthread_mutex_unlock(&global_dist_config.slave_mutex);
+        }
     }
 
     pthread_mutex_destroy(&global_dist_config.slave_mutex);
@@ -301,12 +338,13 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
 
     global_dist_config.role = role;
     global_dist_config.sync_port = sync_port;
+    global_dist_config.master_listen_fd = -1;
+    global_dist_config.slave_master_sockfd = -1;
     pthread_mutex_init(&global_dist_config.slave_mutex, NULL);
 
     if(role == ROLE_MASTER){
         global_dist_config.max_slaves = 10;
         global_dist_config.slaves = kvs_malloc(global_dist_config.max_slaves * sizeof(slave_info_t));
-        global_dist_config.master_listen_fd = -1;
         global_dist_config.master_thread_started = 0;
 
         //无论哪种模式 都启动同步服务器线程
@@ -329,8 +367,11 @@ int distributed_init(node_role_t role, const char *master_ip, int master_port, i
         KVS_LOG_INFO("dist", "running as SLAVE, connecting to master %s:%d", master_ip, master_port);
 
         // 启动连接线程
-        pthread_t connect_thread;
-        pthread_create(&connect_thread, NULL, slave_connect_thread, NULL);
+        if (pthread_create(&global_dist_config.slave_connect_thread, NULL, slave_connect_thread, NULL) == 0) {
+            global_dist_config.slave_connect_thread_started = 1;
+        } else {
+            KVS_LOG_ERROR_ERRNO("dist", "create slave_connect_thread failed");
+        }
     }
 
     return 0;
@@ -346,17 +387,22 @@ void slave_connect_master(){
         KVS_LOG_ERROR_ERRNO("dist", "socket creation error while connecting to master");
         return;
     }
+    distributed_set_slave_master_sockfd(sock);
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(global_dist_config.master_port);
 
     if(inet_pton(AF_INET, global_dist_config.master_ip, &serv_addr.sin_addr) <= 0){
         KVS_LOG_ERROR("dist", "invalid master address %s", global_dist_config.master_ip);
+        distributed_clear_slave_master_sockfd(sock);
+        close(sock);
         return;
     }
 
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         KVS_LOG_ERROR_ERRNO("dist", "connection to master %s:%d failed", global_dist_config.master_ip, global_dist_config.master_port);
+        distributed_clear_slave_master_sockfd(sock);
+        close(sock);
         return;
     }
 
@@ -375,7 +421,7 @@ void slave_connect_master(){
     size_t recv_len = 0;
 
     //解析命令
-    while(1){
+    while(!g_shutdown_flag){
         if(recv_len >= buf_cap){
             size_t new_cap = buf_cap * 2;
             if(new_cap < buf_cap){
@@ -497,7 +543,7 @@ void slave_connect_master(){
                     break;
             }
 
-            if (should_apply) {
+            if (should_apply && !g_shutdown_flag) {
                 if (kvs_command_executor_submit_replicated(
                         op,
                         key,
@@ -522,6 +568,7 @@ void slave_connect_master(){
     }
 
     kvs_free(buffer);
+    distributed_clear_slave_master_sockfd(sock);
     close(sock);
     return;
 }

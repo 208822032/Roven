@@ -16,6 +16,12 @@ typedef struct kvs_ttl_expire_task_s {
 	uint64_t enqueue_us;
 } kvs_ttl_expire_task_t;
 
+typedef struct kvs_ttl_scan_task_s {
+	struct kvs_ttl_scan_task_s *queue_next;
+	int budget;
+	uint64_t enqueue_us;
+} kvs_ttl_scan_task_t;
+
 typedef struct kvs_replicated_command_task_s {
 	struct kvs_replicated_command_task_s *queue_next;
 	ms_op_t op;
@@ -197,6 +203,16 @@ typedef struct kvs_command_executor_stats_s {
 	uint64_t ttl_expire_wait_count;
 	uint64_t ttl_expire_wait_total_us;
 	uint64_t ttl_expire_wait_max_us;
+	uint64_t ttl_scan_task_submitted;
+	uint64_t ttl_scan_task_executed;
+	uint64_t ttl_scan_task_failed;
+	uint64_t ttl_scan_task_dropped;
+	uint64_t ttl_scan_submit_failed;
+	uint64_t ttl_scan_queue_depth;
+	uint64_t ttl_scan_queue_max_depth;
+	uint64_t ttl_scan_wait_count;
+	uint64_t ttl_scan_wait_total_us;
+	uint64_t ttl_scan_wait_max_us;
 	uint64_t repl_task_submitted;
 	uint64_t repl_task_executed;
 	uint64_t repl_task_failed;
@@ -227,6 +243,7 @@ int kvs_command_executor_submit_prepared(kvs_command_task_t *task);
 int kvs_command_executor_submit_ttl_expire(const char *key,
                                            size_t key_len,
                                            int64_t observed_expire_at_ms);
+int kvs_command_executor_submit_ttl_scan(int budget);
 int kvs_command_executor_submit_replicated(ms_op_t op,
                                            const char *key,
                                            size_t key_len,
