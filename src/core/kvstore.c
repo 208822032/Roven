@@ -330,6 +330,8 @@ int main(int argc, char *argv[]) {
     // 保存数据并退出
 	KVS_LOG_INFO("core", "shutdown requested, saving data...");
 
+	kvs_ttl_background_stop();
+
 	#if ENABLE_AOF
 	aof_fsync(1);
 	#endif
@@ -337,7 +339,6 @@ int main(int argc, char *argv[]) {
 #if ENABLE_RDB
 	kvs_rdb_save(g_cfg.rdb_filename);
 #endif
-	kvs_ttl_background_stop();
 	kvs_command_executor_stop();
 	KVS_LOG_INFO("core", "data saved. exiting.");
     dest_kvengine();
