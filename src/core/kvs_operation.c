@@ -2029,7 +2029,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     n = snprintf(item, sizeof(item), "vector_backend:%s",
         info->index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
         (info->index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
-         (info->index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "native_hnsw" :
+         (info->index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
           (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "native_sq8_flat" : "native_flat"))));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);

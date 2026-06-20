@@ -36,6 +36,7 @@ typedef enum kvs_vector_index_type_e {
 	KVS_VECTOR_INDEX_TYPE_SQ8_FLAT = 3,
 	KVS_VECTOR_INDEX_FAISS_HNSW = 4,
 	KVS_VECTOR_INDEX_FAISS_FLAT = 5,
+	KVS_VECTOR_INDEX_HNSWLIB_HNSW = 6,
 } kvs_vector_index_type_t;
 
 /*

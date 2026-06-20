@@ -12,6 +12,9 @@ kvs_vector_state_t g_vector_state;
 static kvs_vector_vset_commit_stats_t g_vset_commit_stats;
 size_t g_faiss_add_count;
 size_t g_faiss_search_count;
+size_t g_hnswlib_add_count;
+size_t g_hnswlib_search_count;
+size_t g_hnswlib_resize_count;
 
 static uint64_t kvs_vector_stats_add(uint64_t *field, uint64_t value) {
 	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
@@ -340,8 +343,18 @@ static kvs_vector_record_t *kvs_vector_find_free_slot(void) {
 }
 
 static kvs_vector_index_type_t kvs_vector_index_type_from_config(void) {
-	if (strcasecmp(g_cfg.vector_index_type, "hnsw") == 0) {
-		return KVS_VECTOR_INDEX_TYPE_HNSW;
+	if (strcasecmp(g_cfg.vector_index_type, "native_hnsw") == 0) {
+		KVS_LOG_ERROR(KVS_VECTOR_LOG_MODULE, "native_hnsw has been removed; use hnswlib_hnsw instead");
+		return -1;
+	}
+#ifdef ENABLE_HNSWLIB
+	if (strcasecmp(g_cfg.vector_index_type, "hnsw") == 0 ||
+	    strcasecmp(g_cfg.vector_index_type, "hnswlib_hnsw") == 0) {
+		return KVS_VECTOR_INDEX_HNSWLIB_HNSW;
+	}
+#endif
+	if (strcasecmp(g_cfg.vector_index_type, "hnswlib_hnsw") == 0) {
+		KVS_LOG_ERROR(KVS_VECTOR_LOG_MODULE, "hnswlib backend requested but not compiled (ENABLE_HNSWLIB=0)");
 	}
 
 	if (strcasecmp(g_cfg.vector_index_type, "sq8_flat") == 0) {

@@ -70,6 +70,9 @@ FAISS_ROOT ?= third_party/faiss
 FAISS_INCLUDEDIR := $(FAISS_ROOT)
 FAISS_LIB := $(FAISS_ROOT)/build/faiss/libfaiss.a
 
+ENABLE_HNSWLIB ?= 1
+HNSWLIB_ROOT ?= third_party/hnswlib
+
 ifeq ($(ENABLE_ONNX_EMBEDDING),1)
   EMBED_RUNTIME_SRC := $(SRC_EMBED)/embedding_runtime_onnx.c
   ONNX_CFLAGS := -I$(ONNXRUNTIME_ROOT)/include
@@ -152,7 +155,7 @@ CXXFLAGS      = -I ./include -I ./src -g -std=c++17
 CFLAGS        = -I ./third_party/NtyCo/core/ -I ./include -I ./src \
                 -I $(JEMALLOC_INCLUDE) \
                 -DSYNC_MODE=$(SYNC_MODE) \
-                -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS) $(FAISS_CFLAGS)
+                -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS) $(FAISS_CFLAGS) $(HNSWLIB_CFLAGS)
 LDFLAGS       = -L ./third_party/NtyCo/ -lntyco -lpthread -luring -ldl -lm \
                 $(EXTRA_LIBS) $(JEMALLOC_LIB) $(ONNX_LDFLAGS) $(FAISS_LDFLAGS)
 ifeq ($(ENABLE_FAISS),1)
@@ -167,6 +170,17 @@ else
   FAISS_LDFLAGS :=
   SRC_VECTOR_FAISS :=
   OBJ_VECTOR_FAISS :=
+endif
+
+ifeq ($(ENABLE_HNSWLIB),1)
+  HNSWLIB_CFLAGS := -DENABLE_HNSWLIB -I$(HNSWLIB_ROOT)
+  SRC_VECTOR_HNSWLIB := $(SRC_VECTOR)/kvs_vector_hnswlib_ops.c $(SRC_VECTOR)/kvs_vector_hnswlib_backend.cpp
+  OBJ_VECTOR_HNSWLIB := $(SRC_VECTOR_HNSWLIB:.c=.o)
+  OBJ_VECTOR_HNSWLIB := $(OBJ_VECTOR_HNSWLIB:.cpp=.o)
+else
+  HNSWLIB_CFLAGS :=
+  SRC_VECTOR_HNSWLIB :=
+  OBJ_VECTOR_HNSWLIB :=
 endif
 KVSTORE_TEST_LDFLAGS = -L$(BUILD_LIB) -lkvstore $(LDFLAGS)
 
@@ -430,11 +444,14 @@ $(LIBKVSTORE): $(LIBKVSTORE_OBJS)
 # ║                       主二进制 kvstore                                ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-$(TARGET): $(OBJS) $(NTYCO_LIB) $(OBJ_VECTOR_FAISS)
-	$(if $(OBJ_VECTOR_FAISS),$(CXX),$(CC)) -o $@ $(OBJS) $(OBJ_VECTOR_FAISS) $(LDFLAGS) -lpthread
+$(TARGET): $(OBJS) $(NTYCO_LIB) $(OBJ_VECTOR_FAISS) $(OBJ_VECTOR_HNSWLIB)
+	$(if $(OBJ_VECTOR_FAISS)$(OBJ_VECTOR_HNSWLIB),$(CXX),$(CC)) -o $@ $(OBJS) $(OBJ_VECTOR_FAISS) $(OBJ_VECTOR_HNSWLIB) $(LDFLAGS) -lpthread
 
 $(SRC_VECTOR)/kvs_vector_faiss_backend.o: $(SRC_VECTOR)/kvs_vector_faiss_backend.cpp
 	$(CXX) -c $(FAISS_CXXFLAGS) -o $@ $<
+
+$(SRC_VECTOR)/kvs_vector_hnswlib_backend.o: $(SRC_VECTOR)/kvs_vector_hnswlib_backend.cpp
+	$(CXX) -c -std=c++11 -I ./include -I ./src -I$(HNSWLIB_ROOT) -o $@ $<
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                       测试二进制                                      ║
