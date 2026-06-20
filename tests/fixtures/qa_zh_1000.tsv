@@ -1,0 +1,1000 @@
+什么是Redis AOF？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 的核心作用是什么？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 主要解决什么问题？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 在系统里承担什么职责？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+为什么需要Redis AOF？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 的典型用途是什么？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 的关键点是什么？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 在性能分析里为什么重要？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 和语义检索有什么关系？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+怎样理解Redis AOF？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 在 KVLite 场景里有什么意义？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+做向量检索时为什么要关注Redis AOF？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 对延迟有什么影响？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 对吞吐有什么影响？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 的调优方向通常有哪些？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 和 HNSW/Flat 选择有什么联系？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 会不会成为瓶颈？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 在中文问答检索链路里处于哪一段？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+分析 VSET/VSEARCH 时为什么要拆看Redis AOF？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 的工程优化优先级怎么判断？	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+什么是Redis RDB？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 的核心作用是什么？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 主要解决什么问题？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 在系统里承担什么职责？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+为什么需要Redis RDB？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 的典型用途是什么？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 的关键点是什么？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 在性能分析里为什么重要？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 和语义检索有什么关系？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+怎样理解Redis RDB？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 在 KVLite 场景里有什么意义？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+做向量检索时为什么要关注Redis RDB？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 对延迟有什么影响？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 对吞吐有什么影响？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 的调优方向通常有哪些？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 和 HNSW/Flat 选择有什么联系？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 会不会成为瓶颈？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 在中文问答检索链路里处于哪一段？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+分析 VSET/VSEARCH 时为什么要拆看Redis RDB？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 的工程优化优先级怎么判断？	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+什么是TTL 过期？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 的核心作用是什么？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 主要解决什么问题？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 在系统里承担什么职责？	TTL 机制通过过期时间控制键的生命周期。
+为什么需要TTL 过期？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 的典型用途是什么？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 的关键点是什么？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 在性能分析里为什么重要？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 和语义检索有什么关系？	TTL 机制通过过期时间控制键的生命周期。
+怎样理解TTL 过期？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 在 KVLite 场景里有什么意义？	TTL 机制通过过期时间控制键的生命周期。
+做向量检索时为什么要关注TTL 过期？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 对延迟有什么影响？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 对吞吐有什么影响？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 的调优方向通常有哪些？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 和 HNSW/Flat 选择有什么联系？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 会不会成为瓶颈？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 在中文问答检索链路里处于哪一段？	TTL 机制通过过期时间控制键的生命周期。
+分析 VSET/VSEARCH 时为什么要拆看TTL 过期？	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 的工程优化优先级怎么判断？	TTL 机制通过过期时间控制键的生命周期。
+什么是KV 存储？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 的核心作用是什么？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 主要解决什么问题？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 在系统里承担什么职责？	KV 存储以键值对为核心抽象，强调简单读写路径。
+为什么需要KV 存储？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 的典型用途是什么？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 的关键点是什么？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 在性能分析里为什么重要？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 和语义检索有什么关系？	KV 存储以键值对为核心抽象，强调简单读写路径。
+怎样理解KV 存储？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 在 KVLite 场景里有什么意义？	KV 存储以键值对为核心抽象，强调简单读写路径。
+做向量检索时为什么要关注KV 存储？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 对延迟有什么影响？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 对吞吐有什么影响？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 的调优方向通常有哪些？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 和 HNSW/Flat 选择有什么联系？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 会不会成为瓶颈？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 在中文问答检索链路里处于哪一段？	KV 存储以键值对为核心抽象，强调简单读写路径。
+分析 VSET/VSEARCH 时为什么要拆看KV 存储？	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 的工程优化优先级怎么判断？	KV 存储以键值对为核心抽象，强调简单读写路径。
+什么是跳表？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 的核心作用是什么？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 主要解决什么问题？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 在系统里承担什么职责？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+为什么需要跳表？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 的典型用途是什么？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 的关键点是什么？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 在性能分析里为什么重要？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 和语义检索有什么关系？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+怎样理解跳表？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 在 KVLite 场景里有什么意义？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+做向量检索时为什么要关注跳表？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 对延迟有什么影响？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 对吞吐有什么影响？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 的调优方向通常有哪些？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 和 HNSW/Flat 选择有什么联系？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 会不会成为瓶颈？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 在中文问答检索链路里处于哪一段？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+分析 VSET/VSEARCH 时为什么要拆看跳表？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 的工程优化优先级怎么判断？	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+什么是HNSW？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 的核心作用是什么？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 主要解决什么问题？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 在系统里承担什么职责？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+为什么需要HNSW？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 的典型用途是什么？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 的关键点是什么？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 在性能分析里为什么重要？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 和语义检索有什么关系？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+怎样理解HNSW？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 在 KVLite 场景里有什么意义？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+做向量检索时为什么要关注HNSW？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 对延迟有什么影响？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 对吞吐有什么影响？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 的调优方向通常有哪些？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 和 HNSW/Flat 选择有什么联系？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 会不会成为瓶颈？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 在中文问答检索链路里处于哪一段？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+分析 VSET/VSEARCH 时为什么要拆看HNSW？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 的工程优化优先级怎么判断？	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+什么是efSearch？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 的核心作用是什么？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 主要解决什么问题？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 在系统里承担什么职责？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+为什么需要efSearch？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 的典型用途是什么？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 的关键点是什么？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 在性能分析里为什么重要？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 和语义检索有什么关系？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+怎样理解efSearch？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 在 KVLite 场景里有什么意义？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+做向量检索时为什么要关注efSearch？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 对延迟有什么影响？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 对吞吐有什么影响？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 的调优方向通常有哪些？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 和 HNSW/Flat 选择有什么联系？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 会不会成为瓶颈？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 在中文问答检索链路里处于哪一段？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+分析 VSET/VSEARCH 时为什么要拆看efSearch？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 的工程优化优先级怎么判断？	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+什么是efConstruction？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 的核心作用是什么？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 主要解决什么问题？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 在系统里承担什么职责？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+为什么需要efConstruction？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 的典型用途是什么？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 的关键点是什么？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 在性能分析里为什么重要？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 和语义检索有什么关系？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+怎样理解efConstruction？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 在 KVLite 场景里有什么意义？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+做向量检索时为什么要关注efConstruction？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 对延迟有什么影响？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 对吞吐有什么影响？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 的调优方向通常有哪些？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 和 HNSW/Flat 选择有什么联系？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 会不会成为瓶颈？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 在中文问答检索链路里处于哪一段？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+分析 VSET/VSEARCH 时为什么要拆看efConstruction？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 的工程优化优先级怎么判断？	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+什么是M 参数？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 的核心作用是什么？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 主要解决什么问题？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 在系统里承担什么职责？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+为什么需要M 参数？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 的典型用途是什么？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 的关键点是什么？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 在性能分析里为什么重要？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 和语义检索有什么关系？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+怎样理解M 参数？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 在 KVLite 场景里有什么意义？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+做向量检索时为什么要关注M 参数？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 对延迟有什么影响？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 对吞吐有什么影响？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 的调优方向通常有哪些？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 和 HNSW/Flat 选择有什么联系？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 会不会成为瓶颈？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 在中文问答检索链路里处于哪一段？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+分析 VSET/VSEARCH 时为什么要拆看M 参数？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 的工程优化优先级怎么判断？	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+什么是向量数据库？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 的核心作用是什么？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 主要解决什么问题？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 在系统里承担什么职责？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+为什么需要向量数据库？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 的典型用途是什么？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 的关键点是什么？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 在性能分析里为什么重要？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 和语义检索有什么关系？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+怎样理解向量数据库？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 在 KVLite 场景里有什么意义？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+做向量检索时为什么要关注向量数据库？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 对延迟有什么影响？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 对吞吐有什么影响？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 的调优方向通常有哪些？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 和 HNSW/Flat 选择有什么联系？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 会不会成为瓶颈？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 在中文问答检索链路里处于哪一段？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+分析 VSET/VSEARCH 时为什么要拆看向量数据库？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 的工程优化优先级怎么判断？	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+什么是embedding？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 的核心作用是什么？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 主要解决什么问题？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 在系统里承担什么职责？	embedding 把文本映射到连续向量空间以表达语义相近性。
+为什么需要embedding？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 的典型用途是什么？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 的关键点是什么？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 在性能分析里为什么重要？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 和语义检索有什么关系？	embedding 把文本映射到连续向量空间以表达语义相近性。
+怎样理解embedding？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 在 KVLite 场景里有什么意义？	embedding 把文本映射到连续向量空间以表达语义相近性。
+做向量检索时为什么要关注embedding？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 对延迟有什么影响？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 对吞吐有什么影响？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 的调优方向通常有哪些？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 和 HNSW/Flat 选择有什么联系？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 会不会成为瓶颈？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 在中文问答检索链路里处于哪一段？	embedding 把文本映射到连续向量空间以表达语义相近性。
+分析 VSET/VSEARCH 时为什么要拆看embedding？	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 的工程优化优先级怎么判断？	embedding 把文本映射到连续向量空间以表达语义相近性。
+什么是ONNX Runtime？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 的核心作用是什么？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 主要解决什么问题？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 在系统里承担什么职责？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+为什么需要ONNX Runtime？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 的典型用途是什么？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 的关键点是什么？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 在性能分析里为什么重要？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 和语义检索有什么关系？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+怎样理解ONNX Runtime？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 在 KVLite 场景里有什么意义？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+做向量检索时为什么要关注ONNX Runtime？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 对延迟有什么影响？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 对吞吐有什么影响？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 的调优方向通常有哪些？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 和 HNSW/Flat 选择有什么联系？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 会不会成为瓶颈？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 在中文问答检索链路里处于哪一段？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+分析 VSET/VSEARCH 时为什么要拆看ONNX Runtime？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 的工程优化优先级怎么判断？	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+什么是BGE 模型？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 的核心作用是什么？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 主要解决什么问题？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 在系统里承担什么职责？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+为什么需要BGE 模型？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 的典型用途是什么？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 的关键点是什么？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 在性能分析里为什么重要？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 和语义检索有什么关系？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+怎样理解BGE 模型？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 在 KVLite 场景里有什么意义？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+做向量检索时为什么要关注BGE 模型？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 对延迟有什么影响？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 对吞吐有什么影响？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 的调优方向通常有哪些？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 和 HNSW/Flat 选择有什么联系？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 会不会成为瓶颈？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 在中文问答检索链路里处于哪一段？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+分析 VSET/VSEARCH 时为什么要拆看BGE 模型？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 的工程优化优先级怎么判断？	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+什么是L2 归一化？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 的核心作用是什么？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 主要解决什么问题？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 在系统里承担什么职责？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+为什么需要L2 归一化？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 的典型用途是什么？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 的关键点是什么？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 在性能分析里为什么重要？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 和语义检索有什么关系？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+怎样理解L2 归一化？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 在 KVLite 场景里有什么意义？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+做向量检索时为什么要关注L2 归一化？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 对延迟有什么影响？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 对吞吐有什么影响？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 的调优方向通常有哪些？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 和 HNSW/Flat 选择有什么联系？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 会不会成为瓶颈？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 在中文问答检索链路里处于哪一段？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+分析 VSET/VSEARCH 时为什么要拆看L2 归一化？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 的工程优化优先级怎么判断？	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+什么是Inner Product？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 的核心作用是什么？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 主要解决什么问题？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 在系统里承担什么职责？	归一化后的 inner product 可以直接表示 cosine 相似度。
+为什么需要Inner Product？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 的典型用途是什么？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 的关键点是什么？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 在性能分析里为什么重要？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 和语义检索有什么关系？	归一化后的 inner product 可以直接表示 cosine 相似度。
+怎样理解Inner Product？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 在 KVLite 场景里有什么意义？	归一化后的 inner product 可以直接表示 cosine 相似度。
+做向量检索时为什么要关注Inner Product？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 对延迟有什么影响？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 对吞吐有什么影响？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 的调优方向通常有哪些？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 和 HNSW/Flat 选择有什么联系？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 会不会成为瓶颈？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 在中文问答检索链路里处于哪一段？	归一化后的 inner product 可以直接表示 cosine 相似度。
+分析 VSET/VSEARCH 时为什么要拆看Inner Product？	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 的工程优化优先级怎么判断？	归一化后的 inner product 可以直接表示 cosine 相似度。
+什么是Flat 检索？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 的核心作用是什么？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 主要解决什么问题？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 在系统里承担什么职责？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+为什么需要Flat 检索？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 的典型用途是什么？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 的关键点是什么？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 在性能分析里为什么重要？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 和语义检索有什么关系？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+怎样理解Flat 检索？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 在 KVLite 场景里有什么意义？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+做向量检索时为什么要关注Flat 检索？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 对延迟有什么影响？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 对吞吐有什么影响？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 的调优方向通常有哪些？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 和 HNSW/Flat 选择有什么联系？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 会不会成为瓶颈？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 在中文问答检索链路里处于哪一段？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+分析 VSET/VSEARCH 时为什么要拆看Flat 检索？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 的工程优化优先级怎么判断？	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+什么是Faiss Flat？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 的核心作用是什么？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 主要解决什么问题？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 在系统里承担什么职责？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+为什么需要Faiss Flat？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 的典型用途是什么？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 的关键点是什么？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 在性能分析里为什么重要？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 和语义检索有什么关系？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+怎样理解Faiss Flat？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 在 KVLite 场景里有什么意义？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+做向量检索时为什么要关注Faiss Flat？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 对延迟有什么影响？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 对吞吐有什么影响？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 的调优方向通常有哪些？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 和 HNSW/Flat 选择有什么联系？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 会不会成为瓶颈？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 在中文问答检索链路里处于哪一段？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+分析 VSET/VSEARCH 时为什么要拆看Faiss Flat？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 的工程优化优先级怎么判断？	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+什么是Faiss HNSW？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 的核心作用是什么？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 主要解决什么问题？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 在系统里承担什么职责？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+为什么需要Faiss HNSW？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 的典型用途是什么？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 的关键点是什么？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 在性能分析里为什么重要？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 和语义检索有什么关系？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+怎样理解Faiss HNSW？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 在 KVLite 场景里有什么意义？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+做向量检索时为什么要关注Faiss HNSW？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 对延迟有什么影响？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 对吞吐有什么影响？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 的调优方向通常有哪些？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 和 HNSW/Flat 选择有什么联系？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 会不会成为瓶颈？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 在中文问答检索链路里处于哪一段？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+分析 VSET/VSEARCH 时为什么要拆看Faiss HNSW？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 的工程优化优先级怎么判断？	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+什么是倒排索引？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 的核心作用是什么？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 主要解决什么问题？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 在系统里承担什么职责？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+为什么需要倒排索引？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 的典型用途是什么？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 的关键点是什么？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 在性能分析里为什么重要？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 和语义检索有什么关系？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+怎样理解倒排索引？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 在 KVLite 场景里有什么意义？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+做向量检索时为什么要关注倒排索引？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 对延迟有什么影响？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 对吞吐有什么影响？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 的调优方向通常有哪些？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 和 HNSW/Flat 选择有什么联系？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 会不会成为瓶颈？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 在中文问答检索链路里处于哪一段？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+分析 VSET/VSEARCH 时为什么要拆看倒排索引？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 的工程优化优先级怎么判断？	倒排索引适合关键词检索，不直接解决向量近邻问题。
+什么是语义缓存？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 的核心作用是什么？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 主要解决什么问题？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 在系统里承担什么职责？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+为什么需要语义缓存？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 的典型用途是什么？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 的关键点是什么？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 在性能分析里为什么重要？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 和语义检索有什么关系？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+怎样理解语义缓存？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 在 KVLite 场景里有什么意义？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+做向量检索时为什么要关注语义缓存？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 对延迟有什么影响？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 对吞吐有什么影响？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 的调优方向通常有哪些？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 和 HNSW/Flat 选择有什么联系？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 会不会成为瓶颈？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 在中文问答检索链路里处于哪一段？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+分析 VSET/VSEARCH 时为什么要拆看语义缓存？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 的工程优化优先级怎么判断？	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+什么是批量 embedding？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 的核心作用是什么？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 主要解决什么问题？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 在系统里承担什么职责？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+为什么需要批量 embedding？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 的典型用途是什么？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 的关键点是什么？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 在性能分析里为什么重要？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 和语义检索有什么关系？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+怎样理解批量 embedding？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 在 KVLite 场景里有什么意义？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+做向量检索时为什么要关注批量 embedding？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 对延迟有什么影响？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 对吞吐有什么影响？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 的调优方向通常有哪些？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 和 HNSW/Flat 选择有什么联系？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 会不会成为瓶颈？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 在中文问答检索链路里处于哪一段？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+分析 VSET/VSEARCH 时为什么要拆看批量 embedding？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 的工程优化优先级怎么判断？	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+什么是embedding cache？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 的核心作用是什么？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 主要解决什么问题？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 在系统里承担什么职责？	embedding cache 可以避免重复文本反复做推理。
+为什么需要embedding cache？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 的典型用途是什么？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 的关键点是什么？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 在性能分析里为什么重要？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 和语义检索有什么关系？	embedding cache 可以避免重复文本反复做推理。
+怎样理解embedding cache？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 在 KVLite 场景里有什么意义？	embedding cache 可以避免重复文本反复做推理。
+做向量检索时为什么要关注embedding cache？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 对延迟有什么影响？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 对吞吐有什么影响？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 的调优方向通常有哪些？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 和 HNSW/Flat 选择有什么联系？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 会不会成为瓶颈？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 在中文问答检索链路里处于哪一段？	embedding cache 可以避免重复文本反复做推理。
+分析 VSET/VSEARCH 时为什么要拆看embedding cache？	embedding cache 可以避免重复文本反复做推理。
+embedding cache 的工程优化优先级怎么判断？	embedding cache 可以避免重复文本反复做推理。
+什么是query cache？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 的核心作用是什么？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 主要解决什么问题？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 在系统里承担什么职责？	query cache 适合高重复率查询，直接复用命中结果。
+为什么需要query cache？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 的典型用途是什么？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 的关键点是什么？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 在性能分析里为什么重要？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 和语义检索有什么关系？	query cache 适合高重复率查询，直接复用命中结果。
+怎样理解query cache？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 在 KVLite 场景里有什么意义？	query cache 适合高重复率查询，直接复用命中结果。
+做向量检索时为什么要关注query cache？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 对延迟有什么影响？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 对吞吐有什么影响？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 的调优方向通常有哪些？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 和 HNSW/Flat 选择有什么联系？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 会不会成为瓶颈？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 在中文问答检索链路里处于哪一段？	query cache 适合高重复率查询，直接复用命中结果。
+分析 VSET/VSEARCH 时为什么要拆看query cache？	query cache 适合高重复率查询，直接复用命中结果。
+query cache 的工程优化优先级怎么判断？	query cache 适合高重复率查询，直接复用命中结果。
+什么是线程过订阅？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 的核心作用是什么？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 主要解决什么问题？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 在系统里承担什么职责？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+为什么需要线程过订阅？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 的典型用途是什么？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 的关键点是什么？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 在性能分析里为什么重要？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 和语义检索有什么关系？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+怎样理解线程过订阅？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 在 KVLite 场景里有什么意义？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+做向量检索时为什么要关注线程过订阅？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 对延迟有什么影响？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 对吞吐有什么影响？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 的调优方向通常有哪些？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 和 HNSW/Flat 选择有什么联系？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 会不会成为瓶颈？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 在中文问答检索链路里处于哪一段？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+分析 VSET/VSEARCH 时为什么要拆看线程过订阅？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 的工程优化优先级怎么判断？	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+什么是intra_op 线程？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 的核心作用是什么？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 主要解决什么问题？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 在系统里承担什么职责？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+为什么需要intra_op 线程？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 的典型用途是什么？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 的关键点是什么？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 在性能分析里为什么重要？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 和语义检索有什么关系？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+怎样理解intra_op 线程？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 在 KVLite 场景里有什么意义？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+做向量检索时为什么要关注intra_op 线程？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 对延迟有什么影响？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 对吞吐有什么影响？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 的调优方向通常有哪些？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 和 HNSW/Flat 选择有什么联系？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 会不会成为瓶颈？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 在中文问答检索链路里处于哪一段？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+分析 VSET/VSEARCH 时为什么要拆看intra_op 线程？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 的工程优化优先级怎么判断？	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+什么是inter_op 线程？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 的核心作用是什么？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 主要解决什么问题？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 在系统里承担什么职责？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+为什么需要inter_op 线程？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 的典型用途是什么？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 的关键点是什么？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 在性能分析里为什么重要？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 和语义检索有什么关系？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+怎样理解inter_op 线程？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 在 KVLite 场景里有什么意义？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+做向量检索时为什么要关注inter_op 线程？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 对延迟有什么影响？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 对吞吐有什么影响？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 的调优方向通常有哪些？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 和 HNSW/Flat 选择有什么联系？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 会不会成为瓶颈？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 在中文问答检索链路里处于哪一段？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+分析 VSET/VSEARCH 时为什么要拆看inter_op 线程？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 的工程优化优先级怎么判断？	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+什么是reactor 模型？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 的核心作用是什么？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 主要解决什么问题？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 在系统里承担什么职责？	reactor 模型通过事件循环分发 I/O 就绪事件。
+为什么需要reactor 模型？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 的典型用途是什么？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 的关键点是什么？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 在性能分析里为什么重要？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 和语义检索有什么关系？	reactor 模型通过事件循环分发 I/O 就绪事件。
+怎样理解reactor 模型？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 在 KVLite 场景里有什么意义？	reactor 模型通过事件循环分发 I/O 就绪事件。
+做向量检索时为什么要关注reactor 模型？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 对延迟有什么影响？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 对吞吐有什么影响？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 的调优方向通常有哪些？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 和 HNSW/Flat 选择有什么联系？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 会不会成为瓶颈？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 在中文问答检索链路里处于哪一段？	reactor 模型通过事件循环分发 I/O 就绪事件。
+分析 VSET/VSEARCH 时为什么要拆看reactor 模型？	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 的工程优化优先级怎么判断？	reactor 模型通过事件循环分发 I/O 就绪事件。
+什么是executor？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 的核心作用是什么？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 主要解决什么问题？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 在系统里承担什么职责？	executor 负责把解析后的命令分发到实际执行上下文。
+为什么需要executor？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 的典型用途是什么？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 的关键点是什么？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 在性能分析里为什么重要？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 和语义检索有什么关系？	executor 负责把解析后的命令分发到实际执行上下文。
+怎样理解executor？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 在 KVLite 场景里有什么意义？	executor 负责把解析后的命令分发到实际执行上下文。
+做向量检索时为什么要关注executor？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 对延迟有什么影响？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 对吞吐有什么影响？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 的调优方向通常有哪些？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 和 HNSW/Flat 选择有什么联系？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 会不会成为瓶颈？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 在中文问答检索链路里处于哪一段？	executor 负责把解析后的命令分发到实际执行上下文。
+分析 VSET/VSEARCH 时为什么要拆看executor？	executor 负责把解析后的命令分发到实际执行上下文。
+executor 的工程优化优先级怎么判断？	executor 负责把解析后的命令分发到实际执行上下文。
+什么是AOF rewrite？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 的核心作用是什么？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 主要解决什么问题？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 在系统里承担什么职责？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+为什么需要AOF rewrite？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 的典型用途是什么？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 的关键点是什么？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 在性能分析里为什么重要？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 和语义检索有什么关系？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+怎样理解AOF rewrite？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 在 KVLite 场景里有什么意义？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+做向量检索时为什么要关注AOF rewrite？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 对延迟有什么影响？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 对吞吐有什么影响？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 的调优方向通常有哪些？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 和 HNSW/Flat 选择有什么联系？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 会不会成为瓶颈？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 在中文问答检索链路里处于哪一段？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+分析 VSET/VSEARCH 时为什么要拆看AOF rewrite？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 的工程优化优先级怎么判断？	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+什么是RDB 恢复？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 的核心作用是什么？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 主要解决什么问题？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 在系统里承担什么职责？	RDB 恢复通过加载快照快速重建内存数据。
+为什么需要RDB 恢复？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 的典型用途是什么？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 的关键点是什么？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 在性能分析里为什么重要？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 和语义检索有什么关系？	RDB 恢复通过加载快照快速重建内存数据。
+怎样理解RDB 恢复？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 在 KVLite 场景里有什么意义？	RDB 恢复通过加载快照快速重建内存数据。
+做向量检索时为什么要关注RDB 恢复？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 对延迟有什么影响？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 对吞吐有什么影响？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 的调优方向通常有哪些？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 和 HNSW/Flat 选择有什么联系？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 会不会成为瓶颈？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 在中文问答检索链路里处于哪一段？	RDB 恢复通过加载快照快速重建内存数据。
+分析 VSET/VSEARCH 时为什么要拆看RDB 恢复？	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 的工程优化优先级怎么判断？	RDB 恢复通过加载快照快速重建内存数据。
+什么是RESP 协议？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 的核心作用是什么？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 主要解决什么问题？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 在系统里承担什么职责？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+为什么需要RESP 协议？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 的典型用途是什么？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 的关键点是什么？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 在性能分析里为什么重要？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 和语义检索有什么关系？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+怎样理解RESP 协议？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 在 KVLite 场景里有什么意义？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+做向量检索时为什么要关注RESP 协议？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 对延迟有什么影响？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 对吞吐有什么影响？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 的调优方向通常有哪些？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 和 HNSW/Flat 选择有什么联系？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 会不会成为瓶颈？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 在中文问答检索链路里处于哪一段？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+分析 VSET/VSEARCH 时为什么要拆看RESP 协议？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 的工程优化优先级怎么判断？	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+什么是record lookup？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 的核心作用是什么？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 主要解决什么问题？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 在系统里承担什么职责？	record lookup 根据索引返回的 record_id 找到问题与答案。
+为什么需要record lookup？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 的典型用途是什么？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 的关键点是什么？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 在性能分析里为什么重要？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 和语义检索有什么关系？	record lookup 根据索引返回的 record_id 找到问题与答案。
+怎样理解record lookup？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 在 KVLite 场景里有什么意义？	record lookup 根据索引返回的 record_id 找到问题与答案。
+做向量检索时为什么要关注record lookup？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 对延迟有什么影响？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 对吞吐有什么影响？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 的调优方向通常有哪些？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 和 HNSW/Flat 选择有什么联系？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 会不会成为瓶颈？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 在中文问答检索链路里处于哪一段？	record lookup 根据索引返回的 record_id 找到问题与答案。
+分析 VSET/VSEARCH 时为什么要拆看record lookup？	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 的工程优化优先级怎么判断？	record lookup 根据索引返回的 record_id 找到问题与答案。
+什么是topK heap？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 的核心作用是什么？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 主要解决什么问题？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 在系统里承担什么职责？	topK heap 用固定容量堆维护当前最优候选集合。
+为什么需要topK heap？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 的典型用途是什么？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 的关键点是什么？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 在性能分析里为什么重要？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 和语义检索有什么关系？	topK heap 用固定容量堆维护当前最优候选集合。
+怎样理解topK heap？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 在 KVLite 场景里有什么意义？	topK heap 用固定容量堆维护当前最优候选集合。
+做向量检索时为什么要关注topK heap？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 对延迟有什么影响？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 对吞吐有什么影响？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 的调优方向通常有哪些？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 和 HNSW/Flat 选择有什么联系？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 会不会成为瓶颈？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 在中文问答检索链路里处于哪一段？	topK heap 用固定容量堆维护当前最优候选集合。
+分析 VSET/VSEARCH 时为什么要拆看topK heap？	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 的工程优化优先级怎么判断？	topK heap 用固定容量堆维护当前最优候选集合。
+什么是SIMD 距离？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 的核心作用是什么？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 主要解决什么问题？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 在系统里承担什么职责？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+为什么需要SIMD 距离？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 的典型用途是什么？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 的关键点是什么？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 在性能分析里为什么重要？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 和语义检索有什么关系？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+怎样理解SIMD 距离？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 在 KVLite 场景里有什么意义？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+做向量检索时为什么要关注SIMD 距离？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 对延迟有什么影响？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 对吞吐有什么影响？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 的调优方向通常有哪些？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 和 HNSW/Flat 选择有什么联系？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 会不会成为瓶颈？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 在中文问答检索链路里处于哪一段？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+分析 VSET/VSEARCH 时为什么要拆看SIMD 距离？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 的工程优化优先级怎么判断？	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+什么是visited bitmap？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 的核心作用是什么？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 主要解决什么问题？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 在系统里承担什么职责？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+为什么需要visited bitmap？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 的典型用途是什么？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 的关键点是什么？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 在性能分析里为什么重要？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 和语义检索有什么关系？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+怎样理解visited bitmap？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 在 KVLite 场景里有什么意义？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+做向量检索时为什么要关注visited bitmap？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 对延迟有什么影响？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 对吞吐有什么影响？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 的调优方向通常有哪些？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 和 HNSW/Flat 选择有什么联系？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 会不会成为瓶颈？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 在中文问答检索链路里处于哪一段？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+分析 VSET/VSEARCH 时为什么要拆看visited bitmap？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 的工程优化优先级怎么判断？	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+什么是memory layout？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 的核心作用是什么？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 主要解决什么问题？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 在系统里承担什么职责？	连续内存布局通常比离散指针结构更有利于缓存命中。
+为什么需要memory layout？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 的典型用途是什么？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 的关键点是什么？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 在性能分析里为什么重要？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 和语义检索有什么关系？	连续内存布局通常比离散指针结构更有利于缓存命中。
+怎样理解memory layout？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 在 KVLite 场景里有什么意义？	连续内存布局通常比离散指针结构更有利于缓存命中。
+做向量检索时为什么要关注memory layout？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 对延迟有什么影响？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 对吞吐有什么影响？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 的调优方向通常有哪些？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 和 HNSW/Flat 选择有什么联系？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 会不会成为瓶颈？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 在中文问答检索链路里处于哪一段？	连续内存布局通常比离散指针结构更有利于缓存命中。
+分析 VSET/VSEARCH 时为什么要拆看memory layout？	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 的工程优化优先级怎么判断？	连续内存布局通常比离散指针结构更有利于缓存命中。
+什么是vector fast path？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 的核心作用是什么？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 主要解决什么问题？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 在系统里承担什么职责？	vector fast path 目标是减少搜索后回表与响应构造开销。
+为什么需要vector fast path？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 的典型用途是什么？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 的关键点是什么？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 在性能分析里为什么重要？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 和语义检索有什么关系？	vector fast path 目标是减少搜索后回表与响应构造开销。
+怎样理解vector fast path？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 在 KVLite 场景里有什么意义？	vector fast path 目标是减少搜索后回表与响应构造开销。
+做向量检索时为什么要关注vector fast path？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 对延迟有什么影响？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 对吞吐有什么影响？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 的调优方向通常有哪些？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 和 HNSW/Flat 选择有什么联系？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 会不会成为瓶颈？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 在中文问答检索链路里处于哪一段？	vector fast path 目标是减少搜索后回表与响应构造开销。
+分析 VSET/VSEARCH 时为什么要拆看vector fast path？	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 的工程优化优先级怎么判断？	vector fast path 目标是减少搜索后回表与响应构造开销。
+什么是scope filter？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 的核心作用是什么？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 主要解决什么问题？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 在系统里承担什么职责？	scope filter 在命中候选后按业务域过滤结果。
+为什么需要scope filter？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 的典型用途是什么？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 的关键点是什么？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 在性能分析里为什么重要？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 和语义检索有什么关系？	scope filter 在命中候选后按业务域过滤结果。
+怎样理解scope filter？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 在 KVLite 场景里有什么意义？	scope filter 在命中候选后按业务域过滤结果。
+做向量检索时为什么要关注scope filter？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 对延迟有什么影响？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 对吞吐有什么影响？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 的调优方向通常有哪些？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 和 HNSW/Flat 选择有什么联系？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 会不会成为瓶颈？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 在中文问答检索链路里处于哪一段？	scope filter 在命中候选后按业务域过滤结果。
+分析 VSET/VSEARCH 时为什么要拆看scope filter？	scope filter 在命中候选后按业务域过滤结果。
+scope filter 的工程优化优先级怎么判断？	scope filter 在命中候选后按业务域过滤结果。
+什么是近似召回？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 的核心作用是什么？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 主要解决什么问题？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 在系统里承担什么职责？	ANN 检索需要在速度与 recall 之间做权衡。
+为什么需要近似召回？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 的典型用途是什么？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 的关键点是什么？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 在性能分析里为什么重要？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 和语义检索有什么关系？	ANN 检索需要在速度与 recall 之间做权衡。
+怎样理解近似召回？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 在 KVLite 场景里有什么意义？	ANN 检索需要在速度与 recall 之间做权衡。
+做向量检索时为什么要关注近似召回？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 对延迟有什么影响？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 对吞吐有什么影响？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 的调优方向通常有哪些？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 和 HNSW/Flat 选择有什么联系？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 会不会成为瓶颈？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 在中文问答检索链路里处于哪一段？	ANN 检索需要在速度与 recall 之间做权衡。
+分析 VSET/VSEARCH 时为什么要拆看近似召回？	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 的工程优化优先级怎么判断？	ANN 检索需要在速度与 recall 之间做权衡。
+什么是召回率？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 的核心作用是什么？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 主要解决什么问题？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 在系统里承担什么职责？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+为什么需要召回率？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 的典型用途是什么？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 的关键点是什么？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 在性能分析里为什么重要？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 和语义检索有什么关系？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+怎样理解召回率？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 在 KVLite 场景里有什么意义？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+做向量检索时为什么要关注召回率？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 对延迟有什么影响？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 对吞吐有什么影响？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 的调优方向通常有哪些？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 和 HNSW/Flat 选择有什么联系？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 会不会成为瓶颈？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 在中文问答检索链路里处于哪一段？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+分析 VSET/VSEARCH 时为什么要拆看召回率？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 的工程优化优先级怎么判断？	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+什么是量化模型？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 的核心作用是什么？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 主要解决什么问题？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 在系统里承担什么职责？	量化模型可以降低推理成本，但可能带来精度损失。
+为什么需要量化模型？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 的典型用途是什么？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 的关键点是什么？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 在性能分析里为什么重要？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 和语义检索有什么关系？	量化模型可以降低推理成本，但可能带来精度损失。
+怎样理解量化模型？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 在 KVLite 场景里有什么意义？	量化模型可以降低推理成本，但可能带来精度损失。
+做向量检索时为什么要关注量化模型？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 对延迟有什么影响？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 对吞吐有什么影响？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 的调优方向通常有哪些？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 和 HNSW/Flat 选择有什么联系？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 会不会成为瓶颈？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 在中文问答检索链路里处于哪一段？	量化模型可以降低推理成本，但可能带来精度损失。
+分析 VSET/VSEARCH 时为什么要拆看量化模型？	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 的工程优化优先级怎么判断？	量化模型可以降低推理成本，但可能带来精度损失。
+什么是小模型？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 的核心作用是什么？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 主要解决什么问题？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 在系统里承担什么职责？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+为什么需要小模型？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 的典型用途是什么？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 的关键点是什么？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 在性能分析里为什么重要？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 和语义检索有什么关系？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+怎样理解小模型？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 在 KVLite 场景里有什么意义？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+做向量检索时为什么要关注小模型？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 对延迟有什么影响？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 对吞吐有什么影响？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 的调优方向通常有哪些？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 和 HNSW/Flat 选择有什么联系？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 会不会成为瓶颈？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 在中文问答检索链路里处于哪一段？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+分析 VSET/VSEARCH 时为什么要拆看小模型？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 的工程优化优先级怎么判断？	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+什么是多线程 worker？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 的核心作用是什么？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 主要解决什么问题？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 在系统里承担什么职责？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+为什么需要多线程 worker？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 的典型用途是什么？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 的关键点是什么？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 在性能分析里为什么重要？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 和语义检索有什么关系？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+怎样理解多线程 worker？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 在 KVLite 场景里有什么意义？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+做向量检索时为什么要关注多线程 worker？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 对延迟有什么影响？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 对吞吐有什么影响？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 的调优方向通常有哪些？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 和 HNSW/Flat 选择有什么联系？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 会不会成为瓶颈？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 在中文问答检索链路里处于哪一段？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+分析 VSET/VSEARCH 时为什么要拆看多线程 worker？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 的工程优化优先级怎么判断？	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+什么是共享 ORT Env？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 的核心作用是什么？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 主要解决什么问题？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 在系统里承担什么职责？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+为什么需要共享 ORT Env？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 的典型用途是什么？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 的关键点是什么？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 在性能分析里为什么重要？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 和语义检索有什么关系？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+怎样理解共享 ORT Env？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 在 KVLite 场景里有什么意义？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+做向量检索时为什么要关注共享 ORT Env？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 对延迟有什么影响？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 对吞吐有什么影响？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 的调优方向通常有哪些？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 和 HNSW/Flat 选择有什么联系？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 会不会成为瓶颈？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 在中文问答检索链路里处于哪一段？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+分析 VSET/VSEARCH 时为什么要拆看共享 ORT Env？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 的工程优化优先级怎么判断？	共享 ORT Env 可以减少每线程重复创建环境的成本。
+什么是每线程 Session？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 的核心作用是什么？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 主要解决什么问题？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 在系统里承担什么职责？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+为什么需要每线程 Session？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 的典型用途是什么？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 的关键点是什么？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 在性能分析里为什么重要？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 和语义检索有什么关系？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+怎样理解每线程 Session？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 在 KVLite 场景里有什么意义？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+做向量检索时为什么要关注每线程 Session？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 对延迟有什么影响？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 对吞吐有什么影响？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 的调优方向通常有哪些？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 和 HNSW/Flat 选择有什么联系？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 会不会成为瓶颈？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 在中文问答检索链路里处于哪一段？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+分析 VSET/VSEARCH 时为什么要拆看每线程 Session？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 的工程优化优先级怎么判断？	每线程 Session 可以降低全局互斥，但会增加内存占用。
+什么是候选回表？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 的核心作用是什么？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 主要解决什么问题？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 在系统里承担什么职责？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+为什么需要候选回表？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 的典型用途是什么？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 的关键点是什么？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 在性能分析里为什么重要？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 和语义检索有什么关系？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+怎样理解候选回表？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 在 KVLite 场景里有什么意义？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+做向量检索时为什么要关注候选回表？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 对延迟有什么影响？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 对吞吐有什么影响？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 的调优方向通常有哪些？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 和 HNSW/Flat 选择有什么联系？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 会不会成为瓶颈？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 在中文问答检索链路里处于哪一段？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+分析 VSET/VSEARCH 时为什么要拆看候选回表？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 的工程优化优先级怎么判断？	候选回表负责从 record 索引读取问题、答案和作用域信息。
+什么是归并输出？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 的核心作用是什么？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 主要解决什么问题？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 在系统里承担什么职责？	响应构造会把候选结果转成最终的业务返回格式。
+为什么需要归并输出？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 的典型用途是什么？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 的关键点是什么？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 在性能分析里为什么重要？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 和语义检索有什么关系？	响应构造会把候选结果转成最终的业务返回格式。
+怎样理解归并输出？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 在 KVLite 场景里有什么意义？	响应构造会把候选结果转成最终的业务返回格式。
+做向量检索时为什么要关注归并输出？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 对延迟有什么影响？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 对吞吐有什么影响？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 的调优方向通常有哪些？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 和 HNSW/Flat 选择有什么联系？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 会不会成为瓶颈？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 在中文问答检索链路里处于哪一段？	响应构造会把候选结果转成最终的业务返回格式。
+分析 VSET/VSEARCH 时为什么要拆看归并输出？	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 的工程优化优先级怎么判断？	响应构造会把候选结果转成最终的业务返回格式。
+什么是KVLite Flat？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 的核心作用是什么？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 主要解决什么问题？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 在系统里承担什么职责？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+为什么需要KVLite Flat？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 的典型用途是什么？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 的关键点是什么？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 在性能分析里为什么重要？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 和语义检索有什么关系？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+怎样理解KVLite Flat？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 在 KVLite 场景里有什么意义？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+做向量检索时为什么要关注KVLite Flat？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 对延迟有什么影响？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 对吞吐有什么影响？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 的调优方向通常有哪些？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 和 HNSW/Flat 选择有什么联系？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 会不会成为瓶颈？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 在中文问答检索链路里处于哪一段？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+分析 VSET/VSEARCH 时为什么要拆看KVLite Flat？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 的工程优化优先级怎么判断？	KVLite Flat 适合小规模数据下的精确向量检索基线。
+什么是KVLite HNSW？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 的核心作用是什么？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 主要解决什么问题？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 在系统里承担什么职责？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+为什么需要KVLite HNSW？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 的典型用途是什么？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 的关键点是什么？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 在性能分析里为什么重要？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 和语义检索有什么关系？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+怎样理解KVLite HNSW？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 在 KVLite 场景里有什么意义？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+做向量检索时为什么要关注KVLite HNSW？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 对延迟有什么影响？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 对吞吐有什么影响？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 的调优方向通常有哪些？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 和 HNSW/Flat 选择有什么联系？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 会不会成为瓶颈？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 在中文问答检索链路里处于哪一段？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+分析 VSET/VSEARCH 时为什么要拆看KVLite HNSW？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 的工程优化优先级怎么判断？	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+什么是数据规模阈值？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 的核心作用是什么？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 主要解决什么问题？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 在系统里承担什么职责？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+为什么需要数据规模阈值？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 的典型用途是什么？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 的关键点是什么？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 在性能分析里为什么重要？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 和语义检索有什么关系？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+怎样理解数据规模阈值？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 在 KVLite 场景里有什么意义？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+做向量检索时为什么要关注数据规模阈值？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 对延迟有什么影响？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 对吞吐有什么影响？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 的调优方向通常有哪些？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 和 HNSW/Flat 选择有什么联系？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 会不会成为瓶颈？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 在中文问答检索链路里处于哪一段？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+分析 VSET/VSEARCH 时为什么要拆看数据规模阈值？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 的工程优化优先级怎么判断？	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。

@@ -5,6 +5,8 @@
 #include "kvstore.h"
 #include "kvs_shutdown.h"
 #include "kvs_vector_distance.h"
+#include "kvs_embedding_worker_pool.h"
+#include "kvs_command_executor.h"
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
@@ -1727,7 +1729,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
 
     {
-        int array_count = 25;  /* 18 base + 7 stage 8 universal */
+        int array_count = 40;  /* 25 base + 10 stage 2B wp + 5 stage 3 faiss */
         if (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
             array_count += 7;
         }
@@ -1963,25 +1965,135 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
+    /* Stage 2B: worker pool + executor prepared stats */
+    n = snprintf(item, sizeof(item), "embedding_worker_pool_enabled:%d", info->embedding_worker_pool_enabled);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "embedding_worker_threads:%d", info->embedding_worker_threads);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "embedding_worker_submitted:%llu", (unsigned long long)info->embedding_worker_submitted);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "embedding_worker_completed:%llu", (unsigned long long)info->embedding_worker_completed);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "embedding_worker_failed:%llu", (unsigned long long)info->embedding_worker_failed);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "embedding_worker_queue_depth:%llu", (unsigned long long)info->embedding_worker_queue_depth);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "embedding_worker_max_queue_depth:%llu", (unsigned long long)info->embedding_worker_max_queue_depth);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "executor_prepare_task_submitted:%llu", (unsigned long long)info->executor_prepare_task_submitted);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "executor_prepared_task_executed:%llu", (unsigned long long)info->executor_prepared_task_executed);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "executor_prepared_task_failed:%llu", (unsigned long long)info->executor_prepared_task_failed);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vector_backend:%s",
+        info->index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
+        (info->index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
+         (info->index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "native_hnsw" :
+          (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "native_sq8_flat" : "native_flat"))));
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "faiss_backend_enabled:%d", info->faiss_backend_enabled);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "faiss_ntotal:%zu", info->faiss_ntotal);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "faiss_add_count:%llu", (unsigned long long)info->faiss_add_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "faiss_search_count:%llu", (unsigned long long)info->faiss_search_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
     return off;
 }
 
 int handle_vset_command(command_context_t *ctx, char *response) {
     int status;
+    kvs_vector_set_prepared_t prepared;
 
     if (!ctx || !ctx->query_text || !ctx->value) {
         return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
     }
 
-    status = kvs_vector_set(
+    kvs_vector_set_prepared_reset(&prepared);
+
+    status = kvs_vector_set_prepare(
         ctx->query_text,
         ctx->query_text_len,
         ctx->value,
         strlen(ctx->value),
         ctx->scope,
-        ctx->scope_len
+        ctx->scope_len,
+        &prepared
     );
+    if (status != KVS_VECTOR_OK) {
+        /* prepare cleans up internally on failure */
+        return handle_vector_status_response(status, response);
+    }
 
+    status = kvs_vector_set_commit_prepared(&prepared);
+    /*
+     * commit_prepared always consumes the prepared object:
+     *   - on success: take_prepared_fields transfers ownership
+     *   - on failure: commit_prepared destroys prepared internally
+     * Caller must NOT call kvs_vector_set_prepared_destroy after commit.
+     */
     return handle_vector_status_response(status, response);
 }
 
@@ -2024,8 +2136,17 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 	size_t results_capacity;
 	int off = 0;
 	int n;
+	kvs_vector_search_prepared_t prepared;
+	kvs_vector_search_result_t *results = NULL;
+	size_t results_count = 0;
+	size_t i;
+	float threshold;
 
 	if (!ctx) {
+		return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
+	}
+
+	if (!ctx->query_text) {
 		return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
 	}
 
@@ -2043,120 +2164,133 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 	/* VSEARCH BATCH removed */
 
 	/*
-	 * 旧单条 VSEARCH 路径保持原返回格式不变。
+	 * Stage 2A: synchronous two-stage search path.
+	 * Prepare generates the query embedding (may hit embedding cache).
+	 * search_with_prepared runs ANN search against the current index.
+	 * Response format is unchanged from the original single-invocation path.
 	 */
-	{
-		size_t results_count = 0;
-		size_t i;
-		kvs_vector_search_result_t *results = NULL;
 
-		if (!ctx->query_text) {
-			return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
-		}
+	kvs_vector_search_prepared_reset(&prepared);
 
-		results = (kvs_vector_search_result_t *)kvs_malloc(
-			results_capacity * sizeof(kvs_vector_search_result_t)
-		);
-		if (!results) {
-			return handle_vector_status_response(KVS_VECTOR_ERR, response);
-		}
-
-		kvs_vector_search_results_reset(results, results_capacity);
-
-		status = kvs_vector_search(
-			ctx->query_text,
-			ctx->query_text_len,
-			ctx->scope,
-			ctx->scope_len,
-			topk,
-			ctx->has_threshold ? ctx->threshold : g_cfg.vector_score_threshold,
-			results,
-			results_capacity,
-			&results_count
-		);
-
-		if (status != KVS_VECTOR_OK) {
-			kvs_free(results);
-			if (status == KVS_VECTOR_ERR_NOT_INITIALIZED) {
-				kvs_vector_info_t info;
-				if (kvs_vector_info(&info) == KVS_VECTOR_OK && info.index_type == 2) {
-					return handle_vector_status_response(status, response);
-				}
-			}
-			return handle_vector_status_response(status, response);
-		}
-
-					off += resp_generate_array_start(response + off, (int)results_count);
-
-			for (i = 0; i < results_count; ++i) {
-				char *item = NULL;
-				int item_cap;
-
-				item_cap = snprintf(
-					NULL, 0,
-					"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
-					results[i].score,
-					(int)results[i].scope_len,
-					results[i].scope ? results[i].scope : "",
-					(int)results[i].question_len,
-					results[i].question ? results[i].question : "",
-					(int)results[i].answer_len,
-					results[i].answer ? results[i].answer : ""
-				);
-
-				if (item_cap < 0) {
-					kvs_free(results);
-					return resp_generate_simple_string_n(
-						response,
-						'-',
-						"ERR response too large",
-						sizeof("ERR response too large") - 1
-					);
-				}
-
-				item_cap += 1; /* NUL terminator */
-				item = (char *)kvs_malloc((size_t)item_cap);
-				if (!item) {
-					kvs_free(results);
-					return resp_generate_simple_string_n(
-						response,
-						'-',
-						"ERR out of memory",
-						sizeof("ERR out of memory") - 1
-					);
-				}
-
-				n = snprintf(
-					item, (size_t)item_cap,
-					"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
-					results[i].score,
-					(int)results[i].scope_len,
-					results[i].scope ? results[i].scope : "",
-					(int)results[i].question_len,
-					results[i].question ? results[i].question : "",
-					(int)results[i].answer_len,
-					results[i].answer ? results[i].answer : ""
-				);
-
-				if (n < 0 || n >= item_cap) {
-					kvs_free(item);
-					kvs_free(results);
-					return resp_generate_simple_string_n(
-						response,
-						'-',
-						"ERR response too large",
-						sizeof("ERR response too large") - 1
-					);
-				}
-
-				off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
-				kvs_free(item);
-			}
-
-
-		kvs_free(results);
-		return off;
+	status = kvs_vector_search_prepare(
+		ctx->query_text,
+		ctx->query_text_len,
+		ctx->scope,
+		ctx->scope_len,
+		&prepared
+	);
+	if (status != KVS_VECTOR_OK) {
+		/* prepare cleans up internally on failure */
+		return handle_vector_status_response(status, response);
 	}
+
+	results = (kvs_vector_search_result_t *)kvs_malloc(
+		results_capacity * sizeof(kvs_vector_search_result_t)
+	);
+	if (!results) {
+		kvs_vector_search_prepared_destroy(&prepared);
+		return handle_vector_status_response(KVS_VECTOR_ERR, response);
+	}
+
+	kvs_vector_search_results_reset(results, results_capacity);
+
+	threshold = ctx->has_threshold ? ctx->threshold : g_cfg.vector_score_threshold;
+
+	status = kvs_vector_search_with_prepared(
+		&prepared,
+		topk,
+		threshold,
+		results,
+		results_capacity,
+		&results_count
+	);
+
+	/*
+	 * search_with_prepared takes a const pointer — it does NOT consume
+	 * the prepared object.  Caller must destroy prepared after search.
+	 */
+	kvs_vector_search_prepared_destroy(&prepared);
+
+	if (status != KVS_VECTOR_OK) {
+		kvs_free(results);
+		if (status == KVS_VECTOR_ERR_NOT_INITIALIZED) {
+			kvs_vector_info_t info;
+			if (kvs_vector_info(&info) == KVS_VECTOR_OK && info.index_type == 2) {
+				return handle_vector_status_response(status, response);
+			}
+		}
+		return handle_vector_status_response(status, response);
+	}
+
+	off += resp_generate_array_start(response + off, (int)results_count);
+
+	for (i = 0; i < results_count; ++i) {
+		char *item = NULL;
+		int item_cap;
+
+		item_cap = snprintf(
+			NULL, 0,
+			"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+			results[i].score,
+			(int)results[i].scope_len,
+			results[i].scope ? results[i].scope : "",
+			(int)results[i].question_len,
+			results[i].question ? results[i].question : "",
+			(int)results[i].answer_len,
+			results[i].answer ? results[i].answer : ""
+		);
+
+		if (item_cap < 0) {
+			kvs_free(results);
+			return resp_generate_simple_string_n(
+				response,
+				'-',
+				"ERR response too large",
+				sizeof("ERR response too large") - 1
+			);
+		}
+
+		item_cap += 1; /* NUL terminator */
+		item = (char *)kvs_malloc((size_t)item_cap);
+		if (!item) {
+			kvs_free(results);
+			return resp_generate_simple_string_n(
+				response,
+				'-',
+				"ERR out of memory",
+				sizeof("ERR out of memory") - 1
+			);
+		}
+
+		n = snprintf(
+			item, (size_t)item_cap,
+			"score:%.6f|scope:%.*s|question:%.*s|answer:%.*s",
+			results[i].score,
+			(int)results[i].scope_len,
+			results[i].scope ? results[i].scope : "",
+			(int)results[i].question_len,
+			results[i].question ? results[i].question : "",
+			(int)results[i].answer_len,
+			results[i].answer ? results[i].answer : ""
+		);
+
+		if (n < 0 || n >= item_cap) {
+			kvs_free(item);
+			kvs_free(results);
+			return resp_generate_simple_string_n(
+				response,
+				'-',
+				"ERR response too large",
+				sizeof("ERR response too large") - 1
+			);
+		}
+
+		off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+		kvs_free(item);
+	}
+
+	kvs_free(results);
+	return off;
 }
 
 int handle_vdel_command(command_context_t *ctx, char *response) {
@@ -2194,15 +2328,33 @@ int handle_vindex_command(command_context_t *ctx, char *response) {
 int handle_vinfo_command(command_context_t *ctx, char *response) {
     int status;
     kvs_vector_info_t info;
+    kvs_embedding_worker_pool_stats_t wp_stats;
+    kvs_command_executor_stats_t exec_stats;
 
     (void)ctx;
 
     memset(&info, 0, sizeof(info));
+    memset(&wp_stats, 0, sizeof(wp_stats));
+    memset(&exec_stats, 0, sizeof(exec_stats));
 
     status = kvs_vector_info(&info);
     if (status != KVS_VECTOR_OK) {
         return handle_vector_status_response(status, response);
     }
+
+    kvs_embedding_worker_pool_get_stats(&wp_stats);
+    kvs_command_executor_get_stats(&exec_stats);
+
+    info.embedding_worker_pool_enabled = (int)wp_stats.enabled;
+    info.embedding_worker_threads  = (int)wp_stats.worker_threads;
+    info.embedding_worker_submitted   = wp_stats.submitted_prepare_tasks;
+    info.embedding_worker_completed   = wp_stats.completed_prepare_tasks;
+    info.embedding_worker_failed      = wp_stats.failed_prepare_tasks;
+    info.embedding_worker_queue_depth      = wp_stats.prepare_queue_depth;
+    info.embedding_worker_max_queue_depth  = wp_stats.prepare_queue_max_depth;
+    info.executor_prepare_task_submitted   = exec_stats.prepare_task_submitted;
+    info.executor_prepared_task_executed   = exec_stats.prepared_task_executed;
+    info.executor_prepared_task_failed     = exec_stats.prepared_task_failed;
 
     return handle_vector_info_response(&info, response);
 }

@@ -65,6 +65,10 @@ ONNXRUNTIME_LIBDIR := $(ONNXRUNTIME_ROOT)/lib
 ONNX_MODEL_DIR ?= models/bge-small-zh-v1.5
 ONNX_MODEL_PATH ?= $(ONNX_MODEL_DIR)/model.onnx
 ONNX_EMBEDDING_DIM ?= 512
+ENABLE_FAISS ?= 0
+FAISS_ROOT ?= third_party/faiss
+FAISS_INCLUDEDIR := $(FAISS_ROOT)
+FAISS_LIB := $(FAISS_ROOT)/build/faiss/libfaiss.a
 
 ifeq ($(ENABLE_ONNX_EMBEDDING),1)
   EMBED_RUNTIME_SRC := $(SRC_EMBED)/embedding_runtime_onnx.c
@@ -114,6 +118,7 @@ BASE_SRCS = \
 	$(SRC_CORE)/kvs_replication_fallback.c \
 	$(SRC_CORE)/kvs_owner_lock.c \
 	$(SRC_CORE)/kvs_embedding_worker_pool.c \
+	$(SRC_CORE)/kvs_vcmd_profile.c \
 	$(SRC_CORE)/kvs_ttl_background.c \
 	$(SRC_STORAGE)/kvs_array.c   $(SRC_STORAGE)/kvs_rbtree.c     \
 	$(SRC_STORAGE)/kvs_hash.c    $(SRC_STORAGE)/kvs_skiptable.c  \
@@ -147,9 +152,23 @@ CXXFLAGS      = -I ./include -I ./src -g -std=c++17
 CFLAGS        = -I ./third_party/NtyCo/core/ -I ./include -I ./src \
                 -I $(JEMALLOC_INCLUDE) \
                 -DSYNC_MODE=$(SYNC_MODE) \
-                -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS)
+                -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS) $(FAISS_CFLAGS)
 LDFLAGS       = -L ./third_party/NtyCo/ -lntyco -lpthread -luring -ldl -lm \
-                $(EXTRA_LIBS) $(JEMALLOC_LIB) $(ONNX_LDFLAGS)
+                $(EXTRA_LIBS) $(JEMALLOC_LIB) $(ONNX_LDFLAGS) $(FAISS_LDFLAGS)
+ifeq ($(ENABLE_FAISS),1)
+  FAISS_CFLAGS := -DENABLE_FAISS_BASELINE -I$(FAISS_INCLUDEDIR)
+  FAISS_CXXFLAGS = $(CXXFLAGS) -I$(FAISS_INCLUDEDIR)
+  FAISS_LDFLAGS = $(FAISS_LIB) -fopenmp -lblas -llapack
+  SRC_VECTOR_FAISS := $(SRC_VECTOR)/kvs_vector_faiss_ops.c $(SRC_VECTOR)/kvs_vector_faiss_backend.cpp
+  OBJ_VECTOR_FAISS := $(SRC_VECTOR_FAISS:.c=.o)
+  OBJ_VECTOR_FAISS := $(OBJ_VECTOR_FAISS:.cpp=.o)
+else
+  FAISS_CFLAGS :=
+  FAISS_LDFLAGS :=
+  SRC_VECTOR_FAISS :=
+  OBJ_VECTOR_FAISS :=
+endif
+KVSTORE_TEST_LDFLAGS = -L$(BUILD_LIB) -lkvstore $(LDFLAGS)
 
 # ── eBPF 配置 ────────────────────────────────────────────────────────────
 ENABLE_EBPF ?= 1
@@ -193,6 +212,10 @@ TEST_SKIPTABLE_TARGETED := $(BUILD_TESTS_BIN)/skiptable_targeted_bench
 TEST_VECTOR_IMPORT_BENCH := $(BUILD_TESTS_BIN)/vector_import_bench
 TEST_VECTOR_BENCHMARK   := $(BUILD_TESTS_BIN)/vector_benchmark
 TEST_BINARY_KEY         := $(BUILD_TESTS_BIN)/test_binary_key
+TEST_VCMD_PROFILE_BENCH := $(BUILD_TESTS_BIN)/vcmd_profile_bench
+TEST_FAISS_BASELINE     := $(BUILD_TESTS_BIN)/faiss_baseline
+TEST_VCMD_ONNX_FAISS_BENCH := $(BUILD_TESTS_BIN)/vcmd_onnx_faiss_bench
+TEST_VCMD_EMBEDDING_CACHE_BENCH := $(BUILD_TESTS_BIN)/vcmd_embedding_cache_bench
 
 TEST_BINARIES = \
 	$(TEST_CASE) $(TEST_WRITE_QPS) $(TEST_TTL_QPS) \
@@ -201,7 +224,11 @@ TEST_BINARIES = \
 	$(TEST_BIGVALUE) $(TEST_AI_CHAT_SCHEMA) $(TEST_VECTOR) \
 	$(TEST_VECTOR_IMPORT_BENCH) $(TEST_VECTOR_BENCHMARK) \
 	$(TEST_TTL_LOOKUP_SPLIT) $(TEST_SKIPTABLE_TARGETED) \
-	$(TEST_BINARY_KEY)
+	$(TEST_BINARY_KEY) $(TEST_VCMD_PROFILE_BENCH)
+
+ifeq ($(ENABLE_FAISS),1)
+TEST_BINARIES += $(TEST_FAISS_BASELINE) $(TEST_VCMD_ONNX_FAISS_BENCH) $(TEST_VCMD_EMBEDDING_CACHE_BENCH)
+endif
 
 TARGET := kvstore
 
@@ -217,6 +244,7 @@ TARGET := kvstore
 .PHONY: all setup deps bootstrap doctor clean distclean
 .PHONY: main ebpf tests test check test-embedding help
 .PHONY: embedding setup-embedding setup-onnx check-embedding-assets
+.PHONY: vcmd_profile_bench faiss_baseline vcmd_onnx_faiss_bench vcmd_embedding_cache_bench
 
 # 默认：完整构建
 all: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_TARGETS)
@@ -234,6 +262,15 @@ main: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET)
 
 # 仅测试
 tests: $(NTYCO_LIB) $(TEST_BINARIES)
+
+# 快捷目标：分析用 benchmark
+vcmd_profile_bench: $(TEST_VCMD_PROFILE_BENCH)
+
+faiss_baseline: $(TEST_FAISS_BASELINE)
+
+vcmd_onnx_faiss_bench: $(TEST_VCMD_ONNX_FAISS_BENCH)
+
+vcmd_embedding_cache_bench: $(TEST_VCMD_EMBEDDING_CACHE_BENCH)
 
 test: tests
 	@echo ""
@@ -381,6 +418,8 @@ $(NTYCO_LIB): $(NTYCO_OBJS)
 # build/lib/libkvstore.a is an internal static library used by tests and benchmarks.
 # It excludes the kvstore main object and is not a stable public SDK artifact.
 LIBKVSTORE_OBJS := $(filter-out $(SRC_CORE)/kvstore.o, $(OBJS))
+# Faiss object is only linked into kvstore binary, not into the library,
+# to avoid forcing C++ linkage on all C test binaries.
 LIBKVSTORE      := $(BUILD_LIB)/libkvstore.a
 
 $(LIBKVSTORE): $(LIBKVSTORE_OBJS)
@@ -391,8 +430,11 @@ $(LIBKVSTORE): $(LIBKVSTORE_OBJS)
 # ║                       主二进制 kvstore                                ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-$(TARGET): $(OBJS) $(NTYCO_LIB)
-	$(CC) -o $@ $(OBJS) $(LDFLAGS) -lpthread
+$(TARGET): $(OBJS) $(NTYCO_LIB) $(OBJ_VECTOR_FAISS)
+	$(if $(OBJ_VECTOR_FAISS),$(CXX),$(CC)) -o $@ $(OBJS) $(OBJ_VECTOR_FAISS) $(LDFLAGS) -lpthread
+
+$(SRC_VECTOR)/kvs_vector_faiss_backend.o: $(SRC_VECTOR)/kvs_vector_faiss_backend.cpp
+	$(CXX) -c $(FAISS_CXXFLAGS) -o $@ $<
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                       测试二进制                                      ║
@@ -442,19 +484,31 @@ $(TEST_VECTOR_BENCHMARK): $(TEST_DIR)/vector_benchmark.c | $(BUILD_TESTS_BIN)
 # ── 内核链接测试 (通过 libkvstore.a，不直接链接 src/*.o) ────────────────
 
 $(TEST_TTL_LOOKUP_SPLIT): $(TEST_DIR)/ttl_lookup_split_bench.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
-	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_LIB) -lkvstore -lpthread -ldl
+	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS)
 
 $(TEST_SKIPTABLE_TARGETED): $(TEST_DIR)/skiptable_targeted_bench.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
-	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_LIB) -lkvstore -lpthread -ldl
+	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS)
 
 $(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
-	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_LIB) -lkvstore -lpthread $(JEMALLOC_LIB) -ldl
+	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS)
 
 $(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
-	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_LIB) -lkvstore -lpthread -ldl
+	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS)
 
 $(TEST_BINARY_KEY): $(TEST_DIR)/test_binary_key.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
+
+$(TEST_VCMD_PROFILE_BENCH): $(TEST_DIR)/vcmd_profile_bench.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS) -ldl
+
+$(TEST_FAISS_BASELINE): $(TEST_DIR)/faiss_baseline.cpp | $(BUILD_TESTS_BIN)
+	$(CXX) $(FAISS_CXXFLAGS) -O3 -o $@ $< $(FAISS_LDFLAGS) -lpthread -lm
+
+$(TEST_VCMD_ONNX_FAISS_BENCH): $(TEST_DIR)/vcmd_onnx_faiss_bench.cpp $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+	$(CXX) $(FAISS_CXXFLAGS) -O2 -o $@ $< -L$(BUILD_LIB) -lkvstore $(FAISS_LDFLAGS) $(LDFLAGS) -ldl -lpthread -lm
+
+$(TEST_VCMD_EMBEDDING_CACHE_BENCH): $(TEST_DIR)/vcmd_onnx_faiss_bench.cpp $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+	$(CXX) $(FAISS_CXXFLAGS) -O2 -o $@ $< -L$(BUILD_LIB) -lkvstore $(FAISS_LDFLAGS) $(LDFLAGS) -ldl -lpthread -lm
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                     eBPF 构建 (ENABLE_EBPF=1)                         ║

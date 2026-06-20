@@ -3,8 +3,19 @@
 #include "kvs_vector_distance.h"
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 
 #define KVS_VECTOR_HNSW_SCOPE_EF_MAX 2048
+
+static uint64_t kvs_vector_index_now_us(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return 0;
+	}
+
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
 
 /*
  * 计算不小于 value 的 2 的幂。
@@ -317,6 +328,10 @@ size_t kvs_vector_next_pow2(size_t value) {
 	record->created_at_ms = now_ms;
 	record->updated_at_ms = now_ms;
 
+	record->expire_at_ms = KV_TTL_NO_EXPIRE;
+	record->generation = g_vector_state.generation;
+	record->embedding_model_version = kvs_vector_embedding_current_model_version();
+
 	return KVS_VECTOR_OK;
 }
 
@@ -422,6 +437,10 @@ int kvs_vector_record_set_fields_with_embedding(
 
 	record->created_at_ms = now_ms;
 	record->updated_at_ms = now_ms;
+
+	record->expire_at_ms = KV_TTL_NO_EXPIRE;
+	record->generation = g_vector_state.generation;
+	record->embedding_model_version = kvs_vector_embedding_current_model_version();
 
 	return KVS_VECTOR_OK;
 }
@@ -1708,6 +1727,9 @@ static int kvs_vector_id_map_lookup_slot(
     float effective_threshold;
     int ret;
     int heap_initialized = 0;
+    uint64_t core_start_us = 0;
+    uint64_t export_start_us = 0;
+    uint64_t end_us = 0;
 
     memset(&heap, 0, sizeof(heap));
 
@@ -1762,6 +1784,7 @@ static int kvs_vector_id_map_lookup_slot(
         return ret;
     }
     heap_initialized = 1;
+    core_start_us = kvs_vector_index_now_us();
 
     for (i = 0; i < index->size; ++i) {
         size_t record_index = index->record_indices[i];
@@ -1809,6 +1832,12 @@ static int kvs_vector_id_map_lookup_slot(
         }
     }
 
+    end_us = kvs_vector_index_now_us();
+    if (end_us >= core_start_us) {
+        kvs_vector_flat_record_search_core(end_us - core_start_us);
+    }
+
+    export_start_us = kvs_vector_index_now_us();
     ret = kvs_vector_topk_heap_export_desc(
         &heap,
         results,
@@ -1816,6 +1845,10 @@ static int kvs_vector_id_map_lookup_slot(
         results_count,
         &g_vector_state.store
     );
+    end_us = kvs_vector_index_now_us();
+    if (end_us >= export_start_us) {
+        kvs_vector_flat_record_search_export(end_us - export_start_us);
+    }
 
     if (heap_initialized) {
         kvs_vector_topk_heap_destroy(&heap);
@@ -2462,12 +2495,11 @@ static int kvs_vector_ann_node_init_layers(
 	memset(node->neighbor_capacities, 0, (size_t)(level + 1) * sizeof(size_t));
 
 	for (l = 0; l <= level; ++l) {
-		size_t capacity = m;
-
 		/*
-		 * HNSW 常见做法是第 0 层连接数更大。
-		 * 这里为了保持实现简单，先所有层使用同一个 M。
+		 * HNSW standard: level 0 uses 2*M neighbours for better recall.
 		 */
+		size_t capacity = (l == 0) ? m * 2 : m;
+
 		node->neighbors[l] = (size_t *)kvs_malloc(capacity * sizeof(size_t));
 		if (!node->neighbors[l]) {
 			kvs_vector_ann_node_destroy(node);
@@ -3319,6 +3351,9 @@ int kvs_vector_ann_index_search(
 	float effective_threshold;
 	int level;
 	int ret;
+	uint64_t core_start_us = 0;
+	uint64_t export_start_us = 0;
+	uint64_t end_us = 0;
 
 	(void)metric;
 
@@ -3368,6 +3403,7 @@ int kvs_vector_ann_index_search(
 		scope,
 		scope_len
 	);
+	core_start_us = kvs_vector_index_now_us();
 
 	current = index->entry_node;
 
@@ -3440,6 +3476,12 @@ int kvs_vector_ann_index_search(
 		}
 	}
 
+	end_us = kvs_vector_index_now_us();
+	if (end_us >= core_start_us) {
+		kvs_vector_hnsw_record_search_core(end_us - core_start_us);
+	}
+
+	export_start_us = kvs_vector_index_now_us();
 	ret = kvs_vector_topk_heap_export_desc(
 		&heap,
 		results,
@@ -3447,6 +3489,10 @@ int kvs_vector_ann_index_search(
 		results_count,
 		&g_vector_state.store
 	);
+	end_us = kvs_vector_index_now_us();
+	if (end_us >= export_start_us) {
+		kvs_vector_hnsw_record_search_export(end_us - export_start_us);
+	}
 
 	kvs_vector_topk_heap_destroy(&heap);
 	kvs_free(candidates);
@@ -3957,4 +4003,3 @@ int kvs_vector_sq8_flat_index_info(
 
     return KVS_VECTOR_OK;
 }
-

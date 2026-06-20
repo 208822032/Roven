@@ -34,6 +34,8 @@ typedef enum kvs_vector_index_type_e {
 	KVS_VECTOR_INDEX_TYPE_FLAT = 0,
 	KVS_VECTOR_INDEX_TYPE_HNSW = 1,
 	KVS_VECTOR_INDEX_TYPE_SQ8_FLAT = 3,
+	KVS_VECTOR_INDEX_FAISS_HNSW = 4,
+	KVS_VECTOR_INDEX_FAISS_FLAT = 5,
 } kvs_vector_index_type_t;
 
 /*
@@ -123,6 +125,24 @@ typedef struct kvs_vector_info_s {
 	size_t vector_memory_bytes;
 	size_t index_memory_bytes;
 	size_t total_vector_memory_bytes;
+
+	/* Stage 2B: worker pool + executor prepared stats */
+	int embedding_worker_pool_enabled;
+	int embedding_worker_threads;
+	uint64_t embedding_worker_submitted;
+	uint64_t embedding_worker_completed;
+	uint64_t embedding_worker_failed;
+	uint64_t embedding_worker_queue_depth;
+	uint64_t embedding_worker_max_queue_depth;
+	uint64_t executor_prepare_task_submitted;
+	uint64_t executor_prepared_task_executed;
+	uint64_t executor_prepared_task_failed;
+
+	/* faiss backend stats */
+	int faiss_backend_enabled;
+	size_t faiss_ntotal;
+	uint64_t faiss_add_count;
+	uint64_t faiss_search_count;
 } kvs_vector_info_t;
 
 /********** 向量模块公开接口 **********/
@@ -244,6 +264,18 @@ typedef struct kvs_vector_vset_commit_stats_s {
 	uint64_t vsearch_search_count;
 	uint64_t vsearch_search_total_us;
 	uint64_t vsearch_search_max_us;
+	uint64_t flat_search_core_count;
+	uint64_t flat_search_core_total_us;
+	uint64_t flat_search_core_max_us;
+	uint64_t flat_search_export_count;
+	uint64_t flat_search_export_total_us;
+	uint64_t flat_search_export_max_us;
+	uint64_t hnsw_search_core_count;
+	uint64_t hnsw_search_core_total_us;
+	uint64_t hnsw_search_core_max_us;
+	uint64_t hnsw_search_export_count;
+	uint64_t hnsw_search_export_total_us;
+	uint64_t hnsw_search_export_max_us;
 } kvs_vector_vset_commit_stats_t;
 
 void kvs_vector_vset_commit_stats_get(kvs_vector_vset_commit_stats_t *out);
@@ -255,6 +287,10 @@ void kvs_vector_vset_record_dirty_mark(uint64_t elapsed_us);
 void kvs_vector_vset_record_response_build(uint64_t elapsed_us);
 void kvs_vector_vset_record_response_push(uint64_t elapsed_us);
 void kvs_vector_vsearch_record_search(uint64_t elapsed_us);
+void kvs_vector_flat_record_search_core(uint64_t elapsed_us);
+void kvs_vector_flat_record_search_export(uint64_t elapsed_us);
+void kvs_vector_hnsw_record_search_core(uint64_t elapsed_us);
+void kvs_vector_hnsw_record_search_export(uint64_t elapsed_us);
 
 void kvs_vector_search_prepared_reset(kvs_vector_search_prepared_t *prepared);
 
@@ -359,6 +395,16 @@ typedef struct kvs_vector_embedding_runtime_stats_s {
 	uint64_t tokenizer_max_us;
 	uint64_t ort_run_total_us;
 	uint64_t ort_run_max_us;
+	uint64_t embedding_cache_enabled;
+	uint64_t embedding_cache_lookup_count;
+	uint64_t embedding_cache_hit_count;
+	uint64_t embedding_cache_miss_count;
+	uint64_t embedding_cache_lookup_total_us;
+	uint64_t embedding_cache_insert_count;
+	uint64_t embedding_cache_insert_total_us;
+	uint64_t embedding_cache_evict_count;
+	uint64_t embedding_cache_memory_bytes;
+	uint64_t embedding_cache_saved_onnx_us;
 	uint64_t embedding_runtime_resource_product;
 	uint64_t embedding_worker_threads_effective;
 	uint64_t embedding_num_threads_effective;
@@ -415,6 +461,7 @@ typedef struct kvs_vector_embedding_provider_s {
 	kvs_vector_embedding_provider_type_t type;
 	const char *name;
 	size_t dimension;
+	uint32_t model_id;
 	EmbeddingHandle *runtime_handle;
 	int initialized;
 } kvs_vector_embedding_provider_t;
@@ -453,6 +500,10 @@ typedef struct kvs_vector_record_s {
 
 	int64_t created_at_ms;
 	int64_t updated_at_ms;
+
+	int64_t expire_at_ms;
+	uint64_t generation;
+	uint32_t embedding_model_version;
 } kvs_vector_record_t;
 
 typedef struct kvs_vector_store_s {
@@ -661,9 +712,15 @@ typedef struct kvs_vector_state_s {
 
 	kvs_vector_index_t current_index;
 
+#ifdef ENABLE_FAISS_BASELINE
+	void *faiss_backend_handle;
+#endif
+
 	int last_rebuild_status;
 	int64_t last_rebuild_ms;
 	int64_t last_rebuild_at_ms;
+
+	uint64_t generation;
 
 	kvs_vector_embedding_provider_t embedding_provider;
 } kvs_vector_state_t;
@@ -686,6 +743,8 @@ int kvs_vector_embedding_generate(
 	float **out_embedding,
 	int *out_dim
 );
+
+uint32_t kvs_vector_embedding_current_model_version(void);
 
 /********** index / store layer **********/
 
@@ -1082,7 +1141,10 @@ int kvs_vector_restore_record_with_embedding(
 	const float *embedding,
 	int embedding_dim,
 	int64_t created_at_ms,
-	int64_t updated_at_ms
+	int64_t updated_at_ms,
+	int64_t expire_at_ms,
+	uint64_t generation,
+	uint32_t embedding_model_version
 );
 
 int kvs_vector_reset_for_load(void);

@@ -504,6 +504,7 @@ static int kvs_command_task_execute_handler(kvs_command_task_t *task) {
 
 	if (strcmp(task->cmd->name, "VSET") == 0) {
 		int status = kvs_vector_set_commit_prepared(&task->prepared_set);
+		task->prepared_kind = KVS_COMMAND_TASK_PREPARED_NONE;
 		task->command_committed = (status == KVS_VECTOR_OK);
 		ret = kvs_vector_status_to_resp(status, task->response);
 	} else if (strcmp(task->cmd->name, "VSEARCH") == 0) {

@@ -80,6 +80,9 @@ typedef struct kvs_rdb_snapshot_vector_record_s {
 	int deleted;
 	int64_t created_at_ms;
 	int64_t updated_at_ms;
+	int64_t expire_at_ms;
+	uint64_t generation;
+	uint32_t embedding_model_version;
 } kvs_rdb_snapshot_vector_record_t;
 
 typedef struct kvs_rdb_snapshot_vector_section_s {

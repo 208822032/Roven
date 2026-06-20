@@ -16,7 +16,7 @@
 #define RDB_TYPE_VECTOR    0x05
 #define RDB_TYPE_EOF       0xFF
 
-#define RDB_VECTOR_SECTION_VERSION 1
+#define RDB_VECTOR_SECTION_VERSION 2
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -178,6 +178,9 @@ static int rdb_save_vector_section_snapshot(
 
         if (rdb_write_i64(fp, record->created_at_ms) != RDB_OK) return RDB_ERR;
         if (rdb_write_i64(fp, record->updated_at_ms) != RDB_OK) return RDB_ERR;
+        if (rdb_write_i64(fp, record->expire_at_ms) != RDB_OK) return RDB_ERR;
+        if (rdb_write_u64(fp, record->generation) != RDB_OK) return RDB_ERR;
+        if (rdb_write_u32(fp, record->embedding_model_version) != RDB_OK) return RDB_ERR;
     }
 
     KVS_LOG_INFO("persistence", "RDB vector section saved: records=%llu active=%zu deleted=%zu",
@@ -259,6 +262,9 @@ static int rdb_load_vector_section(FILE *fp) {
         int32_t embedding_dim;
         int64_t created_at_ms;
         int64_t updated_at_ms;
+        int64_t expire_at_ms = KV_TTL_NO_EXPIRE;
+        uint64_t generation = 0;
+        uint32_t embedding_model_version = 0;
 
         question = NULL;
         answer = NULL;
@@ -295,6 +301,18 @@ static int rdb_load_vector_section(FILE *fp) {
             if (embedding) kvs_free(embedding);
             goto load_error;
         }
+        if (rdb_read_i64(fp, &expire_at_ms) != RDB_OK) {
+            if (embedding) kvs_free(embedding);
+            goto load_error;
+        }
+        if (rdb_read_u64(fp, &generation) != RDB_OK) {
+            if (embedding) kvs_free(embedding);
+            goto load_error;
+        }
+        if (rdb_read_u32(fp, &embedding_model_version) != RDB_OK) {
+            if (embedding) kvs_free(embedding);
+            goto load_error;
+        }
 
         ret = kvs_vector_restore_record_with_embedding(
             (size_t)record_index,
@@ -307,7 +325,10 @@ static int rdb_load_vector_section(FILE *fp) {
             normalized_question, (size_t)normalized_question_len,
             embedding, (int)embedding_dim,
             created_at_ms,
-            updated_at_ms
+            updated_at_ms,
+            expire_at_ms,
+            generation,
+            embedding_model_version
         );
 
         if (question) kvs_free(question);

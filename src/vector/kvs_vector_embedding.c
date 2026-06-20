@@ -18,6 +18,41 @@ typedef struct kvs_vector_embedding_thread_context_s {
 static __thread kvs_vector_embedding_thread_context_t *g_embedding_thread_ctx;
 static kvs_vector_embedding_runtime_stats_t g_embedding_runtime_stats;
 
+typedef struct kvs_embedding_cache_key_s {
+	uint64_t text_hash;
+	uint32_t model_id;
+	uint16_t dim;
+} kvs_embedding_cache_key_t;
+
+typedef struct kvs_embedding_cache_entry_s {
+	kvs_embedding_cache_key_t key;
+	float *embedding;
+	uint16_t dim;
+	uint64_t create_time_ms;
+	uint64_t last_access_ms;
+	uint64_t hit_count;
+	uint64_t source_total_us;
+	struct kvs_embedding_cache_entry_s *bucket_next;
+	struct kvs_embedding_cache_entry_s *lru_prev;
+	struct kvs_embedding_cache_entry_s *lru_next;
+} kvs_embedding_cache_entry_t;
+
+typedef struct kvs_embedding_cache_s {
+	int enabled;
+	size_t capacity;
+	uint64_t ttl_ms;
+	size_t count;
+	size_t bucket_count;
+	size_t memory_bytes;
+	kvs_embedding_cache_entry_t **buckets;
+	kvs_embedding_cache_entry_t *lru_head;
+	kvs_embedding_cache_entry_t *lru_tail;
+	pthread_mutex_t mutex;
+	int mutex_initialized;
+} kvs_embedding_cache_t;
+
+static kvs_embedding_cache_t g_embedding_cache;
+
 static uint64_t embedding_stats_add(uint64_t *field, uint64_t value) {
 	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
 }
@@ -56,6 +91,573 @@ static uint64_t embedding_now_us(void) {
 		return 0;
 	}
 	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+static uint64_t embedding_now_ms(void) {
+	return embedding_now_us() / 1000ull;
+}
+
+static uint64_t embedding_hash_bytes64(const char *data, size_t len) {
+	const unsigned char *p = (const unsigned char *)data;
+	uint64_t hash = 1469598103934665603ull;
+	size_t i;
+
+	for (i = 0; i < len; ++i) {
+		hash ^= (uint64_t)p[i];
+		hash *= 1099511628211ull;
+	}
+
+	return hash;
+}
+
+static uint32_t embedding_hash_bytes32(const char *data, size_t len) {
+	const unsigned char *p = (const unsigned char *)data;
+	uint32_t hash = 2166136261u;
+	size_t i;
+
+	for (i = 0; i < len; ++i) {
+		hash ^= (uint32_t)p[i];
+		hash *= 16777619u;
+	}
+
+	return hash;
+}
+
+static size_t embedding_next_pow2_size(size_t value) {
+	size_t n = 1;
+
+	while (n < value && n <= ((size_t)-1 / 2)) {
+		n <<= 1;
+	}
+
+	return n;
+}
+
+static size_t embedding_cache_entry_memory_bytes(const kvs_embedding_cache_entry_t *entry) {
+	size_t total;
+
+	if (!entry) {
+		return 0;
+	}
+
+	total = sizeof(*entry);
+	if (entry->embedding && entry->dim > 0) {
+		total += (size_t)entry->dim * sizeof(float);
+	}
+
+	return total;
+}
+
+static int embedding_text_normalize_for_cache(
+	const char *text,
+	size_t text_len,
+	char **out_text,
+	size_t *out_len
+) {
+	char *normalized;
+	size_t i;
+	size_t out_pos = 0;
+	int last_was_space = 1;
+
+	if (!text || text_len == 0 || !out_text || !out_len) {
+		return 0;
+	}
+
+	*out_text = NULL;
+	*out_len = 0;
+
+	normalized = (char *)malloc(text_len + 1);
+	if (!normalized) {
+		return 0;
+	}
+
+	for (i = 0; i < text_len; ++i) {
+		unsigned char ch = (unsigned char)text[i];
+
+		if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
+		    ch == '\f' || ch == '\v') {
+			if (!last_was_space && out_pos > 0) {
+				normalized[out_pos++] = ' ';
+			}
+			last_was_space = 1;
+			continue;
+		}
+
+		if (ch >= 'A' && ch <= 'Z') {
+			ch = (unsigned char)(ch - 'A' + 'a');
+		}
+
+		normalized[out_pos++] = (char)ch;
+		last_was_space = 0;
+	}
+
+	if (out_pos > 0 && normalized[out_pos - 1] == ' ') {
+		out_pos--;
+	}
+
+	normalized[out_pos] = '\0';
+	*out_text = normalized;
+	*out_len = out_pos;
+	return 1;
+}
+
+static int embedding_cache_key_build(
+	const kvs_vector_embedding_provider_t *provider,
+	const char *text,
+	size_t text_len,
+	int dim,
+	kvs_embedding_cache_key_t *out_key
+) {
+	char *normalized = NULL;
+	size_t normalized_len = 0;
+
+	if (!provider || !text || text_len == 0 || dim <= 0 || !out_key) {
+		return 0;
+	}
+
+	if (!embedding_text_normalize_for_cache(
+		text,
+		text_len,
+		&normalized,
+		&normalized_len
+	)) {
+		return 0;
+	}
+
+	out_key->text_hash = embedding_hash_bytes64(normalized, normalized_len);
+	out_key->model_id = provider->model_id;
+	out_key->dim = (uint16_t)dim;
+	free(normalized);
+	return 1;
+}
+
+static int embedding_cache_key_equal(
+	const kvs_embedding_cache_key_t *lhs,
+	const kvs_embedding_cache_key_t *rhs
+) {
+	return lhs && rhs &&
+		lhs->text_hash == rhs->text_hash &&
+		lhs->model_id == rhs->model_id &&
+		lhs->dim == rhs->dim;
+}
+
+static void embedding_cache_lru_link_head(
+	kvs_embedding_cache_t *cache,
+	kvs_embedding_cache_entry_t *entry
+) {
+	if (!cache || !entry) {
+		return;
+	}
+
+	entry->lru_prev = NULL;
+	entry->lru_next = cache->lru_head;
+	if (cache->lru_head) {
+		cache->lru_head->lru_prev = entry;
+	}
+	cache->lru_head = entry;
+	if (!cache->lru_tail) {
+		cache->lru_tail = entry;
+	}
+}
+
+static void embedding_cache_lru_unlink(
+	kvs_embedding_cache_t *cache,
+	kvs_embedding_cache_entry_t *entry
+) {
+	if (!cache || !entry) {
+		return;
+	}
+
+	if (entry->lru_prev) {
+		entry->lru_prev->lru_next = entry->lru_next;
+	} else {
+		cache->lru_head = entry->lru_next;
+	}
+
+	if (entry->lru_next) {
+		entry->lru_next->lru_prev = entry->lru_prev;
+	} else {
+		cache->lru_tail = entry->lru_prev;
+	}
+
+	entry->lru_prev = NULL;
+	entry->lru_next = NULL;
+}
+
+static void embedding_cache_lru_touch(
+	kvs_embedding_cache_t *cache,
+	kvs_embedding_cache_entry_t *entry
+) {
+	if (!cache || !entry || cache->lru_head == entry) {
+		return;
+	}
+
+	embedding_cache_lru_unlink(cache, entry);
+	embedding_cache_lru_link_head(cache, entry);
+}
+
+static void embedding_cache_entry_destroy(kvs_embedding_cache_entry_t *entry) {
+	if (!entry) {
+		return;
+	}
+
+	if (entry->embedding) {
+		kvs_free(entry->embedding);
+	}
+	free(entry);
+}
+
+static void embedding_cache_remove_entry(
+	kvs_embedding_cache_t *cache,
+	kvs_embedding_cache_entry_t *entry,
+	size_t bucket_index,
+	int record_evict
+) {
+	kvs_embedding_cache_entry_t **pp;
+	size_t bytes;
+
+	if (!cache || !entry || !cache->buckets || bucket_index >= cache->bucket_count) {
+		return;
+	}
+
+	pp = &cache->buckets[bucket_index];
+	while (*pp) {
+		if (*pp == entry) {
+			*pp = entry->bucket_next;
+			break;
+		}
+		pp = &(*pp)->bucket_next;
+	}
+
+	embedding_cache_lru_unlink(cache, entry);
+	if (cache->count > 0) {
+		cache->count--;
+	}
+
+	bytes = embedding_cache_entry_memory_bytes(entry);
+	if (cache->memory_bytes >= bytes) {
+		cache->memory_bytes -= bytes;
+	} else {
+		cache->memory_bytes = 0;
+	}
+	embedding_stats_store(
+		&g_embedding_runtime_stats.embedding_cache_memory_bytes,
+		cache->memory_bytes
+	);
+	if (record_evict) {
+		embedding_stats_add(&g_embedding_runtime_stats.embedding_cache_evict_count, 1);
+	}
+	embedding_cache_entry_destroy(entry);
+}
+
+static void embedding_cache_destroy_locked(kvs_embedding_cache_t *cache) {
+	size_t i;
+
+	if (!cache) {
+		return;
+	}
+
+	if (cache->buckets) {
+		for (i = 0; i < cache->bucket_count; ++i) {
+			kvs_embedding_cache_entry_t *entry = cache->buckets[i];
+			while (entry) {
+				kvs_embedding_cache_entry_t *next = entry->bucket_next;
+				embedding_cache_entry_destroy(entry);
+				entry = next;
+			}
+		}
+		free(cache->buckets);
+	}
+
+	cache->enabled = 0;
+	cache->capacity = 0;
+	cache->ttl_ms = 0;
+	cache->count = 0;
+	cache->bucket_count = 0;
+	cache->memory_bytes = 0;
+	cache->buckets = NULL;
+	cache->lru_head = NULL;
+	cache->lru_tail = NULL;
+	embedding_stats_store(&g_embedding_runtime_stats.embedding_cache_memory_bytes, 0);
+}
+
+static void embedding_cache_destroy(kvs_embedding_cache_t *cache) {
+	if (!cache) {
+		return;
+	}
+
+	if (cache->mutex_initialized) {
+		pthread_mutex_lock(&cache->mutex);
+		embedding_cache_destroy_locked(cache);
+		pthread_mutex_unlock(&cache->mutex);
+	} else {
+		embedding_cache_destroy_locked(cache);
+	}
+}
+
+static int embedding_cache_init(
+	kvs_embedding_cache_t *cache,
+	size_t capacity,
+	uint64_t ttl_ms
+) {
+	size_t bucket_count;
+
+	if (!cache || capacity == 0 || ttl_ms == 0) {
+		return 0;
+	}
+
+	if (!cache->mutex_initialized) {
+		if (pthread_mutex_init(&cache->mutex, NULL) != 0) {
+			return 0;
+		}
+		cache->mutex_initialized = 1;
+	}
+
+	pthread_mutex_lock(&cache->mutex);
+	embedding_cache_destroy_locked(cache);
+
+	bucket_count = embedding_next_pow2_size(capacity * 2);
+	if (bucket_count < 16) {
+		bucket_count = 16;
+	}
+
+	cache->buckets = (kvs_embedding_cache_entry_t **)calloc(
+		bucket_count,
+		sizeof(*cache->buckets)
+	);
+	if (!cache->buckets) {
+		pthread_mutex_unlock(&cache->mutex);
+		return 0;
+	}
+
+	cache->enabled = 1;
+	cache->capacity = capacity;
+	cache->ttl_ms = ttl_ms;
+	cache->bucket_count = bucket_count;
+	embedding_stats_store(&g_embedding_runtime_stats.embedding_cache_enabled, 1);
+	pthread_mutex_unlock(&cache->mutex);
+	return 1;
+}
+
+static int embedding_cache_should_use(
+	const kvs_vector_embedding_provider_t *provider
+) {
+	return provider &&
+		provider->type == KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C &&
+		g_cfg.embedding_cache_enabled &&
+		g_cfg.embedding_cache_capacity > 0 &&
+		g_cfg.embedding_cache_ttl_ms > 0 &&
+		strcasecmp(g_cfg.embedding_cache_policy, "lru") == 0 &&
+		g_embedding_cache.enabled;
+}
+
+static int embedding_cache_lookup(
+	const kvs_vector_embedding_provider_t *provider,
+	const char *text,
+	size_t text_len,
+	float **out_embedding,
+	int *out_dim
+) {
+	kvs_embedding_cache_key_t key;
+	size_t bucket_index;
+	kvs_embedding_cache_entry_t *entry;
+	uint64_t lookup_start_us;
+	uint64_t now_ms;
+	size_t bytes;
+	float *copy;
+	int hit = 0;
+
+	if (!out_embedding || !out_dim) {
+		return 0;
+	}
+
+	*out_embedding = NULL;
+	*out_dim = 0;
+
+	if (!embedding_cache_should_use(provider)) {
+		return 0;
+	}
+
+	if (!embedding_cache_key_build(
+		provider,
+		text,
+		text_len,
+		(int)provider->dimension,
+		&key
+	)) {
+		return 0;
+	}
+
+	lookup_start_us = embedding_now_us();
+	embedding_stats_add(&g_embedding_runtime_stats.embedding_cache_lookup_count, 1);
+	pthread_mutex_lock(&g_embedding_cache.mutex);
+
+	now_ms = embedding_now_ms();
+	bucket_index = (size_t)(key.text_hash & (uint64_t)(g_embedding_cache.bucket_count - 1));
+	entry = g_embedding_cache.buckets[bucket_index];
+	while (entry) {
+		if (embedding_cache_key_equal(&entry->key, &key)) {
+			if (now_ms - entry->last_access_ms > g_embedding_cache.ttl_ms) {
+				kvs_embedding_cache_entry_t *expired = entry;
+				entry = entry->bucket_next;
+				embedding_cache_remove_entry(&g_embedding_cache, expired, bucket_index, 1);
+				continue;
+			}
+
+			bytes = (size_t)entry->dim * sizeof(float);
+			copy = (float *)kvs_malloc(bytes);
+			if (!copy) {
+				break;
+			}
+			memcpy(copy, entry->embedding, bytes);
+			entry->last_access_ms = now_ms;
+			entry->hit_count++;
+			embedding_cache_lru_touch(&g_embedding_cache, entry);
+			*out_embedding = copy;
+			*out_dim = (int)entry->dim;
+			embedding_stats_add(&g_embedding_runtime_stats.embedding_cache_hit_count, 1);
+			embedding_stats_add(
+				&g_embedding_runtime_stats.embedding_cache_saved_onnx_us,
+				entry->source_total_us
+			);
+			hit = 1;
+			break;
+		}
+		entry = entry->bucket_next;
+	}
+
+	if (!hit) {
+		embedding_stats_add(&g_embedding_runtime_stats.embedding_cache_miss_count, 1);
+	}
+	pthread_mutex_unlock(&g_embedding_cache.mutex);
+	embedding_stats_add(
+		&g_embedding_runtime_stats.embedding_cache_lookup_total_us,
+		embedding_now_us() - lookup_start_us
+	);
+	return hit;
+}
+
+static void embedding_cache_insert(
+	const kvs_vector_embedding_provider_t *provider,
+	const char *text,
+	size_t text_len,
+	const float *embedding,
+	int dim,
+	uint64_t source_total_us
+) {
+	kvs_embedding_cache_key_t key;
+	kvs_embedding_cache_entry_t *entry;
+	size_t bucket_index;
+	size_t bytes;
+	uint64_t insert_start_us;
+	uint64_t now_ms;
+
+	if (!provider || !embedding || dim <= 0 || !embedding_cache_should_use(provider)) {
+		return;
+	}
+
+	if (!embedding_cache_key_build(provider, text, text_len, dim, &key)) {
+		return;
+	}
+
+	insert_start_us = embedding_now_us();
+	pthread_mutex_lock(&g_embedding_cache.mutex);
+
+	now_ms = embedding_now_ms();
+	bucket_index = (size_t)(key.text_hash & (uint64_t)(g_embedding_cache.bucket_count - 1));
+	entry = g_embedding_cache.buckets[bucket_index];
+	while (entry) {
+		if (embedding_cache_key_equal(&entry->key, &key)) {
+			bytes = (size_t)dim * sizeof(float);
+			memcpy(entry->embedding, embedding, bytes);
+			entry->create_time_ms = now_ms;
+			entry->last_access_ms = now_ms;
+			entry->source_total_us = source_total_us;
+			embedding_cache_lru_touch(&g_embedding_cache, entry);
+			pthread_mutex_unlock(&g_embedding_cache.mutex);
+			embedding_stats_add(&g_embedding_runtime_stats.embedding_cache_insert_count, 1);
+			embedding_stats_add(
+				&g_embedding_runtime_stats.embedding_cache_insert_total_us,
+				embedding_now_us() - insert_start_us
+			);
+			return;
+		}
+		entry = entry->bucket_next;
+	}
+
+	while (g_embedding_cache.count >= g_embedding_cache.capacity &&
+	       g_embedding_cache.lru_tail) {
+		kvs_embedding_cache_entry_t *evict = g_embedding_cache.lru_tail;
+		size_t evict_bucket = (size_t)(
+			evict->key.text_hash & (uint64_t)(g_embedding_cache.bucket_count - 1)
+		);
+		embedding_cache_remove_entry(&g_embedding_cache, evict, evict_bucket, 1);
+	}
+
+	entry = (kvs_embedding_cache_entry_t *)calloc(1, sizeof(*entry));
+	if (!entry) {
+		pthread_mutex_unlock(&g_embedding_cache.mutex);
+		return;
+	}
+
+	bytes = (size_t)dim * sizeof(float);
+	entry->embedding = (float *)kvs_malloc(bytes);
+	if (!entry->embedding) {
+		free(entry);
+		pthread_mutex_unlock(&g_embedding_cache.mutex);
+		return;
+	}
+
+	memcpy(entry->embedding, embedding, bytes);
+	entry->key = key;
+	entry->dim = (uint16_t)dim;
+	entry->create_time_ms = now_ms;
+	entry->last_access_ms = now_ms;
+	entry->hit_count = 0;
+	entry->source_total_us = source_total_us;
+	entry->bucket_next = g_embedding_cache.buckets[bucket_index];
+	g_embedding_cache.buckets[bucket_index] = entry;
+	embedding_cache_lru_link_head(&g_embedding_cache, entry);
+	g_embedding_cache.count++;
+	g_embedding_cache.memory_bytes += embedding_cache_entry_memory_bytes(entry);
+	embedding_stats_store(
+		&g_embedding_runtime_stats.embedding_cache_memory_bytes,
+		g_embedding_cache.memory_bytes
+	);
+	pthread_mutex_unlock(&g_embedding_cache.mutex);
+
+	embedding_stats_add(&g_embedding_runtime_stats.embedding_cache_insert_count, 1);
+	embedding_stats_add(
+		&g_embedding_runtime_stats.embedding_cache_insert_total_us,
+		embedding_now_us() - insert_start_us
+	);
+}
+
+static uint32_t embedding_provider_model_id(const char *provider_name) {
+	char buffer[512];
+	int written;
+
+	written = snprintf(
+		buffer,
+		sizeof(buffer),
+		"%s|%s|%d",
+		provider_name ? provider_name : "unknown",
+		g_cfg.embedding_model_path[0] != '\0' ? g_cfg.embedding_model_path : "",
+		g_cfg.embedding_dim
+	);
+	if (written < 0) {
+		return 0;
+	}
+
+	return embedding_hash_bytes32(
+		buffer,
+		(size_t)((written < (int)sizeof(buffer)) ? written : (int)(sizeof(buffer) - 1))
+	);
+}
+
+uint32_t kvs_vector_embedding_current_model_version(void) {
+	return embedding_provider_model_id(
+		g_vector_state.embedding_provider.name);
 }
 
 static void embedding_record_encode_time(uint64_t elapsed_us) {
@@ -281,6 +883,16 @@ void kvs_vector_embedding_runtime_get_stats(
 	out->tokenizer_max_us = resource_stats.tokenizer_max_us;
 	out->ort_run_total_us = resource_stats.ort_run_total_us;
 	out->ort_run_max_us = resource_stats.ort_run_max_us;
+	out->embedding_cache_enabled = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_enabled);
+	out->embedding_cache_lookup_count = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_lookup_count);
+	out->embedding_cache_hit_count = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_hit_count);
+	out->embedding_cache_miss_count = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_miss_count);
+	out->embedding_cache_lookup_total_us = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_lookup_total_us);
+	out->embedding_cache_insert_count = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_insert_count);
+	out->embedding_cache_insert_total_us = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_insert_total_us);
+	out->embedding_cache_evict_count = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_evict_count);
+	out->embedding_cache_memory_bytes = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_memory_bytes);
+	out->embedding_cache_saved_onnx_us = embedding_stats_load(&g_embedding_runtime_stats.embedding_cache_saved_onnx_us);
 	out->embedding_worker_threads_effective = worker_threads_effective;
 	out->embedding_num_threads_effective = embedding_num_threads_effective;
 	out->embedding_runtime_resource_product =
@@ -415,14 +1027,37 @@ int kvs_vector_embedding_provider_init(
 		provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C;
 		provider->name = "local_c";
 		provider->dimension = dimension;
+		provider->model_id = embedding_provider_model_id(provider->name);
 		provider->initialized = 1;
+
+		if (g_cfg.embedding_cache_enabled) {
+			if (!embedding_cache_init(
+				&g_embedding_cache,
+				(size_t)g_cfg.embedding_cache_capacity,
+				(uint64_t)g_cfg.embedding_cache_ttl_ms
+			)) {
+				KVS_LOG_ERROR(
+					KVS_VECTOR_LOG_MODULE,
+					"embedding cache init failed capacity=%d ttl_ms=%d policy=%s",
+					g_cfg.embedding_cache_capacity,
+					g_cfg.embedding_cache_ttl_ms,
+					g_cfg.embedding_cache_policy
+				);
+				return KVS_VECTOR_ERR;
+			}
+		} else {
+			embedding_stats_store(&g_embedding_runtime_stats.embedding_cache_enabled, 0);
+		}
 
 		KVS_LOG_INFO(
 			KVS_VECTOR_LOG_MODULE,
-			"local_c embedding provider ready dimension=%zu max_text_len=%d threads=%d",
+			"local_c embedding provider ready dimension=%zu max_text_len=%d threads=%d cache_enabled=%d cache_capacity=%d cache_ttl_ms=%d",
 			provider->dimension,
 			g_cfg.embedding_max_text_len,
-			g_cfg.embedding_num_threads
+			g_cfg.embedding_num_threads,
+			g_cfg.embedding_cache_enabled,
+			g_cfg.embedding_cache_capacity,
+			g_cfg.embedding_cache_ttl_ms
 		);
 
 		return KVS_VECTOR_OK;
@@ -431,7 +1066,9 @@ int kvs_vector_embedding_provider_init(
 	provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_HASH;
 	provider->name = "hash";
 	provider->dimension = KVS_VECTOR_DEFAULT_DIMENSION;
+	provider->model_id = embedding_provider_model_id(provider->name);
 	provider->initialized = 1;
+	embedding_stats_store(&g_embedding_runtime_stats.embedding_cache_enabled, 0);
 
 	KVS_LOG_INFO(
 		KVS_VECTOR_LOG_MODULE,
@@ -463,6 +1100,8 @@ void kvs_vector_embedding_provider_destroy(
 	if (provider->runtime_handle) {
 		embedding_destroy(provider->runtime_handle);
 	}
+	embedding_cache_destroy(&g_embedding_cache);
+	embedding_stats_store(&g_embedding_runtime_stats.embedding_cache_enabled, 0);
 	kvs_vector_embedding_log_final_runtime_stats();
 
 	memset(provider, 0, sizeof(*provider));
@@ -741,6 +1380,10 @@ int kvs_vector_embedding_generate(
 	float *embedding = NULL;
 	int dim = 0;
 	int ret;
+	uint64_t start_us = 0;
+	uint64_t normalize_start_us = 0;
+	uint64_t normalize_elapsed_us = 0;
+	uint64_t total_elapsed_us = 0;
 
 	if (!provider->initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
@@ -754,6 +1397,19 @@ int kvs_vector_embedding_generate(
 	*out_dim = 0;
 
 	if (provider->type == KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C) {
+		if (embedding_cache_lookup(
+			provider,
+			text,
+			text_len,
+			&embedding,
+			&dim
+		)) {
+			*out_embedding = embedding;
+			*out_dim = dim;
+			return KVS_VECTOR_OK;
+		}
+
+		start_us = embedding_now_us();
 		ret = kvs_vector_local_c_embedding_generate(
 			provider,
 			text,
@@ -773,10 +1429,25 @@ int kvs_vector_embedding_generate(
 		return ret;
 	}
 
+	normalize_start_us = embedding_now_us();
 	ret = kvs_vector_embedding_l2_normalize(embedding, dim);
+	normalize_elapsed_us = embedding_now_us() - normalize_start_us;
+	(void)normalize_elapsed_us;
 	if (ret != KVS_VECTOR_OK) {
 		kvs_free(embedding);
 		return ret;
+	}
+
+	if (provider->type == KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C) {
+		total_elapsed_us = embedding_now_us() - start_us;
+		embedding_cache_insert(
+			provider,
+			text,
+			text_len,
+			embedding,
+			dim,
+			total_elapsed_us
+		);
 	}
 
 	*out_embedding = embedding;

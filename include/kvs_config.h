@@ -128,6 +128,10 @@ typedef struct kvs_config {
 	int embedding_batch_vset_max_wait_us;
 	int embedding_batch_vsearch_max_size;
 	int embedding_batch_vsearch_max_wait_us;
+	int embedding_cache_enabled;
+	int embedding_cache_capacity;
+	int embedding_cache_ttl_ms;
+	char embedding_cache_policy[16];
 
 	// vector index 配置。正式语义缓存主路径固定为 HNSW；
 	// flat 仅作为 debug / 单元测试 baseline，sq8_flat 为实验性压缩索引。
@@ -237,6 +241,10 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path);
 //  --embedding_batch_vset_max_wait_us <us>
 //  --embedding_batch_vsearch_max_size <n>
 //  --embedding_batch_vsearch_max_wait_us <us>
+//  --embedding_cache_enabled <yes|no>
+//  --embedding_cache_capacity <n>
+//  --embedding_cache_ttl_ms <ms>
+//  --embedding_cache_policy <lru>
 //  --vector_metric <ip|l2|cosine>
 	//  --vector_distance_backend <auto|fallback|avx2>
 //  --vector_scope_overfetch_factor <1-32>

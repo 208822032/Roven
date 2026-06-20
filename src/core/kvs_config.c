@@ -77,6 +77,10 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     cfg->embedding_batch_vset_max_wait_us = 0;
     cfg->embedding_batch_vsearch_max_size = 4;
     cfg->embedding_batch_vsearch_max_wait_us = 500;
+    cfg->embedding_cache_enabled = 0;
+    cfg->embedding_cache_capacity = 10000;
+    cfg->embedding_cache_ttl_ms = 3600000;
+    snprintf(cfg->embedding_cache_policy, sizeof(cfg->embedding_cache_policy), "%s", "lru");
 
     // 语义缓存主路径固定为 L2-normalized embedding + HNSW + inner product。
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
@@ -326,11 +330,36 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
                 0,
                 1000000
             );
+        } else if (strcasecmp(key, "embedding_cache_enabled") == 0) {
+            cfg->embedding_cache_enabled = parse_bool(
+                val,
+                cfg->embedding_cache_enabled
+            );
+        } else if (strcasecmp(key, "embedding_cache_capacity") == 0) {
+            cfg->embedding_cache_capacity = parse_int_range(
+                val,
+                cfg->embedding_cache_capacity,
+                1,
+                10000000
+            );
+        } else if (strcasecmp(key, "embedding_cache_ttl_ms") == 0) {
+            cfg->embedding_cache_ttl_ms = parse_int_range(
+                val,
+                cfg->embedding_cache_ttl_ms,
+                1,
+                2147483647
+            );
+        } else if (strcasecmp(key, "embedding_cache_policy") == 0) {
+            if (strcasecmp(val, "lru") == 0) {
+                snprintf(cfg->embedding_cache_policy, sizeof(cfg->embedding_cache_policy), "%s", val);
+            }
         } else if (strcasecmp(key, "vector_index_type") == 0) {
             if (strcasecmp(val, "flat") == 0 ||
                 strcasecmp(val, "hnsw") == 0 ||
                 strcasecmp(val, "ivf_flat") == 0 ||
-                strcasecmp(val, "sq8_flat") == 0) {
+                strcasecmp(val, "sq8_flat") == 0 ||
+                strcasecmp(val, "faiss_hnsw") == 0 ||
+                strcasecmp(val, "faiss_flat") == 0) {
                 snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", val);
             }
         } else if (strcasecmp(key, "vector_metric") == 0) {
@@ -597,6 +626,38 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                     0,
                     1000000
                 );
+            }
+        } else if (strcmp(argv[i], "--embedding_cache_enabled") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_cache_enabled = parse_bool(
+                    argv[++i],
+                    cfg->embedding_cache_enabled
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_cache_capacity") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_cache_capacity = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_cache_capacity,
+                    1,
+                    10000000
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_cache_ttl_ms") == 0) {
+            if (i + 1 < argc) {
+                cfg->embedding_cache_ttl_ms = parse_int_range(
+                    argv[++i],
+                    cfg->embedding_cache_ttl_ms,
+                    1,
+                    2147483647
+                );
+            }
+        } else if (strcmp(argv[i], "--embedding_cache_policy") == 0) {
+            if (i + 1 < argc) {
+                const char *v = argv[++i];
+                if (strcasecmp(v, "lru") == 0) {
+                    snprintf(cfg->embedding_cache_policy, sizeof(cfg->embedding_cache_policy), "%s", v);
+                }
             }
         } else if (strcmp(argv[i], "--vector_metric") == 0) {
             if (i + 1 < argc) {

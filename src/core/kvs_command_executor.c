@@ -1554,6 +1554,9 @@ static int kvs_rdb_snapshot_builder_append_vector(
 	dst->deleted = src->deleted;
 	dst->created_at_ms = src->created_at_ms;
 	dst->updated_at_ms = src->updated_at_ms;
+	dst->expire_at_ms = src->expire_at_ms;
+	dst->generation = src->generation;
+	dst->embedding_model_version = src->embedding_model_version;
 
 	if (kvs_full_sync_snapshot_builder_copy_bytes(
 		    &dst->question, src->question, src->question_len) != 0 ||

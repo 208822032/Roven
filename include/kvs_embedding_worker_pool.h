@@ -79,6 +79,16 @@ typedef struct kvs_embedding_worker_pool_stats_s {
 	uint64_t tokenizer_max_us;
 	uint64_t ort_run_total_us;
 	uint64_t ort_run_max_us;
+	uint64_t embedding_cache_enabled;
+	uint64_t embedding_cache_lookup_count;
+	uint64_t embedding_cache_hit_count;
+	uint64_t embedding_cache_miss_count;
+	uint64_t embedding_cache_lookup_total_us;
+	uint64_t embedding_cache_insert_count;
+	uint64_t embedding_cache_insert_total_us;
+	uint64_t embedding_cache_evict_count;
+	uint64_t embedding_cache_memory_bytes;
+	uint64_t embedding_cache_saved_onnx_us;
 	uint64_t embedding_runtime_resource_product;
 	uint64_t embedding_worker_threads_effective;
 	uint64_t embedding_num_threads_effective;

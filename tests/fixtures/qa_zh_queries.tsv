@@ -1,0 +1,200 @@
+请解释一下Redis AOF	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 是干什么用的	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+Redis AOF 为什么会影响检索性能	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+如果做中文语义检索，Redis AOF 该怎么理解	Redis AOF 是追加日志持久化机制，通过顺序写记录写命令。
+请解释一下Redis RDB	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 是干什么用的	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+Redis RDB 为什么会影响检索性能	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+如果做中文语义检索，Redis RDB 该怎么理解	Redis RDB 通过周期性快照把内存数据序列化到磁盘。
+请解释一下TTL 过期	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 是干什么用的	TTL 机制通过过期时间控制键的生命周期。
+TTL 过期 为什么会影响检索性能	TTL 机制通过过期时间控制键的生命周期。
+如果做中文语义检索，TTL 过期 该怎么理解	TTL 机制通过过期时间控制键的生命周期。
+请解释一下KV 存储	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 是干什么用的	KV 存储以键值对为核心抽象，强调简单读写路径。
+KV 存储 为什么会影响检索性能	KV 存储以键值对为核心抽象，强调简单读写路径。
+如果做中文语义检索，KV 存储 该怎么理解	KV 存储以键值对为核心抽象，强调简单读写路径。
+请解释一下跳表	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 是干什么用的	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+跳表 为什么会影响检索性能	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+如果做中文语义检索，跳表 该怎么理解	跳表通过多层索引在有序集合中提供接近平衡树的查找性能。
+请解释一下HNSW	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 是干什么用的	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+HNSW 为什么会影响检索性能	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+如果做中文语义检索，HNSW 该怎么理解	HNSW 通过分层近邻图在高维空间中近似搜索最近邻。
+请解释一下efSearch	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 是干什么用的	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+efSearch 为什么会影响检索性能	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+如果做中文语义检索，efSearch 该怎么理解	efSearch 控制 HNSW 查询阶段保留的候选宽度。
+请解释一下efConstruction	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 是干什么用的	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+efConstruction 为什么会影响检索性能	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+如果做中文语义检索，efConstruction 该怎么理解	efConstruction 控制 HNSW 建图阶段的候选扩展宽度。
+请解释一下M 参数	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 是干什么用的	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+M 参数 为什么会影响检索性能	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+如果做中文语义检索，M 参数 该怎么理解	HNSW 的 M 参数决定每个节点允许保留的邻居上限。
+请解释一下向量数据库	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 是干什么用的	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+向量数据库 为什么会影响检索性能	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+如果做中文语义检索，向量数据库 该怎么理解	向量数据库通常基于 embedding 和 ANN 索引完成相似检索。
+请解释一下embedding	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 是干什么用的	embedding 把文本映射到连续向量空间以表达语义相近性。
+embedding 为什么会影响检索性能	embedding 把文本映射到连续向量空间以表达语义相近性。
+如果做中文语义检索，embedding 该怎么理解	embedding 把文本映射到连续向量空间以表达语义相近性。
+请解释一下ONNX Runtime	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 是干什么用的	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+ONNX Runtime 为什么会影响检索性能	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+如果做中文语义检索，ONNX Runtime 该怎么理解	ONNX Runtime 是执行 ONNX 模型的高性能推理运行时。
+请解释一下BGE 模型	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 是干什么用的	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+BGE 模型 为什么会影响检索性能	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+如果做中文语义检索，BGE 模型 该怎么理解	bge-small-zh-v1.5 是面向中文语义检索的轻量 embedding 模型。
+请解释一下L2 归一化	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 是干什么用的	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+L2 归一化 为什么会影响检索性能	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+如果做中文语义检索，L2 归一化 该怎么理解	L2 归一化让向量长度变为 1，便于用内积近似 cosine。
+请解释一下Inner Product	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 是干什么用的	归一化后的 inner product 可以直接表示 cosine 相似度。
+Inner Product 为什么会影响检索性能	归一化后的 inner product 可以直接表示 cosine 相似度。
+如果做中文语义检索，Inner Product 该怎么理解	归一化后的 inner product 可以直接表示 cosine 相似度。
+请解释一下Flat 检索	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 是干什么用的	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+Flat 检索 为什么会影响检索性能	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+如果做中文语义检索，Flat 检索 该怎么理解	Flat 检索会遍历全部向量，结果精确但规模增大后成本线性上升。
+请解释一下Faiss Flat	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 是干什么用的	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+Faiss Flat 为什么会影响检索性能	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+如果做中文语义检索，Faiss Flat 该怎么理解	Faiss IndexFlatIP 提供精确内积检索，常用作 ground truth。
+请解释一下Faiss HNSW	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 是干什么用的	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+Faiss HNSW 为什么会影响检索性能	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+如果做中文语义检索，Faiss HNSW 该怎么理解	Faiss IndexHNSWFlat 提供 ANN 检索并支持调节 efSearch。
+请解释一下倒排索引	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 是干什么用的	倒排索引适合关键词检索，不直接解决向量近邻问题。
+倒排索引 为什么会影响检索性能	倒排索引适合关键词检索，不直接解决向量近邻问题。
+如果做中文语义检索，倒排索引 该怎么理解	倒排索引适合关键词检索，不直接解决向量近邻问题。
+请解释一下语义缓存	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 是干什么用的	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+语义缓存 为什么会影响检索性能	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+如果做中文语义检索，语义缓存 该怎么理解	语义缓存通过查询 embedding 命中相近问题，减少重复计算。
+请解释一下批量 embedding	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 是干什么用的	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+批量 embedding 为什么会影响检索性能	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+如果做中文语义检索，批量 embedding 该怎么理解	批量 embedding 可以摊薄 tokenizer 和推理框架开销。
+请解释一下embedding cache	embedding cache 可以避免重复文本反复做推理。
+embedding cache 是干什么用的	embedding cache 可以避免重复文本反复做推理。
+embedding cache 为什么会影响检索性能	embedding cache 可以避免重复文本反复做推理。
+如果做中文语义检索，embedding cache 该怎么理解	embedding cache 可以避免重复文本反复做推理。
+请解释一下query cache	query cache 适合高重复率查询，直接复用命中结果。
+query cache 是干什么用的	query cache 适合高重复率查询，直接复用命中结果。
+query cache 为什么会影响检索性能	query cache 适合高重复率查询，直接复用命中结果。
+如果做中文语义检索，query cache 该怎么理解	query cache 适合高重复率查询，直接复用命中结果。
+请解释一下线程过订阅	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 是干什么用的	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+线程过订阅 为什么会影响检索性能	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+如果做中文语义检索，线程过订阅 该怎么理解	线程过订阅会导致上下文切换上升并拖慢整体吞吐。
+请解释一下intra_op 线程	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 是干什么用的	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+intra_op 线程 为什么会影响检索性能	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+如果做中文语义检索，intra_op 线程 该怎么理解	ONNX Runtime intra_op 线程控制单次算子内部并行度。
+请解释一下inter_op 线程	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 是干什么用的	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+inter_op 线程 为什么会影响检索性能	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+如果做中文语义检索，inter_op 线程 该怎么理解	ONNX Runtime inter_op 线程控制图中算子级并行调度。
+请解释一下reactor 模型	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 是干什么用的	reactor 模型通过事件循环分发 I/O 就绪事件。
+reactor 模型 为什么会影响检索性能	reactor 模型通过事件循环分发 I/O 就绪事件。
+如果做中文语义检索，reactor 模型 该怎么理解	reactor 模型通过事件循环分发 I/O 就绪事件。
+请解释一下executor	executor 负责把解析后的命令分发到实际执行上下文。
+executor 是干什么用的	executor 负责把解析后的命令分发到实际执行上下文。
+executor 为什么会影响检索性能	executor 负责把解析后的命令分发到实际执行上下文。
+如果做中文语义检索，executor 该怎么理解	executor 负责把解析后的命令分发到实际执行上下文。
+请解释一下AOF rewrite	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 是干什么用的	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+AOF rewrite 为什么会影响检索性能	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+如果做中文语义检索，AOF rewrite 该怎么理解	AOF rewrite 会生成更紧凑的新日志文件以缩减体积。
+请解释一下RDB 恢复	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 是干什么用的	RDB 恢复通过加载快照快速重建内存数据。
+RDB 恢复 为什么会影响检索性能	RDB 恢复通过加载快照快速重建内存数据。
+如果做中文语义检索，RDB 恢复 该怎么理解	RDB 恢复通过加载快照快速重建内存数据。
+请解释一下RESP 协议	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 是干什么用的	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+RESP 协议 为什么会影响检索性能	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+如果做中文语义检索，RESP 协议 该怎么理解	RESP 是 Redis 风格文本二进制混合协议，便于客户端实现。
+请解释一下record lookup	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 是干什么用的	record lookup 根据索引返回的 record_id 找到问题与答案。
+record lookup 为什么会影响检索性能	record lookup 根据索引返回的 record_id 找到问题与答案。
+如果做中文语义检索，record lookup 该怎么理解	record lookup 根据索引返回的 record_id 找到问题与答案。
+请解释一下topK heap	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 是干什么用的	topK heap 用固定容量堆维护当前最优候选集合。
+topK heap 为什么会影响检索性能	topK heap 用固定容量堆维护当前最优候选集合。
+如果做中文语义检索，topK heap 该怎么理解	topK heap 用固定容量堆维护当前最优候选集合。
+请解释一下SIMD 距离	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 是干什么用的	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+SIMD 距离 为什么会影响检索性能	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+如果做中文语义检索，SIMD 距离 该怎么理解	SIMD 距离计算通过向量指令提升点积或 L2 计算吞吐。
+请解释一下visited bitmap	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 是干什么用的	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+visited bitmap 为什么会影响检索性能	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+如果做中文语义检索，visited bitmap 该怎么理解	visited bitmap 用于 HNSW 搜索时避免重复访问节点。
+请解释一下memory layout	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 是干什么用的	连续内存布局通常比离散指针结构更有利于缓存命中。
+memory layout 为什么会影响检索性能	连续内存布局通常比离散指针结构更有利于缓存命中。
+如果做中文语义检索，memory layout 该怎么理解	连续内存布局通常比离散指针结构更有利于缓存命中。
+请解释一下vector fast path	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 是干什么用的	vector fast path 目标是减少搜索后回表与响应构造开销。
+vector fast path 为什么会影响检索性能	vector fast path 目标是减少搜索后回表与响应构造开销。
+如果做中文语义检索，vector fast path 该怎么理解	vector fast path 目标是减少搜索后回表与响应构造开销。
+请解释一下scope filter	scope filter 在命中候选后按业务域过滤结果。
+scope filter 是干什么用的	scope filter 在命中候选后按业务域过滤结果。
+scope filter 为什么会影响检索性能	scope filter 在命中候选后按业务域过滤结果。
+如果做中文语义检索，scope filter 该怎么理解	scope filter 在命中候选后按业务域过滤结果。
+请解释一下近似召回	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 是干什么用的	ANN 检索需要在速度与 recall 之间做权衡。
+近似召回 为什么会影响检索性能	ANN 检索需要在速度与 recall 之间做权衡。
+如果做中文语义检索，近似召回 该怎么理解	ANN 检索需要在速度与 recall 之间做权衡。
+请解释一下召回率	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 是干什么用的	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+召回率 为什么会影响检索性能	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+如果做中文语义检索，召回率 该怎么理解	recall@k 衡量 ANN 结果与精确 topK 重合的比例。
+请解释一下量化模型	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 是干什么用的	量化模型可以降低推理成本，但可能带来精度损失。
+量化模型 为什么会影响检索性能	量化模型可以降低推理成本，但可能带来精度损失。
+如果做中文语义检索，量化模型 该怎么理解	量化模型可以降低推理成本，但可能带来精度损失。
+请解释一下小模型	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 是干什么用的	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+小模型 为什么会影响检索性能	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+如果做中文语义检索，小模型 该怎么理解	更小的 embedding 模型通常延迟更低但语义能力可能下降。
+请解释一下多线程 worker	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 是干什么用的	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+多线程 worker 为什么会影响检索性能	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+如果做中文语义检索，多线程 worker 该怎么理解	embedding worker 数量增加后可能提升吞吐，也可能放大锁竞争。
+请解释一下共享 ORT Env	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 是干什么用的	共享 ORT Env 可以减少每线程重复创建环境的成本。
+共享 ORT Env 为什么会影响检索性能	共享 ORT Env 可以减少每线程重复创建环境的成本。
+如果做中文语义检索，共享 ORT Env 该怎么理解	共享 ORT Env 可以减少每线程重复创建环境的成本。
+请解释一下每线程 Session	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 是干什么用的	每线程 Session 可以降低全局互斥，但会增加内存占用。
+每线程 Session 为什么会影响检索性能	每线程 Session 可以降低全局互斥，但会增加内存占用。
+如果做中文语义检索，每线程 Session 该怎么理解	每线程 Session 可以降低全局互斥，但会增加内存占用。
+请解释一下候选回表	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 是干什么用的	候选回表负责从 record 索引读取问题、答案和作用域信息。
+候选回表 为什么会影响检索性能	候选回表负责从 record 索引读取问题、答案和作用域信息。
+如果做中文语义检索，候选回表 该怎么理解	候选回表负责从 record 索引读取问题、答案和作用域信息。
+请解释一下归并输出	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 是干什么用的	响应构造会把候选结果转成最终的业务返回格式。
+归并输出 为什么会影响检索性能	响应构造会把候选结果转成最终的业务返回格式。
+如果做中文语义检索，归并输出 该怎么理解	响应构造会把候选结果转成最终的业务返回格式。
+请解释一下KVLite Flat	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 是干什么用的	KVLite Flat 适合小规模数据下的精确向量检索基线。
+KVLite Flat 为什么会影响检索性能	KVLite Flat 适合小规模数据下的精确向量检索基线。
+如果做中文语义检索，KVLite Flat 该怎么理解	KVLite Flat 适合小规模数据下的精确向量检索基线。
+请解释一下KVLite HNSW	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 是干什么用的	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+KVLite HNSW 为什么会影响检索性能	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+如果做中文语义检索，KVLite HNSW 该怎么理解	KVLite HNSW 是当前语义缓存主路径的 ANN 索引实现。
+请解释一下数据规模阈值	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 是干什么用的	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+数据规模阈值 为什么会影响检索性能	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
+如果做中文语义检索，数据规模阈值 该怎么理解	小规模数据下 Flat 可能比 HNSW 更稳定且实现更简单。
