@@ -76,12 +76,12 @@ In practice this is `ttl_target_apply_expired_side_effects()`, which wraps the e
 
 The following regression suites were run and passed after the split:
 
-- [`tests/test_ttl_all_backends.sh`](../tests/test_ttl_all_backends.sh)
-- [`tests/test_ttl_rdb.sh`](../tests/test_ttl_rdb.sh)
-- [`tests/test_ttl_aof.sh`](../tests/test_ttl_aof.sh)
-- [`tests/test_ttl_tcp_replication.sh`](../tests/test_ttl_tcp_replication.sh)
-- [`tests/test_ttl_ebpf_replication.sh`](../tests/test_ttl_ebpf_replication.sh)
-- [`tests/test_ttl_qps.sh`](../tests/test_ttl_qps.sh)
+- [`tests/ttl/test_ttl_all_backends.sh`](../tests/ttl/test_ttl_all_backends.sh)
+- [`tests/ttl/test_ttl_rdb.sh`](../tests/ttl/test_ttl_rdb.sh)
+- [`tests/ttl/test_ttl_aof.sh`](../tests/ttl/test_ttl_aof.sh)
+- [`tests/ttl/test_ttl_tcp_replication.sh`](../tests/ttl/test_ttl_tcp_replication.sh)
+- [`tests/ttl/test_ttl_ebpf_replication.sh`](../tests/ttl/test_ttl_ebpf_replication.sh)
+- [`tests/ttl/test_ttl_qps.sh`](../tests/ttl/test_ttl_qps.sh)
 
 This covers GET/EXIST, TTL, lazy expire deletion, overwrite/persist behavior, RDB/AOF reload, TCP replication, eBPF replication, and `SORT` / `RANGE` filtering.
 
@@ -136,12 +136,12 @@ That means the lock-range boundary is now explicit and externally safe, but furt
 
 All of the following passed in this run:
 
-- `tests/test_ttl_all_backends.sh`
-- `tests/test_ttl_rdb.sh`
-- `tests/test_ttl_aof.sh`
-- `tests/test_ttl_tcp_replication.sh`
-- `tests/test_ttl_ebpf_replication.sh` (run under `sudo` on this host; plain user mode hit `Operation not permitted` from the BPF loader)
-- `tests/test_ttl_qps.sh`
+- `tests/ttl/test_ttl_all_backends.sh`
+- `tests/ttl/test_ttl_rdb.sh`
+- `tests/ttl/test_ttl_aof.sh`
+- `tests/ttl/test_ttl_tcp_replication.sh`
+- `tests/ttl/test_ttl_ebpf_replication.sh` (run under `sudo` on this host; plain user mode hit `Operation not permitted` from the BPF loader)
+- `tests/ttl/test_ttl_qps.sh`
 
 ### Microbench
 
@@ -160,7 +160,7 @@ The microbench still shows the remaining overhead is concentrated in the TTL pro
 
 ### End-To-End Benchmark
 
-`tests/test_ttl_qps.sh` with `TTL_QPS_COUNT=2000`, `TTL_QPS_SAMPLE_COUNT=20`, `TTL_QPS_TTL_SECS=3`, `TTL_QPS_WAIT_BUFFER_SECS=2` produced:
+`tests/ttl/test_ttl_qps.sh` with `TTL_QPS_COUNT=2000`, `TTL_QPS_SAMPLE_COUNT=20`, `TTL_QPS_TTL_SECS=3`, `TTL_QPS_WAIT_BUFFER_SECS=2` produced:
 
 - `rbtree`: `qps_pairs=125000.00`, `qps_ops=250000.00`
 - `skiptable`: `qps_pairs=8968.61`, `qps_ops=17937.22`
@@ -200,11 +200,11 @@ The focus later shifted to the skiptable write path, specifically SET / overwrit
 
 The following regression suites passed after the change:
 
-- [`tests/test_ttl_rdb.sh`](../tests/test_ttl_rdb.sh)
-- [`tests/test_ttl_aof.sh`](../tests/test_ttl_aof.sh)
-- [`tests/test_ttl_tcp_replication.sh`](../tests/test_ttl_tcp_replication.sh)
-- [`tests/test_ttl_ebpf_replication.sh`](../tests/test_ttl_ebpf_replication.sh)
-- [`tests/test_ttl_qps.sh`](../tests/test_ttl_qps.sh)
+- [`tests/ttl/test_ttl_rdb.sh`](../tests/ttl/test_ttl_rdb.sh)
+- [`tests/ttl/test_ttl_aof.sh`](../tests/ttl/test_ttl_aof.sh)
+- [`tests/ttl/test_ttl_tcp_replication.sh`](../tests/ttl/test_ttl_tcp_replication.sh)
+- [`tests/ttl/test_ttl_ebpf_replication.sh`](../tests/ttl/test_ttl_ebpf_replication.sh)
+- [`tests/ttl/test_ttl_qps.sh`](../tests/ttl/test_ttl_qps.sh)
 - [`tests/testcase.c`](../tests/testcase.c) mode 4 on a clean temporary server
 
 ### Targeted Bench
@@ -244,7 +244,7 @@ The overwrite fast path is worth keeping, but it is not sufficient by itself to 
 To answer that attribution question, I added a focused expired-path harness:
 
 - [`tests/ttl_expired_path_bench.c`](../tests/ttl_expired_path_bench.c)
-- [`tests/test_ttl_expired_path_profile.sh`](../tests/test_ttl_expired_path_profile.sh)
+- [`tests/benchmark/test_ttl_expired_path_profile.sh`](../tests/benchmark/test_ttl_expired_path_profile.sh)
 
 The harness splits the read path into three measurable cases:
 
@@ -258,23 +258,23 @@ It also isolates warmup and measured keys per scenario so one phase does not poi
 
 These TTL / replication suites were rerun first and passed before profiling:
 
-- [`tests/test_ttl_all_backends.sh`](../tests/test_ttl_all_backends.sh)
-- [`tests/test_ttl_rdb.sh`](../tests/test_ttl_rdb.sh)
-- [`tests/test_ttl_aof.sh`](../tests/test_ttl_aof.sh)
-- [`tests/test_ttl_tcp_replication.sh`](../tests/test_ttl_tcp_replication.sh)
-- [`tests/test_ttl_ebpf_replication.sh`](../tests/test_ttl_ebpf_replication.sh)
-- [`tests/test_ttl_qps.sh`](../tests/test_ttl_qps.sh)
+- [`tests/ttl/test_ttl_all_backends.sh`](../tests/ttl/test_ttl_all_backends.sh)
+- [`tests/ttl/test_ttl_rdb.sh`](../tests/ttl/test_ttl_rdb.sh)
+- [`tests/ttl/test_ttl_aof.sh`](../tests/ttl/test_ttl_aof.sh)
+- [`tests/ttl/test_ttl_tcp_replication.sh`](../tests/ttl/test_ttl_tcp_replication.sh)
+- [`tests/ttl/test_ttl_ebpf_replication.sh`](../tests/ttl/test_ttl_ebpf_replication.sh)
+- [`tests/ttl/test_ttl_qps.sh`](../tests/ttl/test_ttl_qps.sh)
 
 ### Latest Validation
 
 Before and after the TCP sync change, the following suites passed:
 
-- `tests/test_ttl_all_backends.sh`
-- `tests/test_ttl_rdb.sh`
-- `tests/test_ttl_aof.sh`
-- `tests/test_ttl_tcp_replication.sh`
-- `tests/test_ttl_ebpf_replication.sh`
-- `tests/test_ttl_qps.sh`
+- `tests/ttl/test_ttl_all_backends.sh`
+- `tests/ttl/test_ttl_rdb.sh`
+- `tests/ttl/test_ttl_aof.sh`
+- `tests/ttl/test_ttl_tcp_replication.sh`
+- `tests/ttl/test_ttl_ebpf_replication.sh`
+- `tests/ttl/test_ttl_qps.sh`
 
 ### TCP Sync Optimization
 

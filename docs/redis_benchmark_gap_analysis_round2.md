@@ -6,14 +6,14 @@
 
 已通过：
 
-- [tests/test_ttl_rdb.sh](../tests/test_ttl_rdb.sh)
-- [tests/test_ttl_aof.sh](../tests/test_ttl_aof.sh)
-- [tests/test_ttl_tcp_replication.sh](../tests/test_ttl_tcp_replication.sh)
-- [tests/test_ttl_ebpf_replication.sh](../tests/test_ttl_ebpf_replication.sh)
-- [tests/test_ttl_qps.sh](../tests/test_ttl_qps.sh)
+- [tests/ttl/test_ttl_rdb.sh](../tests/ttl/test_ttl_rdb.sh)
+- [tests/ttl/test_ttl_aof.sh](../tests/ttl/test_ttl_aof.sh)
+- [tests/ttl/test_ttl_tcp_replication.sh](../tests/ttl/test_ttl_tcp_replication.sh)
+- [tests/ttl/test_ttl_ebpf_replication.sh](../tests/ttl/test_ttl_ebpf_replication.sh)
+- [tests/ttl/test_ttl_qps.sh](../tests/ttl/test_ttl_qps.sh)
 - [tests/testcase.c](../tests/testcase.c) 的 mode 4 skiptable 烟测，在干净临时实例上通过
 
-本轮没有把 [tests/test_ttl_all_backends.sh](../tests/test_ttl_all_backends.sh) 和 [tests/test_paper_sync.c](../tests/test_paper_sync.c) 重新拉进来，它们仍然属于独立问题域，不计入这次 skiptable benchmark 结论。
+本轮没有把 [tests/ttl/test_ttl_all_backends.sh](../tests/ttl/test_ttl_all_backends.sh) 和 [tests/test_paper_sync.c](../tests/test_paper_sync.c) 重新拉进来，它们仍然属于独立问题域，不计入这次 skiptable benchmark 结论。
 
 ## 1. 最新 benchmark 结果重述
 
@@ -88,7 +88,7 @@ GET 只做 lookup，然后返回 value 指针，不需要改动节点状态。
 
 另外还有两个独立的功能问题需要单独修：
 
-- [tests/test_ttl_all_backends.sh](../tests/test_ttl_all_backends.sh) 的 array basic-expire 失败
+- [tests/ttl/test_ttl_all_backends.sh](../tests/ttl/test_ttl_all_backends.sh) 的 array basic-expire 失败
 - [tests/test_paper_sync.c](../tests/test_paper_sync.c) 的 slave_info 分配失败
 
 ## 7. 哪些属于 skiptable 本体，哪些属于 TTL / side-effect / replication-side
@@ -142,7 +142,7 @@ GET 只做 lookup，然后返回 value 指针，不需要改动节点状态。
 
 - [tests/skiptable_targeted_bench.c](../tests/skiptable_targeted_bench.c) 已经包含 existing-key lookup、missing-key lookup、insert-heavy 三类实验
 - [tests/ttl_lookup_split_bench.c](../tests/ttl_lookup_split_bench.c) 已经包含 pure_get、ttl_probe、current_get_core
-- [tests/ttl_expired_path_bench.c](../tests/ttl_expired_path_bench.c) 和 [tests/test_ttl_expired_path_profile.sh](../tests/test_ttl_expired_path_profile.sh) 已经覆盖 non-expired read、expired delete only、expired delete + TCP sync
+- [tests/ttl_expired_path_bench.c](../tests/ttl_expired_path_bench.c) 和 [tests/benchmark/test_ttl_expired_path_profile.sh](../tests/benchmark/test_ttl_expired_path_profile.sh) 已经覆盖 non-expired read、expired delete only、expired delete + TCP sync
 
 下一步最小实验建议是：
 
@@ -158,7 +158,7 @@ GET 只做 lookup，然后返回 value 指针，不需要改动节点状态。
 
 最新验证结果是：
 
-- [tests/test_ttl_rdb.sh](../tests/test_ttl_rdb.sh)、[tests/test_ttl_aof.sh](../tests/test_ttl_aof.sh)、[tests/test_ttl_tcp_replication.sh](../tests/test_ttl_tcp_replication.sh)、[tests/test_ttl_ebpf_replication.sh](../tests/test_ttl_ebpf_replication.sh)、[tests/test_ttl_qps.sh](../tests/test_ttl_qps.sh) 都通过了
+- [tests/ttl/test_ttl_rdb.sh](../tests/ttl/test_ttl_rdb.sh)、[tests/ttl/test_ttl_aof.sh](../tests/ttl/test_ttl_aof.sh)、[tests/ttl/test_ttl_tcp_replication.sh](../tests/ttl/test_ttl_tcp_replication.sh)、[tests/ttl/test_ttl_ebpf_replication.sh](../tests/ttl/test_ttl_ebpf_replication.sh)、[tests/ttl/test_ttl_qps.sh](../tests/ttl/test_ttl_qps.sh) 都通过了
 - [tests/testcase.c](../tests/testcase.c) 的 mode 4 在干净临时实例上通过
 - `tests/skiptable_targeted_bench` 里，overwrite-heavy 从 `1060.90 ns/op` 降到 `801.74 ns/op`，insert-heavy 也从 `357.66 ns/op` 降到 `227.67 ns/op`
 - 端到端 aligned benchmark 里，skiptable SET 仍只有 Redis 的 `0.830x`，GET 是 `0.818x`

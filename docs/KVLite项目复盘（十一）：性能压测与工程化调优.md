@@ -65,10 +65,10 @@ RANGE          是否按预期返回
 
 第二类是 benchmark，比如：
 
-- `scripts/bench_all.sh`
-- `scripts/kvstore_resp_bench.py`
-- `scripts/bench_vector_rw.sh`
-- `scripts/bench_vector_ef_compare.sh`
+- `scripts/benchmark/bench_all.sh`
+- `scripts/benchmark/kvstore_resp_bench.py`
+- `scripts/benchmark/bench_vector_rw.sh`
+- `scripts/benchmark/bench_vector_ef_compare.sh`
 - `tests/vector_benchmark.c`
 - `tests/ttl_lookup_split_bench.c`
 - `tests/skiptable_targeted_bench.c`
@@ -87,7 +87,7 @@ Pipeline 深度
 长时间运行稳定性
 ```
 
-比如 `scripts/bench_all.sh` 会用同一组参数对 KVLite 和 Redis 做对齐压测：`c=50`、`n=100000`、`P=1`、`value_size=32`、`keyspace=100000`。它不是只看某一条命令是否正确，而是统计 QPS、平均延迟、P50、P95、P99。
+比如 `scripts/benchmark/bench_all.sh` 会用同一组参数对 KVLite 和 Redis 做对齐压测：`c=50`、`n=100000`、`P=1`、`value_size=32`、`keyspace=100000`。它不是只看某一条命令是否正确，而是统计 QPS、平均延迟、P50、P95、P99。
 
 `tests/vector_benchmark.c` 则把向量压测拆成两种模式：
 
@@ -787,7 +787,7 @@ testcase mode 5 pipeline PASS
 
 ### 3 分钟版本
 
-KVLite 的压测是分层做的。第一层是 testcase，保证 SET/GET/TTL/AOF/RDB/主从/向量这些功能正确。第二层是基础 benchmark，用 `scripts/bench_all.sh` 和 redis-benchmark 对齐参数，比较 array、hash、rbtree、skiptable 在 SET/GET 上的吞吐和 P95/P99。这样先建立普通 KV 主链路 baseline。
+KVLite 的压测是分层做的。第一层是 testcase，保证 SET/GET/TTL/AOF/RDB/主从/向量这些功能正确。第二层是基础 benchmark，用 `scripts/benchmark/bench_all.sh` 和 redis-benchmark 对齐参数，比较 array、hash、rbtree、skiptable 在 SET/GET 上的吞吐和 P95/P99。这样先建立普通 KV 主链路 baseline。
 
 有了 baseline 后，再看 Pipeline。Pipeline 能减少 RTT 和系统调用开销，但要求 recv_buf 能累积多条命令，RESP peek 能逐条切命令，send_buf 能累积多个响应，而且响应不能乱序。KVLite 里用 `net_session_process_resp` 做批量解析和执行，testcase 里也有大 Pipeline 验证。
 

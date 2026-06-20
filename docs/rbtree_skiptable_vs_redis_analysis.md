@@ -25,7 +25,7 @@
 
 ## 2. 这次 benchmark 到底在测什么
 
-benchmark 脚本在 KVStore 和 Redis 两侧对齐了同一组核心参数。脚本默认把并发、请求数、pipeline、value size 和 keyspace 作为统一输入，并且 Redis 侧通过自定义命令和 KVStore 侧的命令模板对齐语义，入口见 [scripts/bench_all.sh](../scripts/bench_all.sh#L12-L17) 和 [scripts/bench_all.sh](../scripts/bench_all.sh#L120-L130)。KVStore 侧的命令模板在 [scripts/bench_all.sh](../scripts/bench_all.sh#L188-L205)，Redis 侧的对照命令在 [scripts/bench_all.sh](../scripts/bench_all.sh#L249-L257)。脚本最后还明确写了“SET/GET are directly aligned using redis-benchmark custom commands and same c/n/P/value_size/keyspace”，见 [scripts/bench_all.sh](../scripts/bench_all.sh#L333)。
+benchmark 脚本在 KVStore 和 Redis 两侧对齐了同一组核心参数。脚本默认把并发、请求数、pipeline、value size 和 keyspace 作为统一输入，并且 Redis 侧通过自定义命令和 KVStore 侧的命令模板对齐语义，入口见 [scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L12-L17) 和 [scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L120-L130)。KVStore 侧的命令模板在 [scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L188-L205)，Redis 侧的对照命令在 [scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L249-L257)。脚本最后还明确写了“SET/GET are directly aligned using redis-benchmark custom commands and same c/n/P/value_size/keyspace”，见 [scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L333)。
 
 这说明当前对比口径是“外部语义对齐”，不是“内部实现对齐”。Redis 的 SET/GET 命中的是它自己的哈希表路径，而 KVStore 的 rbtree / skiptable 是有序结构路径，所以不能把这组结果解释成“同一算法的不同实现速度比较”。更准确的说法是：这是一组面向应用语义的端到端对比，结果会同时受存储结构、RESP、内存分配和网络模型影响。
 
@@ -96,7 +96,7 @@ array 和 hash 在这份仓库里已经有更强的元数据和索引支撑。ar
 
 | 结论 | 证据文件 |
 |---|---|
-| benchmark 口径是对齐的 | [scripts/bench_all.sh](../scripts/bench_all.sh#L12-L17)，[scripts/bench_all.sh](../scripts/bench_all.sh#L130)，[scripts/bench_all.sh](../scripts/bench_all.sh#L191-L205)，[scripts/bench_all.sh](../scripts/bench_all.sh#L255-L257)，[scripts/bench_all.sh](../scripts/bench_all.sh#L333) |
+| benchmark 口径是对齐的 | [scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L12-L17)，[scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L130)，[scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L191-L205)，[scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L255-L257)，[scripts/benchmark/bench_all.sh](../scripts/benchmark/bench_all.sh#L333) |
 | 当前结果里 rbtree / skiptable 明显落后 | [results/summary.md](../results/summary.md) |
 | 主目标没有显式优化编译参数 | [Makefile](../Makefile#L59) |
 | 运行基线偏向 reactor / pool / AOF off | [src/core/kvs_config.c](../src/core/kvs_config.c#L32-L48)，[include/kvs_config.h](../include/kvs_config.h#L30)，[config/master.conf](../config/master.conf#L7-L33) |

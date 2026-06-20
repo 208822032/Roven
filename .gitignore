@@ -24,26 +24,21 @@ cmake-build-*/
 /kvstore
 /src/eBPF/ebpf_syncd
 
-# Test / benchmark binaries generated from tests/*.c
-/tests/ai_chat_schema_test
-/tests/kvstore_client
-/tests/mempool_test
-/tests/skiptable_targeted_bench
-/tests/test_bigvalue
-/tests/test_binary_key
-/tests/test_paper
-/tests/test_paper_sync
-/tests/testcase
-/tests/ttl_expired_path_bench
-/tests/ttl_lookup_split_bench
-/tests/vector_benchmark
-/tests/vector_import_bench
-/tests/vector_search_bench
-/tests/vector_store_bench
-/tests/vector_testcase
-/tests/write_qps_test
-/tests/write_ttl_qps
-/tests/write_ttl_qps_test
+# Build output directory (all test binaries, libs, obj output here)
+/build/
+
+# Test runtime artifacts (legacy locations in tests/)
+/tests/**/*.log
+/tests/**/*.tmp
+/tests/**/*.pid
+/tests/**/*.rdb
+/tests/**/*.aof
+/tests/**/*.dat
+/tests/**/*.gcda
+/tests/**/*.gcno
+/tests/**/*.profraw
+/tests/**/*.profdata
+/tests/**/core
 
 # eBPF generated files
 /src/eBPF/*.o
@@ -80,19 +75,24 @@ cmake-build-*/
 /models/
 
 # jemalloc generated build/install outputs
-/jemalloc/lib/
-/jemalloc/bin/
-/jemalloc/share/
-/jemalloc/Makefile
-/jemalloc/config.log
-/jemalloc/config.status
-/jemalloc/jemalloc.pc
-/jemalloc/include/jemalloc/jemalloc.h
+/third_party/jemalloc/lib/
+/third_party/jemalloc/bin/
+/third_party/jemalloc/share/
+/third_party/jemalloc/Makefile
+/third_party/jemalloc/config.log
+/third_party/jemalloc/config.status
+/third_party/jemalloc/jemalloc.pc
+/third_party/jemalloc/include/jemalloc/jemalloc.h
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
 
+# One-time analysis data
+git_iteration_data/
 
-# Project-local scratch files
-paper.txt
-迭代路径表.md
-CLAUDE.md
-git_iteration_data
+# AI tool configs
+.claude/
+.agents/
+.codex/

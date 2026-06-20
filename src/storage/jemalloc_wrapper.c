@@ -1,5 +1,5 @@
 #include "jemalloc_wrapper.h"
-#include "../../jemalloc/include/jemalloc/jemalloc.h"
+#include "../../third_party/jemalloc/include/jemalloc/jemalloc.h"
 #include <execinfo.h>
 #include <stdio.h>
 

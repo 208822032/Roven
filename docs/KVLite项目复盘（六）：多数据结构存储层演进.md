@@ -269,7 +269,7 @@ e57311b 拆分TTL路径，压缩查找/响应冗余，目前支持的四种数�
 37d2e7a 优化：四种数据结构读写基本与redis持平
 ```
 
-这个优化序列之所以能成立，前提是四种数据结构暴露了同一套语义（SET/GET/DEL），并且可以用同一个 benchmark 脚本（`scripts/bench_all.sh`）对它们分别压测。如果每个数据结构的命令名不同、调用路径不同，就不可能做这种"同口径对比"。
+这个优化序列之所以能成立，前提是四种数据结构暴露了同一套语义（SET/GET/DEL），并且可以用同一个 benchmark 脚本（`scripts/benchmark/bench_all.sh`）对它们分别压测。如果每个数据结构的命令名不同、调用路径不同，就不可能做这种"同口径对比"。
 
 从最终 benchmark 结果来看（引用 `docs/rbtree_skiptable_vs_redis_analysis.md` 中的对比表格）：
 

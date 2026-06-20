@@ -1,4 +1,0 @@
-prepare: 10000/100000 success=10000 failed=0
-prepare: 20000/100000 success=20000 failed=0
-prepare: 30000/100000 success=30000 failed=0
-prepare: 40000/100000 success=40000 failed=0

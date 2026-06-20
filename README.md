@@ -2,6 +2,13 @@
 
 基于 C 语言实现的轻量级 KV 存储引擎，扩展面向 AI Chat / 知澜助手的向量语义缓存能力。
 
+正式入口：
+
+- 文档索引：`docs/INDEX.md`
+- Route C 文档：`docs/route_c/README.md`
+- 目录整理报告：`docs/project_layout_cleanup_report.md`
+- Route C 已完工；测试脚本已删除，验证证据保留在 `docs/route_c/` 中。
+
 ---
 
 ## 1. 项目简介
@@ -129,7 +136,6 @@ flowchart TD
 ### 4.1 普通构建
 
 ```bash
-git submodule init && git submodule update
 make
 
 # 启动服务（默认会读取 config/kvstore.conf）
@@ -145,13 +151,13 @@ make
 
 ```bash
 # 基础 KV 功能测试
-./tests/testcase 127.0.0.1 9300 5
+./build/tests/bin/testcase 127.0.0.1 9300 5
 
 # 向量功能测试
-./tests/vector_testcase 127.0.0.1 9300
+./build/tests/bin/vector_testcase 127.0.0.1 9300
 
 # 向量压测（latency 模式）
-BENCH_MODE=latency COUNT=100000 SEARCH_COUNT=10000 ./scripts/bench_vector_rw.sh
+BENCH_MODE=latency COUNT=100000 SEARCH_COUNT=10000 ./scripts/benchmark/bench_vector_rw.sh
 ```
 
 ### 4.2 ONNX embedding 构建
@@ -255,9 +261,9 @@ VINDEX REBUILD
 启动服务后，可以使用项目自带客户端验证：
 
 ```bash
-./tests/kvstore_client 127.0.0.1 28080 -c "VSET 怎么重置密码 可以在登录页点击忘记密码 onnx_demo"
-./tests/kvstore_client 127.0.0.1 28080 -c "VGET 怎么重置密码 onnx_demo"
-./tests/kvstore_client 127.0.0.1 28080 -c "VSEARCH 忘记密码怎么办 onnx_demo 5 0.0"
+./build/tests/bin/kvstore_client 127.0.0.1 28080 -c "VSET 怎么重置密码 可以在登录页点击忘记密码 onnx_demo"
+./build/tests/bin/kvstore_client 127.0.0.1 28080 -c "VGET 怎么重置密码 onnx_demo"
+./build/tests/bin/kvstore_client 127.0.0.1 28080 -c "VSEARCH 忘记密码怎么办 onnx_demo 5 0.0"
 ```
 
 预期结果：
@@ -270,14 +276,14 @@ VINDEX REBUILD
 ONNX embedding 语义召回检查：
 
 ```bash
-bash tests/semantic_onnx_test.sh 127.0.0.1 28080
+bash tests/vector/semantic_onnx_test.sh 127.0.0.1 28080
 # 或
 make test-embedding
 ```
 
 脚本会写入几组中文问答，用 `0.0 / 0.70 / 0.75 / 0.80 / 0.85` 多个 threshold 查询，并打印每次返回的 score，方便标定 `vector_score_threshold`。
 
-ONNX embedding 性能可通过 `tests/vector_benchmark` 或 `make test-embedding` 验证，具体结果因硬件和模型而异。
+ONNX embedding 性能可通过 `build/tests/bin/vector_benchmark` 或 `make test-embedding` 验证，具体结果因硬件和模型而异。
 
 ## 7. 向量索引设计
 
@@ -380,7 +386,7 @@ distance_backend=auto
 embedding_provider=hash
 ```
 
-ONNX embedding 模式建议从 `vector_score_threshold=0.75` 起步，再根据 `tests/semantic_onnx_test.sh` 输出的 score 分布调整。中文短问句、业务数据集和 tokenizer 差异都会影响阈值。
+ONNX embedding 模式建议从 `vector_score_threshold=0.75` 起步，再根据 `tests/vector/semantic_onnx_test.sh` 输出的 score 分布调整。中文短问句、业务数据集和 tokenizer 差异都会影响阈值。
 
 ### 9.1 当前 ONNX embedding 限制
 
@@ -441,7 +447,7 @@ TCP 主从同步对写吞吐影响很小；eBPF 链路通过 tx_batcher 批处�
 
 ### 11.2 向量压测
 
-压测入口：`scripts/bench_vector_rw.sh`，底层调用 `tests/vector_benchmark`。
+压测入口：`scripts/benchmark/bench_vector_rw.sh`，底层调用 `build/tests/bin/vector_benchmark`。
 
 **Latency 模式** — 单连接同步请求，核心看 avg / p95 / p99，QPS 仅供参考：
 
@@ -449,7 +455,7 @@ TCP 主从同步对写吞吐影响很小；eBPF 链路通过 tx_batcher 批处�
 BENCH_MODE=latency \
 COUNT=100000 \
 SEARCH_COUNT=10000 \
-./scripts/bench_vector_rw.sh
+./scripts/benchmark/bench_vector_rw.sh
 ```
 
 **Throughput 模式** — 多连接 + pipeline，核心看 QPS 并结合 p95 / p99 / errors：
@@ -462,7 +468,7 @@ VSET_CLIENTS=50 VSET_PIPELINE=1 \
 VGET_CLIENTS=100 VGET_PIPELINE=16 \
 VSEARCH_CLIENTS=50 VSEARCH_PIPELINE=4 \
 VDEL_CLIENTS=100 VDEL_PIPELINE=16 \
-./scripts/bench_vector_rw.sh
+./scripts/benchmark/bench_vector_rw.sh
 ```
 
 **压测结论**（100K 向量、64 维、HNSW / IP / AVX2、ef_search=128）：
@@ -487,10 +493,10 @@ VDEL_CLIENTS=100 VDEL_PIPELINE=16 \
 | 配置 | `config/master.conf` | 主节点配置 |
 | 配置 | `config/slave.conf` | 从节点配置 |
 | 配置 | `config/ebpf_sync.conf` | eBPF 同步配置 |
-| 脚本 | `scripts/bench_all.sh` | KV 对齐压测（KVStore vs Redis） |
-| 脚本 | `scripts/bench_vector_rw.sh` | 向量读写压测 |
-| 测试 | `tests/vector_testcase` | 向量 CRUD 功能测试 |
-| 测试 | `tests/semantic_onnx_test.sh` | ONNX embedding 中文语义召回与 score 分布检查 |
-| 测试 | `tests/vector_benchmark` | 向量压测工具 |
+| 脚本 | `scripts/benchmark/bench_all.sh` | KV 对齐压测（KVStore vs Redis） |
+| 脚本 | `scripts/benchmark/bench_vector_rw.sh` | 向量读写压测 |
+| 测试 | `build/tests/bin/vector_testcase` | 向量 CRUD 功能测试 |
+| 测试 | `tests/vector/semantic_onnx_test.sh` | ONNX embedding 中文语义召回与 score 分布检查 |
+| 测试 | `build/tests/bin/vector_benchmark` | 向量压测工具 |
 | 数据 | `results/raw.csv` | KV 压测原始数据 |
 | 数据 | `results/vector_rw_raw.csv` | 向量压测原始数据 |

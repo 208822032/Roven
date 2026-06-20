@@ -3,7 +3,7 @@
 # ============================================================================
 #  Quick start:
 #    make doctor      # 检查环境
-#    make setup       # 一键初始化 (submodules + libbpf + btf2header)
+#    make setup       # 一键初始化 (vendored deps + libbpf + btf2header)
 #    make             # 完整构建
 #
 #  Targets:
@@ -13,7 +13,7 @@
 #    tests           仅构建测试二进制
 #    test            构建默认测试二进制
 #    test-embedding  运行 ONNX embedding 语义召回检查（需服务已启动）
-#    setup           初始化：git submodules + bootstrap
+#    setup           初始化：vendored 依赖检查 + bootstrap
 #    embedding       构建 ONNX embedding 版本
 #    setup-embedding 显式下载 ONNX Runtime 和 bge-small-zh-v1.5 模型
 #    deps            检查/提示缺失的系统包 (AUTO_INSTALL_DEPS=1 自动安装)
@@ -52,6 +52,9 @@ SRC_UTILS   := src/utils
 SRC_VECTOR  := src/vector
 SRC_EMBED   := src/embedding
 TEST_DIR    := tests
+BUILD_DIR   := build
+BUILD_TESTS_BIN := $(BUILD_DIR)/tests/bin
+BUILD_LIB   := $(BUILD_DIR)/lib
 KVS_LOG_OBJS := $(SRC_UTILS)/kvs_log.o $(SRC_UTILS)/kvs_log_writer.o
 
 # ── embedding runtime 选择 ─────────────────────────────────────────────
@@ -89,7 +92,7 @@ BTF2HEADER_DIR  := $(TOOLS_DIR)/btf2header
 BTF2HEADER_BIN  := $(BTF2HEADER_DIR)/btf2header
 
 # ── jemalloc ─────────────────────────────────────────────────────────────
-JEMALLOC_DIR     := jemalloc
+JEMALLOC_DIR     := third_party/jemalloc
 JEMALLOC_INCLUDE := $(JEMALLOC_DIR)/include
 JEMALLOC_LIB     := $(JEMALLOC_DIR)/lib/libjemalloc.a
 
@@ -174,28 +177,31 @@ else
 endif
 
 # ── 测试目标 ─────────────────────────────────────────────────────────────
-TEST_CASE               := $(TEST_DIR)/testcase
-TEST_WRITE_QPS          := $(TEST_DIR)/write_qps_test
-TEST_TTL_QPS            := $(TEST_DIR)/write_ttl_qps
-TEST_TTL_EXPIRED_PATH   := $(TEST_DIR)/ttl_expired_path_bench
-TEST_KVSTORE_CLIENT     := $(TEST_DIR)/kvstore_client
-TEST_MEMPOOL            := $(TEST_DIR)/mempool_test
-TEST_PAPER              := $(TEST_DIR)/test_paper
-TEST_PAPER_SYNC         := $(TEST_DIR)/test_paper_sync
-TEST_BIGVALUE           := $(TEST_DIR)/test_bigvalue
-TEST_AI_CHAT_SCHEMA     := $(TEST_DIR)/ai_chat_schema_test
-TEST_VECTOR             := $(TEST_DIR)/vector_testcase
-TEST_TTL_LOOKUP_SPLIT   := $(TEST_DIR)/ttl_lookup_split_bench
-TEST_SKIPTABLE_TARGETED := $(TEST_DIR)/skiptable_targeted_bench
-TEST_VECTOR_IMPORT_BENCH := $(TEST_DIR)/vector_import_bench
-TEST_VECTOR_BENCHMARK   := $(TEST_DIR)/vector_benchmark
+TEST_CASE               := $(BUILD_TESTS_BIN)/testcase
+TEST_WRITE_QPS          := $(BUILD_TESTS_BIN)/write_qps_test
+TEST_TTL_QPS            := $(BUILD_TESTS_BIN)/write_ttl_qps
+TEST_TTL_EXPIRED_PATH   := $(BUILD_TESTS_BIN)/ttl_expired_path_bench
+TEST_KVSTORE_CLIENT     := $(BUILD_TESTS_BIN)/kvstore_client
+TEST_MEMPOOL            := $(BUILD_TESTS_BIN)/mempool_test
+TEST_PAPER              := $(BUILD_TESTS_BIN)/test_paper
+TEST_PAPER_SYNC         := $(BUILD_TESTS_BIN)/test_paper_sync
+TEST_BIGVALUE           := $(BUILD_TESTS_BIN)/test_bigvalue
+TEST_AI_CHAT_SCHEMA     := $(BUILD_TESTS_BIN)/ai_chat_schema_test
+TEST_VECTOR             := $(BUILD_TESTS_BIN)/vector_testcase
+TEST_TTL_LOOKUP_SPLIT   := $(BUILD_TESTS_BIN)/ttl_lookup_split_bench
+TEST_SKIPTABLE_TARGETED := $(BUILD_TESTS_BIN)/skiptable_targeted_bench
+TEST_VECTOR_IMPORT_BENCH := $(BUILD_TESTS_BIN)/vector_import_bench
+TEST_VECTOR_BENCHMARK   := $(BUILD_TESTS_BIN)/vector_benchmark
+TEST_BINARY_KEY         := $(BUILD_TESTS_BIN)/test_binary_key
 
 TEST_BINARIES = \
 	$(TEST_CASE) $(TEST_WRITE_QPS) $(TEST_TTL_QPS) \
 	$(TEST_TTL_EXPIRED_PATH) $(TEST_KVSTORE_CLIENT) \
 	$(TEST_MEMPOOL) $(TEST_PAPER) $(TEST_PAPER_SYNC) \
 	$(TEST_BIGVALUE) $(TEST_AI_CHAT_SCHEMA) $(TEST_VECTOR) \
-	$(TEST_VECTOR_IMPORT_BENCH) $(TEST_VECTOR_BENCHMARK)
+	$(TEST_VECTOR_IMPORT_BENCH) $(TEST_VECTOR_BENCHMARK) \
+	$(TEST_TTL_LOOKUP_SPLIT) $(TEST_SKIPTABLE_TARGETED) \
+	$(TEST_BINARY_KEY)
 
 TARGET := kvstore
 
@@ -209,7 +215,7 @@ TARGET := kvstore
 	@echo '  (忽略隐式链接规则 $@)'
 
 .PHONY: all setup deps bootstrap doctor clean distclean
-.PHONY: main ebpf tests test test-embedding help
+.PHONY: main ebpf tests test check test-embedding help
 .PHONY: embedding setup-embedding setup-onnx check-embedding-assets
 
 # 默认：完整构建
@@ -232,7 +238,17 @@ tests: $(NTYCO_LIB) $(TEST_BINARIES)
 test: tests
 	@echo ""
 	@echo "  ✓ 默认测试二进制已构建"
-	@echo "    示例: ./tests/vector_testcase 127.0.0.1 9300"
+	@echo "    示例: ./build/tests/bin/vector_testcase 127.0.0.1 9300"
+
+# 轻量自检目标 — 仅运行不依赖后台服务的测试
+check: all
+	@echo ""
+	@echo "  check: 运行离线单元测试..."
+	@./build/tests/bin/mempool_test
+	@echo "  mempool_test: PASS"
+	@./build/tests/bin/ai_chat_schema_test
+	@echo "  ai_chat_schema_test: PASS"
+	@echo "  check: 所有离线测试通过"
 
 test-embedding:
 	@echo "ONNX embedding semantic check"
@@ -240,9 +256,9 @@ test-embedding:
 	@echo "  ./kvstore -c config/kvstore-embedding.conf"
 	@echo ""
 	@echo "Then run:"
-	@echo "  bash tests/semantic_onnx_test.sh 127.0.0.1 28080"
+	@echo "  bash tests/vector/semantic_onnx_test.sh 127.0.0.1 28080"
 	@echo ""
-	@bash tests/semantic_onnx_test.sh 127.0.0.1 28080
+	@bash tests/vector/semantic_onnx_test.sh 127.0.0.1 28080
 
 # 仅 eBPF
 ebpf: $(EBPF_TARGETS)
@@ -260,6 +276,7 @@ help:
 	@echo "  main        仅构建主服务 kvstore"
 	@echo "  tests       仅构建测试二进制"
 	@echo "  test        构建默认测试二进制"
+	@echo "  check       构建全部并运行离线单元测试"
 	@echo "  test-embedding  运行 ONNX embedding 语义召回检查（需服务已启动）"
 	@echo "  ebpf        仅构建 eBPF 对象"
 	@echo "  embedding   构建 ONNX embedding 版本"
@@ -290,7 +307,7 @@ setup: deps _init_submodules bootstrap
 	@echo "  ✓ 环境初始化完成，现在可以执行 make"
 
 setup-embedding:
-	@bash tools/setup_onnx_embedding.sh
+	@bash scripts/build/setup_onnx_embedding.sh
 
 setup-onnx: setup-embedding
 
@@ -319,11 +336,11 @@ bootstrap: $(BOOTSTRAP_LIBBPF) $(BTF2HEADER_BIN)
 
 # ── 系统依赖 ────────────────────────────────────────────────────────────
 deps:
-	@scripts/install_deps.sh
+	@scripts/build/install_deps.sh
 
 # ── 全面诊断 ────────────────────────────────────────────────────────────
 doctor:
-	@scripts/doctor.sh
+	@scripts/dev/doctor.sh
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                       libbpf bootstrap                                 ║
@@ -334,7 +351,7 @@ LIBBPF_URL := https://github.com/libbpf/libbpf.git
 
 $(BOOTSTRAP_LIBBPF):
 	@echo "[bootstrap] 构建 libbpf $(LIBBPF_VER) → $(LIBBPF_DIR)"
-	@scripts/bootstrap_libbpf.sh $(LIBBPF_DIR) $(LIBBPF_VER) $(LIBBPF_URL)
+	@scripts/build/bootstrap_libbpf.sh $(LIBBPF_DIR) $(LIBBPF_VER) $(LIBBPF_URL)
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                       btf2header 工具                                 ║
@@ -360,6 +377,16 @@ $(NTYCO_DIR)/objs/%.o: $(NTYCO_CORE_DIR)/%.c | $(NTYCO_DIR)/objs
 $(NTYCO_LIB): $(NTYCO_OBJS)
 	ar rcs $@ $^
 
+# ── kvstore 核心库（供 test/benchmark 链接，排除 main） ──────────────────
+# build/lib/libkvstore.a is an internal static library used by tests and benchmarks.
+# It excludes the kvstore main object and is not a stable public SDK artifact.
+LIBKVSTORE_OBJS := $(filter-out $(SRC_CORE)/kvstore.o, $(OBJS))
+LIBKVSTORE      := $(BUILD_LIB)/libkvstore.a
+
+$(LIBKVSTORE): $(LIBKVSTORE_OBJS)
+	@mkdir -p $(BUILD_LIB)
+	ar rcs $@ $^
+
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                       主二进制 kvstore                                ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
@@ -371,69 +398,63 @@ $(TARGET): $(OBJS) $(NTYCO_LIB)
 # ║                       测试二进制                                      ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-$(TEST_CASE): $(TEST_DIR)/testcase.c
+# 输出目录：所有测试二进制统一进入 build/tests/bin/
+# 库依赖：需要链接生产 .o 的测试走 libkvstore.a，不再直接引用 src/*.o
+
+$(BUILD_TESTS_BIN):
+	@mkdir -p $@
+
+# ── 简单客户端测试 (仅自源码，不依赖 libkvstore) ────────────────────────
+
+$(TEST_CASE): $(TEST_DIR)/testcase.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_WRITE_QPS): $(TEST_DIR)/write_qps_test.c
+$(TEST_WRITE_QPS): $(TEST_DIR)/write_qps_test.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_TTL_QPS): $(TEST_DIR)/write_ttl_qps_test.c
+$(TEST_TTL_QPS): $(TEST_DIR)/write_ttl_qps_test.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_TTL_EXPIRED_PATH): $(TEST_DIR)/ttl_expired_path_bench.c
+$(TEST_TTL_EXPIRED_PATH): $(TEST_DIR)/ttl_expired_path_bench.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_KVSTORE_CLIENT): $(TEST_DIR)/kvstore_client.c
+$(TEST_KVSTORE_CLIENT): $(TEST_DIR)/kvstore_client.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< -lreadline
 
-$(TEST_PAPER): $(TEST_DIR)/test_paper.c
+$(TEST_PAPER): $(TEST_DIR)/test_paper.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_PAPER_SYNC): $(TEST_DIR)/test_paper_sync.c $(NTYCO_LIB)
+$(TEST_PAPER_SYNC): $(TEST_DIR)/test_paper_sync.c $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -lpthread
 
-$(TEST_BIGVALUE): $(TEST_DIR)/test_bigvalue.c $(NTYCO_LIB)
+$(TEST_BIGVALUE): $(TEST_DIR)/test_bigvalue.c $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -lpthread
 
-TTL_LOOKUP_SPLIT_OBJS = $(SRC_STORAGE)/kvs_mempool.o $(SRC_STORAGE)/kvs_rbtree.o \
-	$(SRC_STORAGE)/kvs_skiptable.o $(KVS_LOG_OBJS)
-
-$(TEST_TTL_LOOKUP_SPLIT): $(TEST_DIR)/ttl_lookup_split_bench.c $(TTL_LOOKUP_SPLIT_OBJS)
-	$(CC) $(CFLAGS) -o $@ $< $(TTL_LOOKUP_SPLIT_OBJS) -lpthread -ldl
-
-$(TEST_SKIPTABLE_TARGETED): $(TEST_DIR)/skiptable_targeted_bench.c \
-	$(SRC_STORAGE)/kvs_skiptable.o $(SRC_STORAGE)/kvs_mempool.o $(KVS_LOG_OBJS)
-	$(CC) $(CFLAGS) -o $@ $< \
-		$(SRC_STORAGE)/kvs_skiptable.o $(SRC_STORAGE)/kvs_mempool.o \
-		$(KVS_LOG_OBJS) -lpthread -ldl
-
-MEMPOOL_OBJS = $(SRC_STORAGE)/kvs_mempool.o $(SRC_CORE)/kvs_config.o \
-	$(SRC_CORE)/kvs_globals.o $(KVS_LOG_OBJS) \
-	$(SRC_STORAGE)/jemalloc_wrapper.o $(SRC_STORAGE)/kvs_array.o \
-	$(SRC_STORAGE)/kvs_rbtree.o $(SRC_STORAGE)/kvs_hash.o \
-	$(SRC_STORAGE)/kvs_skiptable.o
-
-$(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(MEMPOOL_OBJS)
-	$(CC) $(CFLAGS) -o $@ $< $(MEMPOOL_OBJS) -lpthread $(JEMALLOC_LIB) -ldl
-
-$(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c \
-	$(SRC_STORAGE)/kvs_mempool.o $(SRC_STORAGE)/kvs_array.o \
-	$(SRC_STORAGE)/kvs_rbtree.o $(SRC_STORAGE)/kvs_hash.o \
-	$(SRC_STORAGE)/kvs_skiptable.o $(SRC_CORE)/kvs_globals.o $(KVS_LOG_OBJS)
-	$(CC) $(CFLAGS) -o $@ $< \
-		$(SRC_STORAGE)/kvs_mempool.o $(SRC_STORAGE)/kvs_array.o \
-		$(SRC_STORAGE)/kvs_rbtree.o $(SRC_STORAGE)/kvs_hash.o \
-		$(SRC_STORAGE)/kvs_skiptable.o $(SRC_CORE)/kvs_globals.o \
-		$(KVS_LOG_OBJS) -lpthread -ldl
-
-$(TEST_VECTOR): $(TEST_DIR)/vector_testcase.c
+$(TEST_VECTOR): $(TEST_DIR)/vector_testcase.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_VECTOR_IMPORT_BENCH): $(TEST_DIR)/vector_import_bench.c
+$(TEST_VECTOR_IMPORT_BENCH): $(TEST_DIR)/vector_import_bench.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_VECTOR_BENCHMARK): $(TEST_DIR)/vector_benchmark.c
+$(TEST_VECTOR_BENCHMARK): $(TEST_DIR)/vector_benchmark.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< -lm
+
+# ── 内核链接测试 (通过 libkvstore.a，不直接链接 src/*.o) ────────────────
+
+$(TEST_TTL_LOOKUP_SPLIT): $(TEST_DIR)/ttl_lookup_split_bench.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_LIB) -lkvstore -lpthread -ldl
+
+$(TEST_SKIPTABLE_TARGETED): $(TEST_DIR)/skiptable_targeted_bench.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_LIB) -lkvstore -lpthread -ldl
+
+$(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_LIB) -lkvstore -lpthread $(JEMALLOC_LIB) -ldl
+
+$(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_LIB) -lkvstore -lpthread -ldl
+
+$(TEST_BINARY_KEY): $(TEST_DIR)/test_binary_key.c | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ $<
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                     eBPF 构建 (ENABLE_EBPF=1)                         ║
@@ -545,12 +566,18 @@ $(SRC_EMBED)/embedding_runtime_onnx.o: check-onnx-runtime
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(TEST_BINARIES) $(SRC_DIST)/*.o
+	rm -f $(OBJS) $(TARGET) $(SRC_DIST)/*.o
 	rm -f $(SRC_EMBED)/embedding_runtime.o $(SRC_EMBED)/embedding_runtime_onnx.o
-	rm -f $(TEST_DIR)/write_ttl_qps_test
-	rm -f $(TEST_TTL_EXPIRED_PATH) $(TEST_TTL_LOOKUP_SPLIT) $(TEST_SKIPTABLE_TARGETED)
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H) $(VMLINUX_KVER)
+	rm -rf $(BUILD_DIR)
+	@# Legacy runtime artifacts left in tests/ by old scripts
+	@find tests -maxdepth 2 -type f \( \
+		-name "*.log" -o -name "*.tmp" -o -name "*.pid" \
+		-o -name "*.rdb" -o -name "*.aof" -o -name "*.dat" \
+		-o -name "*.gcda" -o -name "*.gcno" \
+		-o -name "*.profraw" -o -name "*.profdata" \
+		-o -name "core" \) -delete 2>/dev/null || true
 
 distclean: clean
 	rm -rf $(THIRD_PARTY)
