@@ -86,8 +86,9 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
     snprintf(cfg->vector_metric, sizeof(cfg->vector_metric), "%s", "ip");
     cfg->vector_hnsw_m = 32;
-    cfg->vector_hnsw_ef_construction = 256;
+    cfg->vector_hnsw_ef_construction = 128;
     cfg->vector_hnsw_ef_search = 256;
+    cfg->vector_hnsw_initial_capacity = 0;
     cfg->vector_score_threshold = 0.85f;
     cfg->vector_scope_overfetch_factor = 4;
     snprintf(cfg->vector_distance_backend, sizeof(cfg->vector_distance_backend), "%s", "auto");
@@ -356,6 +357,7 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
         } else if (strcasecmp(key, "vector_index_type") == 0) {
             if (strcasecmp(val, "flat") == 0 ||
                 strcasecmp(val, "hnsw") == 0 ||
+                strcasecmp(val, "hnswlib_hnsw") == 0 ||
                 strcasecmp(val, "ivf_flat") == 0 ||
                 strcasecmp(val, "sq8_flat") == 0 ||
                 strcasecmp(val, "faiss_hnsw") == 0 ||
@@ -382,6 +384,11 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             int v = atoi(val);
             if (v > 0) {
                 cfg->vector_hnsw_ef_search = v;
+            }
+        } else if (strcasecmp(key, "vector_hnsw_initial_capacity") == 0) {
+            int v = atoi(val);
+            if (v >= 0) {
+                cfg->vector_hnsw_initial_capacity = v;
             }
         } else if (strcasecmp(key, "vector_score_threshold") == 0) {
             float v = (float)atof(val);
@@ -673,8 +680,11 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                 const char *v = argv[++i];
                 if (strcasecmp(v, "flat") == 0 ||
                     strcasecmp(v, "hnsw") == 0 ||
+                    strcasecmp(v, "hnswlib_hnsw") == 0 ||
                     strcasecmp(v, "ivf_flat") == 0 ||
-                    strcasecmp(v, "sq8_flat") == 0) {
+                    strcasecmp(v, "sq8_flat") == 0 ||
+                    strcasecmp(v, "faiss_hnsw") == 0 ||
+                    strcasecmp(v, "faiss_flat") == 0) {
                     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", v);
                 }
             }
@@ -697,6 +707,13 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                 int v = atoi(argv[++i]);
                 if (v > 0) {
                     cfg->vector_hnsw_ef_search = v;
+                }
+            }
+        } else if (strcmp(argv[i], "--vector_hnsw_initial_capacity") == 0) {
+            if (i + 1 < argc) {
+                int v = atoi(argv[++i]);
+                if (v >= 0) {
+                    cfg->vector_hnsw_initial_capacity = v;
                 }
             }
         } else if (strcmp(argv[i], "--vector_score_threshold") == 0) {

@@ -56,6 +56,7 @@ typedef struct {
     const char *threshold;
     text_mode_t text_mode;
     int prepare_count;
+    int prepare_only;
 } config_t;
 
 typedef struct {
@@ -222,17 +223,19 @@ static int send_vsearch(int fd, const char *query, const char *scope,
     const char *parts[5];
     size_t lens[5];
     char topk_buf[32];
+    int has_scope = scope != NULL && scope[0] != '\0';
+    int has_threshold = threshold != NULL && threshold[0] != '\0';
     size_t count = 0;
 
     snprintf(topk_buf, sizeof(topk_buf), "%d", topk);
 
     parts[count] = "VSEARCH"; lens[count] = 7; count++;
     parts[count] = query; lens[count] = strlen(query); count++;
-    if (scope && scope[0]) {
-        parts[count] = scope; lens[count] = strlen(scope); count++;
+    if (has_scope || has_threshold) {
+        parts[count] = scope ? scope : ""; lens[count] = scope ? strlen(scope) : 0; count++;
     }
     parts[count] = topk_buf; lens[count] = strlen(topk_buf); count++;
-    if (threshold && threshold[0]) {
+    if (has_threshold) {
         parts[count] = threshold; lens[count] = strlen(threshold); count++;
     }
 
@@ -843,20 +846,29 @@ static void run_throughput(const config_t *cfg) {
 static void run_prepare(const config_t *cfg) {
     char question[MAX_KEY_LEN], answer[MAX_VAL_LEN];
     char recv_buf[RECV_BUF_SIZE];
+    long long *latencies = malloc((size_t)cfg->prepare_count * sizeof(long long));
 
     int fd = connect_tcp(cfg->host, cfg->port);
     if (fd < 0) {
         fprintf(stderr, "prepare: connect failed\n");
+        free(latencies);
+        exit(1);
+    }
+    if (!latencies) {
+        fprintf(stderr, "prepare: malloc latencies failed\n");
+        close(fd);
         exit(1);
     }
 
     int success = 0, failed = 0;
+    int latency_count = 0;
     long long start_us = now_us();
 
     for (int i = 0; i < cfg->prepare_count; i++) {
         make_question(question, sizeof(question), cfg, i);
         make_answer(answer, sizeof(answer), cfg, i);
 
+        long long t0 = now_us();
         if (send_vset(fd, question, answer, cfg->scope) != 0) {
             failed++;
             continue;
@@ -886,7 +898,9 @@ static void run_prepare(const config_t *cfg) {
             if (total >= (int)sizeof(recv_buf) - 1) { failed++; break; }
         }
 
+        long long t1 = now_us();
         if (!parse_ok) continue;
+        latencies[latency_count++] = t1 - t0;
 
         if (resp_len >= 5 && strncmp(recv_buf, "+OK\r\n", 5) == 0)
             success++;
@@ -909,6 +923,18 @@ static void run_prepare(const config_t *cfg) {
     printf("prepare_failed=%d\n", failed);
     printf("prepare_elapsed_ms=%.0f\n", (double)(end_us - start_us) / 1000.0);
     printf("prepare_qps=%.2f\n", (double)success / elapsed_sec);
+    if (latency_count > 0) {
+        qsort(latencies, latency_count, sizeof(long long), compare_longlong);
+        double sum = 0.0;
+        for (int i = 0; i < latency_count; i++)
+            sum += (double)latencies[i] / 1000.0;
+        printf("prepare_avg_ms=%.2f\n", sum / latency_count);
+        printf("prepare_p50_ms=%.2f\n", (double)latencies[latency_count * 50 / 100] / 1000.0);
+        printf("prepare_p95_ms=%.2f\n", (double)latencies[latency_count * 95 / 100] / 1000.0);
+        printf("prepare_p99_ms=%.2f\n", (double)latencies[latency_count * 99 / 100] / 1000.0);
+        printf("prepare_max_ms=%.2f\n", (double)latencies[latency_count - 1] / 1000.0);
+    }
+    free(latencies);
 }
 
 /* ── main ───────────────────────────────────────────────────────── */
@@ -931,6 +957,7 @@ static void print_usage(const char *prog) {
     printf("  --text-mode <synthetic|semantic>\n");
     printf("                               synthetic uses old ASCII keys; semantic uses Chinese short text\n");
     printf("  --prepare <count>            Pre-populate count records before benchmark\n");
+    printf("  --prepare-only               Run only the pre-populate phase\n");
 }
 
 int main(int argc, char **argv) {
@@ -955,6 +982,7 @@ int main(int argc, char **argv) {
         OPT_THRESHOLD,
         OPT_TEXT_MODE,
         OPT_PREPARE,
+        OPT_PREPARE_ONLY,
     };
 
     static struct option long_opts[] = {
@@ -965,6 +993,7 @@ int main(int argc, char **argv) {
         {"threshold", required_argument, NULL, OPT_THRESHOLD},
         {"text-mode", required_argument, NULL, OPT_TEXT_MODE},
         {"prepare", required_argument, NULL, OPT_PREPARE},
+        {"prepare-only", no_argument, NULL, OPT_PREPARE_ONLY},
         {NULL, 0, NULL, 0}
     };
 
@@ -1007,6 +1036,7 @@ int main(int argc, char **argv) {
             else { fprintf(stderr, "Invalid text mode: %s\n", optarg); return 1; }
             break;
         case OPT_PREPARE: cfg.prepare_count = atoi(optarg); break;
+        case OPT_PREPARE_ONLY: cfg.prepare_only = 1; break;
         default:
             print_usage(argv[0]);
             return 1;
@@ -1029,6 +1059,8 @@ int main(int argc, char **argv) {
     /* Prepare phase */
     if (cfg.prepare_count > 0)
         run_prepare(&cfg);
+    if (cfg.prepare_only)
+        return 0;
 
     /* Benchmark */
     if (cfg.mode == BENCH_MODE_LATENCY)

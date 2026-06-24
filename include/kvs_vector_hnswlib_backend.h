@@ -10,6 +10,14 @@ extern "C" {
 
 typedef struct kvs_hnswlib_index_s kvs_hnswlib_index_t;
 
+typedef struct kvs_hnswlib_index_stats_s {
+	size_t ntotal;
+	size_t max_elements;
+	size_t M;
+	size_t ef_construction;
+	size_t ef_search;
+} kvs_hnswlib_index_stats_t;
+
 kvs_hnswlib_index_t *kvs_hnswlib_index_create(
 	size_t dim,
 	size_t max_elements,
@@ -45,6 +53,11 @@ void kvs_hnswlib_index_destroy(kvs_hnswlib_index_t *index);
 size_t kvs_hnswlib_index_ntotal(const kvs_hnswlib_index_t *index);
 
 size_t kvs_hnswlib_index_get_max_elements(const kvs_hnswlib_index_t *index);
+
+int kvs_hnswlib_index_get_stats(
+	const kvs_hnswlib_index_t *index,
+	kvs_hnswlib_index_stats_t *stats
+);
 
 void kvs_hnswlib_index_set_ef(kvs_hnswlib_index_t *index, size_t ef);
 

@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <limits.h>
 #include <errno.h>
+#include <time.h>
 
 extern aof_state_t aof_state;
 extern distributed_config_t global_dist_config;
@@ -24,6 +25,15 @@ extern kvs_array_t global_array;
 extern kvs_rbtree_t global_rbtree;
 extern kvs_hash_t global_hash;
 extern kvs_skiptable_t global_skiptable;
+
+static uint64_t kvs_operation_now_us(void) {
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
 
 typedef enum {
     TTL_TARGET_NONE = 0,
@@ -1729,7 +1739,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
 
     {
-        int array_count = 40;  /* 25 base + 10 stage 2B wp + 5 stage 3 faiss */
+        int array_count = 51;  /* base + worker pool + backend stats */
         if (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
             array_count += 7;
         }
@@ -1784,7 +1794,10 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
         n = snprintf(item, sizeof(item), "index_type:%s",
         info->index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" :
-        (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" : "flat"));
+        (info->index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
+         (info->index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
+          (info->index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
+           (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" : "flat")))));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
@@ -2060,6 +2073,54 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
+    n = snprintf(item, sizeof(item), "hnswlib_backend_enabled:%d", info->hnswlib_backend_enabled);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "hnswlib_ntotal:%zu", info->hnswlib_ntotal);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "hnswlib_capacity:%zu", info->hnswlib_capacity);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "hnswlib_m:%zu", info->hnswlib_m);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "hnswlib_ef_construction:%zu", info->hnswlib_ef_construction);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "hnswlib_ef_search:%zu", info->hnswlib_ef_search);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "hnswlib_add_count:%llu", (unsigned long long)info->hnswlib_add_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "hnswlib_search_count:%llu", (unsigned long long)info->hnswlib_search_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
     return off;
 }
 
@@ -2141,6 +2202,8 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 	size_t results_count = 0;
 	size_t i;
 	float threshold;
+	uint64_t response_start_us;
+	uint64_t response_end_us;
 
 	if (!ctx) {
 		return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
@@ -2222,6 +2285,7 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 		return handle_vector_status_response(status, response);
 	}
 
+	response_start_us = kvs_operation_now_us();
 	off += resp_generate_array_start(response + off, (int)results_count);
 
 	for (i = 0; i < results_count; ++i) {
@@ -2288,6 +2352,10 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 		off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 		kvs_free(item);
 	}
+	response_end_us = kvs_operation_now_us();
+	kvs_vector_vsearch_record_response_build(
+		response_end_us >= response_start_us ? response_end_us - response_start_us : 0
+	);
 
 	kvs_free(results);
 	return off;

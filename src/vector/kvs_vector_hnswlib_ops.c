@@ -4,7 +4,6 @@
 
 extern size_t g_hnswlib_add_count;
 extern size_t g_hnswlib_search_count;
-extern size_t g_hnswlib_resize_count;
 
 static int hnswlib_ops_add(
     kvs_vector_index_t *index,
@@ -26,12 +25,12 @@ static int hnswlib_ops_add(
         if (new_max < 1024) new_max = 1024;
         if (kvs_hnswlib_index_resize(hnsw, new_max) != 0)
             return KVS_VECTOR_ERR;
-        __atomic_add_fetch(&g_hnswlib_resize_count, 1, __ATOMIC_RELAXED);
     }
 
     if (kvs_hnswlib_index_add(hnsw,
             record_index, embedding, embedding_dim) != 0)
         return KVS_VECTOR_ERR;
+
     __atomic_add_fetch(&g_hnswlib_add_count, 1, __ATOMIC_RELAXED);
     return KVS_VECTOR_OK;
 }
@@ -53,6 +52,7 @@ static int hnswlib_ops_search(
     int ret;
     int heap_initialized = 0;
     float effective_threshold;
+    size_t effective_ef;
 
     memset(&heap, 0, sizeof(heap));
     if (results && results_capacity > 0)
@@ -75,10 +75,12 @@ static int hnswlib_ops_search(
     scores = (float *)kvs_malloc(limit * sizeof(float));
     if (!scores) { kvs_free(labels); return KVS_VECTOR_ERR; }
 
-    /* Set ef_search before each search (config may change between calls) */
-    kvs_hnswlib_index_set_ef((kvs_hnswlib_index_t *)index->impl,
-        params->topk > 0 ? (size_t)params->topk : 16);
-    /* HACK: use ef=params->topk as minimum; real tuning needs larger ef */
+    effective_ef = g_vector_state.ann_index.ef_search ?
+        g_vector_state.ann_index.ef_search : KVS_VECTOR_HNSW_EF_SEARCH;
+    if (effective_ef < limit) {
+        effective_ef = limit;
+    }
+    kvs_hnswlib_index_set_ef((kvs_hnswlib_index_t *)index->impl, effective_ef);
 
     nfound = kvs_hnswlib_index_search((kvs_hnswlib_index_t *)index->impl,
         query_embedding, query_dim, (int)limit, labels, scores);
@@ -142,13 +144,23 @@ static int hnswlib_ops_rebuild(kvs_vector_index_t *index) {
 }
 
 static int hnswlib_ops_info(kvs_vector_index_t *index, kvs_vector_info_t *info) {
+    kvs_hnswlib_index_stats_t stats;
+
     if (!index || !info) return KVS_VECTOR_ERR_INVALID_ARG;
     info->metric_type = (int)index->metric;
-    info->hnswlib_ntotal = kvs_hnswlib_index_ntotal(
-        (kvs_hnswlib_index_t *)index->impl);
+    memset(&stats, 0, sizeof(stats));
+    if (kvs_hnswlib_index_get_stats((kvs_hnswlib_index_t *)index->impl, &stats) == 0) {
+        info->hnswlib_ntotal = stats.ntotal;
+        info->hnswlib_capacity = stats.max_elements;
+        info->hnswlib_m = stats.M;
+        info->hnswlib_ef_construction = stats.ef_construction;
+        info->hnswlib_ef_search = stats.ef_search;
+    } else {
+        info->hnswlib_ntotal = kvs_hnswlib_index_ntotal(
+            (kvs_hnswlib_index_t *)index->impl);
+    }
     info->hnswlib_add_count = g_hnswlib_add_count;
     info->hnswlib_search_count = g_hnswlib_search_count;
-    info->hnswlib_resize_count = g_hnswlib_resize_count;
     return KVS_VECTOR_OK;
 }
 
@@ -176,8 +188,13 @@ void kvs_vector_hnswlib_destroy_handle(void *handle) {
     if (handle) kvs_hnswlib_index_destroy((kvs_hnswlib_index_t *)handle);
 }
 
+void kvs_vector_hnswlib_set_ef_handle(void *handle, size_t ef) {
+    if (handle) kvs_hnswlib_index_set_ef((kvs_hnswlib_index_t *)handle, ef);
+}
+
 /* Strong function pointer definitions override weak defaults in kvs_vector.c */
 const kvs_vector_index_ops_t *(*kvs_vector_hnswlib_get_ops_ptr)(void) = kvs_vector_hnswlib_hnsw_get_ops;
 void *(*kvs_vector_hnswlib_create_ptr)(size_t, size_t, size_t, size_t) = kvs_vector_hnswlib_create;
 void (*kvs_vector_hnswlib_destroy_ptr)(void *) = kvs_vector_hnswlib_destroy_handle;
 size_t (*kvs_vector_hnswlib_ntotal_ptr)(const void *) = (size_t (*)(const void *))kvs_hnswlib_index_ntotal;
+void (*kvs_vector_hnswlib_set_ef_ptr)(void *, size_t) = kvs_vector_hnswlib_set_ef_handle;

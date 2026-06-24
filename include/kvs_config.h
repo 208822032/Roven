@@ -157,6 +157,7 @@ typedef struct kvs_config {
 	int vector_hnsw_m;
 	int vector_hnsw_ef_construction;
 	int vector_hnsw_ef_search;
+	int vector_hnsw_initial_capacity;
 
 	/*
 	 * Default semantic-cache hit threshold.

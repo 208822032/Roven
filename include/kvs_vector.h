@@ -144,6 +144,16 @@ typedef struct kvs_vector_info_s {
 	size_t faiss_ntotal;
 	uint64_t faiss_add_count;
 	uint64_t faiss_search_count;
+
+	/* hnswlib backend stats */
+	int hnswlib_backend_enabled;
+	size_t hnswlib_ntotal;
+	size_t hnswlib_capacity;
+	size_t hnswlib_m;
+	size_t hnswlib_ef_construction;
+	size_t hnswlib_ef_search;
+	uint64_t hnswlib_add_count;
+	uint64_t hnswlib_search_count;
 } kvs_vector_info_t;
 
 /********** 向量模块公开接口 **********/
@@ -232,9 +242,9 @@ typedef struct kvs_vector_vset_commit_stats_s {
 	uint64_t vset_flat_index_update_count;
 	uint64_t vset_flat_index_update_total_us;
 	uint64_t vset_flat_index_update_max_us;
-	uint64_t vset_hnsw_add_count;
-	uint64_t vset_hnsw_add_total_us;
-	uint64_t vset_hnsw_add_max_us;
+	uint64_t vset_backend_add_count;
+	uint64_t vset_backend_add_total_us;
+	uint64_t vset_backend_add_max_us;
 	uint64_t vset_id_map_update_count;
 	uint64_t vset_id_map_update_total_us;
 	uint64_t vset_id_map_update_max_us;
@@ -265,6 +275,12 @@ typedef struct kvs_vector_vset_commit_stats_s {
 	uint64_t vsearch_search_count;
 	uint64_t vsearch_search_total_us;
 	uint64_t vsearch_search_max_us;
+	uint64_t vsearch_response_build_count;
+	uint64_t vsearch_response_build_total_us;
+	uint64_t vsearch_response_build_max_us;
+	uint64_t vsearch_response_push_count;
+	uint64_t vsearch_response_push_total_us;
+	uint64_t vsearch_response_push_max_us;
 	uint64_t flat_search_core_count;
 	uint64_t flat_search_core_total_us;
 	uint64_t flat_search_core_max_us;
@@ -288,6 +304,8 @@ void kvs_vector_vset_record_dirty_mark(uint64_t elapsed_us);
 void kvs_vector_vset_record_response_build(uint64_t elapsed_us);
 void kvs_vector_vset_record_response_push(uint64_t elapsed_us);
 void kvs_vector_vsearch_record_search(uint64_t elapsed_us);
+void kvs_vector_vsearch_record_response_build(uint64_t elapsed_us);
+void kvs_vector_vsearch_record_response_push(uint64_t elapsed_us);
 void kvs_vector_flat_record_search_core(uint64_t elapsed_us);
 void kvs_vector_flat_record_search_export(uint64_t elapsed_us);
 void kvs_vector_hnsw_record_search_core(uint64_t elapsed_us);
@@ -578,7 +596,7 @@ typedef struct kvs_vector_sq8_flat_index_s {
 /********** ANN / HNSW index **********/
 
 #define KVS_VECTOR_HNSW_M 32
-#define KVS_VECTOR_HNSW_EF_CONSTRUCTION 256
+#define KVS_VECTOR_HNSW_EF_CONSTRUCTION 128
 #define KVS_VECTOR_HNSW_EF_SEARCH 256
 
 /*
@@ -715,6 +733,9 @@ typedef struct kvs_vector_state_s {
 
 #ifdef ENABLE_FAISS_BASELINE
 	void *faiss_backend_handle;
+#endif
+#ifdef ENABLE_HNSWLIB
+	void *hnswlib_backend_handle;
 #endif
 
 	int last_rebuild_status;

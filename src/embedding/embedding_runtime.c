@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define EMBEDDING_RUNTIME_DEFAULT_MAX_TEXT_LEN 4096
 #define EMBEDDING_RUNTIME_MAX_ERROR 256
@@ -16,6 +17,46 @@ struct EmbeddingHandle {
 	char *model_path;
 	char last_error[EMBEDDING_RUNTIME_MAX_ERROR];
 };
+
+typedef struct EmbeddingHashRuntimeStats {
+	uint64_t encode_count;
+	uint64_t embedding_encode_total_us;
+	uint64_t embedding_encode_max_us;
+} EmbeddingHashRuntimeStats;
+
+static EmbeddingHashRuntimeStats g_hash_runtime_stats;
+
+static uint64_t embedding_stats_add(uint64_t *field, uint64_t value) {
+	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
+}
+
+static uint64_t embedding_stats_load(const uint64_t *field) {
+	return __atomic_load_n(field, __ATOMIC_RELAXED);
+}
+
+static void embedding_stats_update_max(uint64_t *field, uint64_t value) {
+	uint64_t old_value = __atomic_load_n(field, __ATOMIC_RELAXED);
+
+	while (value > old_value) {
+		if (__atomic_compare_exchange_n(field,
+		                                &old_value,
+		                                value,
+		                                0,
+		                                __ATOMIC_RELAXED,
+		                                __ATOMIC_RELAXED)) {
+			break;
+		}
+	}
+}
+
+static uint64_t embedding_now_us(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return 0;
+	}
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
 
 static void embedding_set_error(EmbeddingHandle *handle, const char *message) {
 	if (!handle || !message) {
@@ -115,6 +156,9 @@ EmbeddingErrorCode embedding_encode(
 ) {
 	size_t i;
 	int dim;
+	uint64_t start_us;
+	uint64_t end_us;
+	uint64_t elapsed_us;
 
 	if (!handle) {
 		return EMBEDDING_ERR_NOT_INITIALIZED;
@@ -136,6 +180,7 @@ EmbeddingErrorCode embedding_encode(
 	}
 
 	dim = handle->embedding_dim;
+	start_us = embedding_now_us();
 	memset(output, 0, (size_t)dim * sizeof(float));
 
 	for (i = 0; i < text_len; ++i) {
@@ -153,6 +198,11 @@ EmbeddingErrorCode embedding_encode(
 		output[b2] += 0.5f * sign;
 		output[b3] += 0.25f;
 	}
+	end_us = embedding_now_us();
+	elapsed_us = end_us >= start_us ? end_us - start_us : 0;
+	embedding_stats_add(&g_hash_runtime_stats.encode_count, 1);
+	embedding_stats_add(&g_hash_runtime_stats.embedding_encode_total_us, elapsed_us);
+	embedding_stats_update_max(&g_hash_runtime_stats.embedding_encode_max_us, elapsed_us);
 
 	snprintf(handle->last_error, sizeof(handle->last_error), "%s", "OK");
 	return EMBEDDING_OK;
@@ -215,6 +265,11 @@ void embedding_runtime_get_resource_stats(
 	}
 
 	memset(out, 0, sizeof(*out));
+	out->encode_count = embedding_stats_load(&g_hash_runtime_stats.encode_count);
+	out->embedding_encode_total_us =
+		embedding_stats_load(&g_hash_runtime_stats.embedding_encode_total_us);
+	out->embedding_encode_max_us =
+		embedding_stats_load(&g_hash_runtime_stats.embedding_encode_max_us);
 }
 
 void embedding_destroy(EmbeddingHandle *handle) {

@@ -274,7 +274,6 @@ int main(int argc, char *argv[]) {
 
 	
 	// 加载 AOF
-
 	if (g_cfg.enable_aof) {
 		if (aof_init(g_cfg.aof_filename, g_cfg.aof_fsync_mode) != 0) {
 			KVS_LOG_ERROR("core", "failed to initialize AOF: %s", g_cfg.aof_filename);

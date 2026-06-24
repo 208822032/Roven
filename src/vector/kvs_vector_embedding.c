@@ -876,9 +876,18 @@ void kvs_vector_embedding_runtime_get_stats(
 	out->shared_ort_env_refcount_max = resource_stats.shared_ort_env_refcount_max;
 	out->ort_session_created = resource_stats.ort_session_created;
 	out->ort_session_destroyed = resource_stats.ort_session_destroyed;
-	out->encode_count = resource_stats.encode_count;
-	out->embedding_encode_total_us = resource_stats.embedding_encode_total_us;
+	out->encode_count = resource_stats.encode_count +
+		embedding_stats_load(&g_embedding_runtime_stats.encode_count);
+	out->embedding_encode_total_us = resource_stats.embedding_encode_total_us +
+		embedding_stats_load(&g_embedding_runtime_stats.embedding_encode_total_us);
 	out->embedding_encode_max_us = resource_stats.embedding_encode_max_us;
+	{
+		uint64_t hash_encode_max_us =
+			embedding_stats_load(&g_embedding_runtime_stats.embedding_encode_max_us);
+		if (hash_encode_max_us > out->embedding_encode_max_us) {
+			out->embedding_encode_max_us = hash_encode_max_us;
+		}
+	}
 	out->tokenizer_total_us = resource_stats.tokenizer_total_us;
 	out->tokenizer_max_us = resource_stats.tokenizer_max_us;
 	out->ort_run_total_us = resource_stats.ort_run_total_us;
@@ -1172,6 +1181,9 @@ int kvs_vector_hash_embedding_generate(
 	float *embedding;
 	size_t i;
 	size_t dim = kvs_vector_embedding_provider_dimension();
+	uint64_t start_us;
+	uint64_t end_us;
+	uint64_t elapsed_us;
 
 	if (!out_embedding || !out_dim) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
@@ -1189,6 +1201,7 @@ int kvs_vector_hash_embedding_generate(
 		return KVS_VECTOR_ERR;
 	}
 
+	start_us = embedding_now_us();
 	memset(embedding, 0, dim * sizeof(float));
 
 	for (i = 0; i < text_len; ++i) {
@@ -1201,6 +1214,11 @@ int kvs_vector_hash_embedding_generate(
 		embedding[bucket1] += 1.0f;
 		embedding[bucket2] += 0.5f;
 	}
+	end_us = embedding_now_us();
+	elapsed_us = end_us >= start_us ? end_us - start_us : 0;
+	embedding_stats_add(&g_embedding_runtime_stats.encode_count, 1);
+	embedding_stats_add(&g_embedding_runtime_stats.embedding_encode_total_us, elapsed_us);
+	embedding_stats_update_max(&g_embedding_runtime_stats.embedding_encode_max_us, elapsed_us);
 
 	*out_embedding = embedding;
 	*out_dim = (int)dim;

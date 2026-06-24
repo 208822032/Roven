@@ -2,8 +2,8 @@
 
 #include <hnswlib/hnswlib.h>
 #include <cstring>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <queue>
 
 struct kvs_hnswlib_index_s {
@@ -176,6 +176,20 @@ size_t kvs_hnswlib_index_ntotal(const kvs_hnswlib_index_t *index) {
 size_t kvs_hnswlib_index_get_max_elements(const kvs_hnswlib_index_t *index) {
 	if (!index) return 0;
 	return index->max_elements;
+}
+
+int kvs_hnswlib_index_get_stats(
+	const kvs_hnswlib_index_t *index,
+	kvs_hnswlib_index_stats_t *stats
+) {
+	if (!index || !stats) return -1;
+	std::memset(stats, 0, sizeof(*stats));
+	stats->ntotal = kvs_hnswlib_index_ntotal(index);
+	stats->max_elements = index->max_elements;
+	stats->M = index->M;
+	stats->ef_construction = index->ef_construction;
+	stats->ef_search = index->ef_search;
+	return 0;
 }
 
 void kvs_hnswlib_index_set_ef(kvs_hnswlib_index_t *index, size_t ef) {

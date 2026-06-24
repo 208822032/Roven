@@ -459,7 +459,7 @@ static void run_vset_text_onnx(const RunOptions &opts, const std::vector<QaRow> 
         tokenize.add(rt_after.tokenizer_total_us - rt_before.tokenizer_total_us);
         onnx_run.add(rt_after.ort_run_total_us - rt_before.ort_run_total_us);
         record_commit.add(c1 - c0);
-        ann_add.add(vs_after.vset_hnsw_add_total_us - vs_before.vset_hnsw_add_total_us);
+        ann_add.add(vs_after.vset_backend_add_total_us - vs_before.vset_backend_add_total_us);
     }
 
     std::printf("SUMMARY|mode=vset_text_onnx|count=%zu|dim=512|topk=%d\n", dataset.size(), opts.topk);
@@ -547,7 +547,7 @@ static std::vector<std::vector<int>> run_kvlite_ann_mode(const RunOptions &opts,
 
     auto add_stats = vector_stats_snapshot();
     uint64_t ann_add_total_us = (std::strcmp(index_type, "hnsw") == 0 ?
-        add_stats.vset_hnsw_add_total_us :
+        add_stats.vset_backend_add_total_us :
         add_stats.vset_flat_index_update_total_us);
     uint64_t ann_add_avg_us = dataset.empty() ? 0 : ann_add_total_us / dataset.size();
     double ann_add_qps = ann_add_total_us == 0 ? 0.0 :

@@ -14,7 +14,6 @@ size_t g_faiss_add_count;
 size_t g_faiss_search_count;
 size_t g_hnswlib_add_count;
 size_t g_hnswlib_search_count;
-size_t g_hnswlib_resize_count;
 
 static uint64_t kvs_vector_stats_add(uint64_t *field, uint64_t value) {
 	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
@@ -78,9 +77,9 @@ void kvs_vector_vset_commit_stats_get(kvs_vector_vset_commit_stats_t *out) {
 	out->vset_flat_index_update_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_flat_index_update_count);
 	out->vset_flat_index_update_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_flat_index_update_total_us);
 	out->vset_flat_index_update_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_flat_index_update_max_us);
-	out->vset_hnsw_add_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_hnsw_add_count);
-	out->vset_hnsw_add_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_hnsw_add_total_us);
-	out->vset_hnsw_add_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_hnsw_add_max_us);
+	out->vset_backend_add_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_backend_add_count);
+	out->vset_backend_add_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_backend_add_total_us);
+	out->vset_backend_add_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_backend_add_max_us);
 	out->vset_id_map_update_count = kvs_vector_stats_load(&g_vset_commit_stats.vset_id_map_update_count);
 	out->vset_id_map_update_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_id_map_update_total_us);
 	out->vset_id_map_update_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vset_id_map_update_max_us);
@@ -111,6 +110,12 @@ void kvs_vector_vset_commit_stats_get(kvs_vector_vset_commit_stats_t *out) {
 	out->vsearch_search_count = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_search_count);
 	out->vsearch_search_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_search_total_us);
 	out->vsearch_search_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_search_max_us);
+	out->vsearch_response_build_count = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_response_build_count);
+	out->vsearch_response_build_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_response_build_total_us);
+	out->vsearch_response_build_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_response_build_max_us);
+	out->vsearch_response_push_count = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_response_push_count);
+	out->vsearch_response_push_total_us = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_response_push_total_us);
+	out->vsearch_response_push_max_us = kvs_vector_stats_load(&g_vset_commit_stats.vsearch_response_push_max_us);
 	out->flat_search_core_count = kvs_vector_stats_load(&g_vset_commit_stats.flat_search_core_count);
 	out->flat_search_core_total_us = kvs_vector_stats_load(&g_vset_commit_stats.flat_search_core_total_us);
 	out->flat_search_core_max_us = kvs_vector_stats_load(&g_vset_commit_stats.flat_search_core_max_us);
@@ -193,6 +198,24 @@ void kvs_vector_vsearch_record_search(uint64_t elapsed_us) {
 		&g_vset_commit_stats.vsearch_search_count,
 		&g_vset_commit_stats.vsearch_search_total_us,
 		&g_vset_commit_stats.vsearch_search_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vsearch_record_response_build(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vsearch_response_build_count,
+		&g_vset_commit_stats.vsearch_response_build_total_us,
+		&g_vset_commit_stats.vsearch_response_build_max_us,
+		elapsed_us
+	);
+}
+
+void kvs_vector_vsearch_record_response_push(uint64_t elapsed_us) {
+	kvs_vector_record_timing(
+		&g_vset_commit_stats.vsearch_response_push_count,
+		&g_vset_commit_stats.vsearch_response_push_total_us,
+		&g_vset_commit_stats.vsearch_response_push_max_us,
 		elapsed_us
 	);
 }
@@ -419,6 +442,27 @@ void (*kvs_vector_faiss_hnsw_destroy_ptr)(void *handle);
 
 __attribute__((weak))
 size_t (*kvs_vector_faiss_ntotal_ptr)(const void *handle);
+#endif
+
+#ifdef ENABLE_HNSWLIB
+/*
+ * hnswlib backend integration hooks. Strong definitions are supplied by
+ * kvs_vector_hnswlib_ops when the vendored backend is linked.
+ */
+__attribute__((weak))
+const kvs_vector_index_ops_t *(*kvs_vector_hnswlib_get_ops_ptr)(void);
+
+__attribute__((weak))
+void *(*kvs_vector_hnswlib_create_ptr)(size_t dim, size_t max_elements, size_t M, size_t ef_construction);
+
+__attribute__((weak))
+void (*kvs_vector_hnswlib_destroy_ptr)(void *handle);
+
+__attribute__((weak))
+size_t (*kvs_vector_hnswlib_ntotal_ptr)(const void *handle);
+
+__attribute__((weak))
+void (*kvs_vector_hnswlib_set_ef_ptr)(void *handle, size_t ef);
 #endif
 
 static int kvs_vector_flat_ops_add(
@@ -648,6 +692,13 @@ int kvs_vector_index_bind_current(void) {
         index->dimension = g_vector_state.ann_index.dimension;
         index->impl = &g_vector_state.ann_index;
         index->ops = &g_kvs_vector_hnsw_ops;
+#ifdef ENABLE_HNSWLIB
+    } else if (g_vector_state.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW &&
+               kvs_vector_hnswlib_get_ops_ptr) {
+        index->dimension = kvs_vector_provider_dimension_or_default();
+        index->impl = g_vector_state.hnswlib_backend_handle;
+        index->ops = kvs_vector_hnswlib_get_ops_ptr();
+#endif
     } else if (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
         index->dimension = g_vector_state.sq8_flat_index.dimension;
         index->impl = &g_vector_state.sq8_flat_index;
@@ -696,6 +747,9 @@ int kvs_vector_index_search_current(
 ) {
     kvs_vector_index_t *index = &g_vector_state.current_index;
     kvs_vector_index_search_params_t params;
+	uint64_t start_us;
+	uint64_t end_us;
+	int ret;
 
     if (!index->ops || !index->ops->search) {
         return KVS_VECTOR_ERR_NOT_INITIALIZED;
@@ -707,7 +761,8 @@ int kvs_vector_index_search_current(
     params.topk = topk;
     params.threshold = threshold;
 
-    return index->ops->search(
+	start_us = kvs_vector_now_us();
+	ret = index->ops->search(
         index,
         query_embedding,
         query_dim,
@@ -716,6 +771,9 @@ int kvs_vector_index_search_current(
         results_capacity,
         results_count
     );
+	end_us = kvs_vector_now_us();
+	kvs_vector_vsearch_record_search(end_us >= start_us ? end_us - start_us : 0);
+	return ret;
 }
 
 int kvs_vector_index_rebuild_current(void) {
@@ -798,7 +856,8 @@ static void kvs_vector_info_from_state(
 	info->index_type = (int)state->index_type;
 	info->metric_type = (int)state->metric_type;
 
-	if (state->index_type == KVS_VECTOR_INDEX_TYPE_HNSW) {
+	if (state->index_type == KVS_VECTOR_INDEX_TYPE_HNSW ||
+	    state->index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW) {
 		info->index_ready = state->ann_index.ready;
 		info->needs_rebuild =
 			state->flat_index.needs_rebuild ||
@@ -862,6 +921,27 @@ static void kvs_vector_info_from_state(
 	info->faiss_ntotal = 0;
 	info->faiss_add_count = 0;
 	info->faiss_search_count = 0;
+#endif
+
+#ifdef ENABLE_HNSWLIB
+	info->hnswlib_backend_enabled = 1;
+	info->hnswlib_ntotal = (kvs_vector_hnswlib_ntotal_ptr && state->hnswlib_backend_handle)
+		? kvs_vector_hnswlib_ntotal_ptr(state->hnswlib_backend_handle) : 0;
+	info->hnswlib_capacity = 0;
+	info->hnswlib_m = state->ann_index.m;
+	info->hnswlib_ef_construction = state->ann_index.ef_construction;
+	info->hnswlib_ef_search = state->ann_index.ef_search;
+	info->hnswlib_add_count = g_hnswlib_add_count;
+	info->hnswlib_search_count = g_hnswlib_search_count;
+#else
+	info->hnswlib_backend_enabled = 0;
+	info->hnswlib_ntotal = 0;
+	info->hnswlib_capacity = 0;
+	info->hnswlib_m = 0;
+	info->hnswlib_ef_construction = 0;
+	info->hnswlib_ef_search = 0;
+	info->hnswlib_add_count = 0;
+	info->hnswlib_search_count = 0;
 #endif
 }
 
@@ -968,6 +1048,8 @@ size_t kvs_vector_estimate_current_index_memory_bytes(void) {
 		case KVS_VECTOR_INDEX_TYPE_HNSW:
 			return kvs_vector_estimate_flat_memory_bytes() +
 			       kvs_vector_estimate_hnsw_memory_bytes();
+		case KVS_VECTOR_INDEX_HNSWLIB_HNSW:
+			return kvs_vector_estimate_flat_memory_bytes();
 		case KVS_VECTOR_INDEX_TYPE_SQ8_FLAT:
 			return kvs_vector_estimate_sq8_flat_memory_bytes();
 		default:
@@ -1110,6 +1192,38 @@ int kvs_vector_init(void) {
 	}
 #endif
 
+#ifdef ENABLE_HNSWLIB
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW &&
+	    kvs_vector_hnswlib_create_ptr) {
+		size_t max_elements = g_vector_state.store.capacity;
+		size_t configured_capacity = g_cfg.vector_hnsw_initial_capacity > 0
+			? (size_t)g_cfg.vector_hnsw_initial_capacity : 0;
+		if (max_elements < KVS_VECTOR_INITIAL_RECORD_CAPACITY) {
+			max_elements = KVS_VECTOR_INITIAL_RECORD_CAPACITY;
+		}
+		if (configured_capacity > max_elements) {
+			max_elements = configured_capacity;
+		}
+		g_vector_state.hnswlib_backend_handle = kvs_vector_hnswlib_create_ptr(
+			dimension,
+			max_elements,
+			kvs_vector_hnsw_param_or_default(g_cfg.vector_hnsw_m, KVS_VECTOR_HNSW_M),
+			kvs_vector_hnsw_param_or_default(g_cfg.vector_hnsw_ef_construction, KVS_VECTOR_HNSW_EF_CONSTRUCTION)
+		);
+		if (!g_vector_state.hnswlib_backend_handle) {
+			KVS_LOG_ERROR(KVS_VECTOR_LOG_MODULE, "hnswlib backend init failed");
+			ret = KVS_VECTOR_ERR;
+			goto fail;
+		}
+		if (kvs_vector_hnswlib_set_ef_ptr) {
+			kvs_vector_hnswlib_set_ef_ptr(
+				g_vector_state.hnswlib_backend_handle,
+				g_vector_state.ann_index.ef_search
+			);
+		}
+	}
+#endif
+
 	ret = kvs_vector_index_bind_current();
 	if (ret != KVS_VECTOR_OK) {
 		goto fail;
@@ -1123,17 +1237,21 @@ int kvs_vector_init(void) {
 
 	KVS_LOG_INFO(
 		KVS_VECTOR_LOG_MODULE,
-		"vector module initialized provider=%s distance_backend=%s dimension=%zu capacity=%zu index_type=%s metric=%s hnsw_m=%zu ef_construction=%zu ef_search=%zu",
+		"vector module initialized provider=%s distance_backend=%s dimension=%zu capacity=%zu index_type=%s metric=%s hnsw_m=%zu ef_construction=%zu ef_search=%zu hnsw_initial_capacity=%d",
 		kvs_vector_embedding_provider_name(),
 		kvs_vector_distance_backend_name(),
 		g_vector_state.flat_index.dimension,
 		g_vector_state.store.capacity,
 		g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" :
-			(g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" : "flat"),
+			(g_vector_state.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
+			 (g_vector_state.index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
+			  (g_vector_state.index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
+			   (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" : "flat")))),
 		kvs_vector_metric_name(g_vector_state.metric_type),
 		g_vector_state.ann_index.m,
 		g_vector_state.ann_index.ef_construction,
-		g_vector_state.ann_index.ef_search
+		g_vector_state.ann_index.ef_search,
+		g_cfg.vector_hnsw_initial_capacity
 	);
 
 	return KVS_VECTOR_OK;
@@ -1144,10 +1262,28 @@ fail:
 		"vector module init failed ret=%d",
 		ret
 	);
+#ifdef ENABLE_HNSWLIB
+	if (g_vector_state.hnswlib_backend_handle && kvs_vector_hnswlib_destroy_ptr) {
+		kvs_vector_hnswlib_destroy_ptr(g_vector_state.hnswlib_backend_handle);
+		g_vector_state.hnswlib_backend_handle = NULL;
+	}
+#endif
+#ifdef ENABLE_FAISS_BASELINE
+	if (g_vector_state.faiss_backend_handle && kvs_vector_faiss_hnsw_destroy_ptr) {
+		kvs_vector_faiss_hnsw_destroy_ptr(g_vector_state.faiss_backend_handle);
+		g_vector_state.faiss_backend_handle = NULL;
+	}
+#endif
 	kvs_vector_embedding_provider_destroy(&g_vector_state.embedding_provider);
 	kvs_vector_sq8_flat_index_destroy(&g_vector_state.sq8_flat_index);
 	kvs_vector_ann_index_destroy(&g_vector_state.ann_index);
 	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
+#ifdef ENABLE_HNSWLIB
+	if (g_vector_state.hnswlib_backend_handle && kvs_vector_hnswlib_destroy_ptr) {
+		kvs_vector_hnswlib_destroy_ptr(g_vector_state.hnswlib_backend_handle);
+		g_vector_state.hnswlib_backend_handle = NULL;
+	}
+#endif
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
 	kvs_vector_store_destroy(&g_vector_state.store);
 	memset(&g_vector_state, 0, sizeof(g_vector_state));
@@ -1168,6 +1304,12 @@ void kvs_vector_destroy(void) {
 	if (g_vector_state.faiss_backend_handle && kvs_vector_faiss_hnsw_destroy_ptr) {
 		kvs_vector_faiss_hnsw_destroy_ptr(g_vector_state.faiss_backend_handle);
 		g_vector_state.faiss_backend_handle = NULL;
+	}
+#endif
+#ifdef ENABLE_HNSWLIB
+	if (g_vector_state.hnswlib_backend_handle && kvs_vector_hnswlib_destroy_ptr) {
+		kvs_vector_hnswlib_destroy_ptr(g_vector_state.hnswlib_backend_handle);
+		g_vector_state.hnswlib_backend_handle = NULL;
 	}
 #endif
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
@@ -1226,6 +1368,33 @@ int kvs_vector_reset_for_load(void) {
 	} else if (ret != KVS_VECTOR_OK) {
 		memset(&g_vector_state.sq8_flat_index, 0, sizeof(g_vector_state.sq8_flat_index));
 	}
+
+#ifdef ENABLE_HNSWLIB
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW &&
+	    kvs_vector_hnswlib_create_ptr) {
+		size_t max_elements = g_vector_state.store.capacity;
+		size_t configured_capacity = g_cfg.vector_hnsw_initial_capacity > 0
+			? (size_t)g_cfg.vector_hnsw_initial_capacity : 0;
+		if (configured_capacity > max_elements) {
+			max_elements = configured_capacity;
+		}
+		g_vector_state.hnswlib_backend_handle = kvs_vector_hnswlib_create_ptr(
+			dimension,
+			max_elements,
+			kvs_vector_hnsw_param_or_default(g_cfg.vector_hnsw_m, KVS_VECTOR_HNSW_M),
+			kvs_vector_hnsw_param_or_default(g_cfg.vector_hnsw_ef_construction, KVS_VECTOR_HNSW_EF_CONSTRUCTION)
+		);
+		if (!g_vector_state.hnswlib_backend_handle) {
+			return KVS_VECTOR_ERR;
+		}
+		if (kvs_vector_hnswlib_set_ef_ptr) {
+			kvs_vector_hnswlib_set_ef_ptr(
+				g_vector_state.hnswlib_backend_handle,
+				g_vector_state.ann_index.ef_search
+			);
+		}
+	}
+#endif
 
 	return kvs_vector_index_bind_current();
 }
@@ -1391,7 +1560,17 @@ int kvs_vector_rebuild_after_load(void) {
 		if (ret != KVS_VECTOR_OK) return ret;
 	}
 
-	return kvs_vector_index_bind_current();
+	ret = kvs_vector_index_bind_current();
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW &&
+	    g_vector_state.current_index.ops &&
+	    g_vector_state.current_index.ops->rebuild) {
+		ret = g_vector_state.current_index.ops->rebuild(&g_vector_state.current_index);
+		if (ret != KVS_VECTOR_OK) return ret;
+	}
+
+	return KVS_VECTOR_OK;
 }
 
 void kvs_vector_set_prepared_reset(kvs_vector_set_prepared_t *prepared) {
@@ -2198,9 +2377,9 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 		);
 		end_us = kvs_vector_now_us();
 		kvs_vector_record_timing(
-			&g_vset_commit_stats.vset_hnsw_add_count,
-			&g_vset_commit_stats.vset_hnsw_add_total_us,
-			&g_vset_commit_stats.vset_hnsw_add_max_us,
+			&g_vset_commit_stats.vset_backend_add_count,
+			&g_vset_commit_stats.vset_backend_add_total_us,
+			&g_vset_commit_stats.vset_backend_add_max_us,
 			end_us >= start_us ? end_us - start_us : 0
 		);
 		if (ret != KVS_VECTOR_OK) {
@@ -2729,6 +2908,11 @@ int kvs_vector_info(kvs_vector_info_t *info) {
 	}
 
 	kvs_vector_info_from_state(info, &g_vector_state);
+	if (g_vector_state.initialized &&
+	    g_vector_state.current_index.ops &&
+	    g_vector_state.current_index.ops->info) {
+		g_vector_state.current_index.ops->info(&g_vector_state.current_index, info);
+	}
 
 	return KVS_VECTOR_OK;
 }

@@ -429,6 +429,7 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	kvs_command_executor_stats_t exec_stats;
 	kvs_owner_lock_stats_t owner_stats;
 	kvs_vector_vset_commit_stats_t vector_stats;
+	kvs_vector_info_t vector_info;
 	uint64_t prepare_avg_us = 0;
 	uint64_t prepare_wait_avg_us = 0;
 	uint64_t prepared_submit_avg_us = 0;
@@ -462,7 +463,7 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	uint64_t vset_record_insert_or_update_avg_us = 0;
 	uint64_t vset_vector_copy_avg_us = 0;
 	uint64_t vset_flat_index_update_avg_us = 0;
-	uint64_t vset_hnsw_add_avg_us = 0;
+	uint64_t vset_backend_add_avg_us = 0;
 	uint64_t vset_id_map_update_avg_us = 0;
 	uint64_t vset_scope_answer_question_update_avg_us = 0;
 	uint64_t vset_lock_wait_avg_us = 0;
@@ -473,15 +474,20 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	uint64_t vset_response_build_avg_us = 0;
 	uint64_t vset_response_push_avg_us = 0;
 	uint64_t vsearch_search_avg_us = 0;
+	uint64_t vsearch_response_build_avg_us = 0;
+	uint64_t vsearch_response_push_avg_us = 0;
+	uint64_t vsearch_non_index_avg_us = 0;
 
 	memset(&stats, 0, sizeof(stats));
 	memset(&exec_stats, 0, sizeof(exec_stats));
 	memset(&owner_stats, 0, sizeof(owner_stats));
 	memset(&vector_stats, 0, sizeof(vector_stats));
+	memset(&vector_info, 0, sizeof(vector_info));
 	kvs_embedding_worker_pool_get_stats(&stats);
 	kvs_command_executor_get_stats(&exec_stats);
 	kvs_owner_lock_get_stats(&owner_stats);
 	kvs_vector_vset_commit_stats_get(&vector_stats);
+	kvs_vector_info(&vector_info);
 	if (stats.prepare_count > 0) {
 		prepare_avg_us = stats.prepare_total_us / stats.prepare_count;
 		prepare_wait_avg_us = stats.prepare_queue_wait_total_us / stats.prepare_count;
@@ -602,9 +608,9 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 			vector_stats.vset_flat_index_update_total_us /
 			vector_stats.vset_flat_index_update_count;
 	}
-	if (vector_stats.vset_hnsw_add_count > 0) {
-		vset_hnsw_add_avg_us =
-			vector_stats.vset_hnsw_add_total_us / vector_stats.vset_hnsw_add_count;
+	if (vector_stats.vset_backend_add_count > 0) {
+		vset_backend_add_avg_us =
+			vector_stats.vset_backend_add_total_us / vector_stats.vset_backend_add_count;
 	}
 	if (vector_stats.vset_id_map_update_count > 0) {
 		vset_id_map_update_avg_us =
@@ -650,7 +656,21 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		vsearch_search_avg_us =
 			vector_stats.vsearch_search_total_us / vector_stats.vsearch_search_count;
 	}
-
+	if (vector_stats.vsearch_response_build_count > 0) {
+		vsearch_response_build_avg_us =
+			vector_stats.vsearch_response_build_total_us /
+			vector_stats.vsearch_response_build_count;
+	}
+	if (vector_stats.vsearch_response_push_count > 0) {
+		vsearch_response_push_avg_us =
+			vector_stats.vsearch_response_push_total_us /
+			vector_stats.vsearch_response_push_count;
+	}
+	if (vector_stats.vsearch_response_build_count > 0 &&
+	    vector_stats.vsearch_search_count > 0) {
+		vsearch_non_index_avg_us = vsearch_response_build_avg_us +
+			vsearch_response_push_avg_us;
+	}
 	KVS_LOG_INFO(
 		"core",
 		"owner rwlock stats: weak_mode=%llu total_calls=%llu rdlock_calls=%llu wrlock_calls=%llu unlock_calls=%llu executor_thread_hits=%llu non_executor_thread_calls=%llu strict_assertion_failures=%llu weak_noop_calls=%llu weak_fallback_calls=%llu",
@@ -883,15 +903,15 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	);
 	KVS_LOG_INFO(
 		"core",
-		"vset index breakdown stats: vset_flat_index_update_count=%llu vset_flat_index_update_avg_us=%llu vset_flat_index_update_total_us=%llu vset_flat_index_update_max_us=%llu vset_hnsw_add_count=%llu vset_hnsw_add_avg_us=%llu vset_hnsw_add_total_us=%llu vset_hnsw_add_max_us=%llu vset_id_map_update_count=%llu vset_id_map_update_avg_us=%llu vset_id_map_update_total_us=%llu vset_id_map_update_max_us=%llu vset_scope_answer_question_update_count=%llu vset_scope_answer_question_update_avg_us=%llu vset_scope_answer_question_update_total_us=%llu vset_scope_answer_question_update_max_us=%llu",
+		"vset index stats: vset_flat_index_update_count=%llu vset_flat_index_update_avg_us=%llu vset_flat_index_update_total_us=%llu vset_flat_index_update_max_us=%llu vset_backend_add_count=%llu vset_backend_add_avg_us=%llu vset_backend_add_total_us=%llu vset_backend_add_max_us=%llu vset_id_map_update_count=%llu vset_id_map_update_avg_us=%llu vset_id_map_update_total_us=%llu vset_id_map_update_max_us=%llu vset_scope_answer_question_update_count=%llu vset_scope_answer_question_update_avg_us=%llu vset_scope_answer_question_update_total_us=%llu vset_scope_answer_question_update_max_us=%llu",
 		(unsigned long long)vector_stats.vset_flat_index_update_count,
 		(unsigned long long)vset_flat_index_update_avg_us,
 		(unsigned long long)vector_stats.vset_flat_index_update_total_us,
 		(unsigned long long)vector_stats.vset_flat_index_update_max_us,
-		(unsigned long long)vector_stats.vset_hnsw_add_count,
-		(unsigned long long)vset_hnsw_add_avg_us,
-		(unsigned long long)vector_stats.vset_hnsw_add_total_us,
-		(unsigned long long)vector_stats.vset_hnsw_add_max_us,
+		(unsigned long long)vector_stats.vset_backend_add_count,
+		(unsigned long long)vset_backend_add_avg_us,
+		(unsigned long long)vector_stats.vset_backend_add_total_us,
+		(unsigned long long)vector_stats.vset_backend_add_max_us,
 		(unsigned long long)vector_stats.vset_id_map_update_count,
 		(unsigned long long)vset_id_map_update_avg_us,
 		(unsigned long long)vector_stats.vset_id_map_update_total_us,
@@ -936,6 +956,43 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		(unsigned long long)vsearch_search_avg_us,
 		(unsigned long long)vector_stats.vsearch_search_total_us,
 		(unsigned long long)vector_stats.vsearch_search_max_us
+	);
+	KVS_LOG_INFO(
+		"core",
+		"vsearch breakdown stats: vsearch_search_count=%llu vsearch_search_avg_us=%llu vsearch_search_total_us=%llu vsearch_search_max_us=%llu vsearch_non_index_avg_us=%llu vsearch_response_build_count=%llu vsearch_response_build_avg_us=%llu vsearch_response_build_total_us=%llu vsearch_response_build_max_us=%llu vsearch_response_push_count=%llu vsearch_response_push_avg_us=%llu vsearch_response_push_total_us=%llu vsearch_response_push_max_us=%llu",
+		(unsigned long long)vector_stats.vsearch_search_count,
+		(unsigned long long)vsearch_search_avg_us,
+		(unsigned long long)vector_stats.vsearch_search_total_us,
+		(unsigned long long)vector_stats.vsearch_search_max_us,
+		(unsigned long long)vsearch_non_index_avg_us,
+		(unsigned long long)vector_stats.vsearch_response_build_count,
+		(unsigned long long)vsearch_response_build_avg_us,
+		(unsigned long long)vector_stats.vsearch_response_build_total_us,
+		(unsigned long long)vector_stats.vsearch_response_build_max_us,
+		(unsigned long long)vector_stats.vsearch_response_push_count,
+		(unsigned long long)vsearch_response_push_avg_us,
+		(unsigned long long)vector_stats.vsearch_response_push_total_us,
+		(unsigned long long)vector_stats.vsearch_response_push_max_us
+	);
+	KVS_LOG_INFO(
+		"core",
+		"vector backend stats: backend_name=%s size=%zu capacity=%zu max_elements=%zu M=%zu efConstruction=%zu efSearch=%zu metric=%s normalize=%s faiss_ntotal=%zu hnswlib_ntotal=%zu",
+		vector_info.index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
+			(vector_info.index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
+			 (vector_info.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
+			  (vector_info.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" :
+			   (vector_info.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat")))),
+		vector_info.index_size,
+		vector_info.hnswlib_capacity,
+		vector_info.hnswlib_capacity,
+		vector_info.hnswlib_m ? vector_info.hnswlib_m : vector_info.ann_m,
+		vector_info.hnswlib_ef_construction ? vector_info.hnswlib_ef_construction : vector_info.ann_ef_construction,
+		vector_info.hnswlib_ef_search ? vector_info.hnswlib_ef_search : vector_info.ann_ef_search,
+		vector_info.metric_type == KVS_VECTOR_METRIC_L2 ? "l2" :
+			(vector_info.metric_type == KVS_VECTOR_METRIC_COSINE ? "cosine" : "ip"),
+		"hash_provider_normalized",
+		vector_info.faiss_ntotal,
+		vector_info.hnswlib_ntotal
 	);
 }
 

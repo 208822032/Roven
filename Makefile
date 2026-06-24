@@ -182,6 +182,11 @@ else
   SRC_VECTOR_HNSWLIB :=
   OBJ_VECTOR_HNSWLIB :=
 endif
+VECTOR_OPTIONAL_OBJS := \
+	$(SRC_VECTOR)/kvs_vector_faiss_ops.o \
+	$(SRC_VECTOR)/kvs_vector_faiss_backend.o \
+	$(SRC_VECTOR)/kvs_vector_hnswlib_ops.o \
+	$(SRC_VECTOR)/kvs_vector_hnswlib_backend.o
 KVSTORE_TEST_LDFLAGS = -L$(BUILD_LIB) -lkvstore $(LDFLAGS)
 
 # ── eBPF 配置 ────────────────────────────────────────────────────────────
@@ -432,8 +437,8 @@ $(NTYCO_LIB): $(NTYCO_OBJS)
 # build/lib/libkvstore.a is an internal static library used by tests and benchmarks.
 # It excludes the kvstore main object and is not a stable public SDK artifact.
 LIBKVSTORE_OBJS := $(filter-out $(SRC_CORE)/kvstore.o, $(OBJS))
-# Faiss object is only linked into kvstore binary, not into the library,
-# to avoid forcing C++ linkage on all C test binaries.
+# Optional C++ vector backend objects are linked only into kvstore, not this
+# C-facing test library, to avoid forcing C++ linkage on all C test binaries.
 LIBKVSTORE      := $(BUILD_LIB)/libkvstore.a
 
 $(LIBKVSTORE): $(LIBKVSTORE_OBJS)
@@ -500,31 +505,31 @@ $(TEST_VECTOR_BENCHMARK): $(TEST_DIR)/vector_benchmark.c | $(BUILD_TESTS_BIN)
 
 # ── 内核链接测试 (通过 libkvstore.a，不直接链接 src/*.o) ────────────────
 
-$(TEST_TTL_LOOKUP_SPLIT): $(TEST_DIR)/ttl_lookup_split_bench.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+$(TEST_TTL_LOOKUP_SPLIT): $(TEST_DIR)/ttl_lookup_split_bench.c $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS)
 
-$(TEST_SKIPTABLE_TARGETED): $(TEST_DIR)/skiptable_targeted_bench.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+$(TEST_SKIPTABLE_TARGETED): $(TEST_DIR)/skiptable_targeted_bench.c $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS)
 
-$(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+$(TEST_MEMPOOL): $(TEST_DIR)/mempool_test.c $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS)
 
-$(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+$(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS)
 
 $(TEST_BINARY_KEY): $(TEST_DIR)/test_binary_key.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_VCMD_PROFILE_BENCH): $(TEST_DIR)/vcmd_profile_bench.c $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+$(TEST_VCMD_PROFILE_BENCH): $(TEST_DIR)/vcmd_profile_bench.c $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS) -ldl
 
 $(TEST_FAISS_BASELINE): $(TEST_DIR)/faiss_baseline.cpp | $(BUILD_TESTS_BIN)
 	$(CXX) $(FAISS_CXXFLAGS) -O3 -o $@ $< $(FAISS_LDFLAGS) -lpthread -lm
 
-$(TEST_VCMD_ONNX_FAISS_BENCH): $(TEST_DIR)/vcmd_onnx_faiss_bench.cpp $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+$(TEST_VCMD_ONNX_FAISS_BENCH): $(TEST_DIR)/vcmd_onnx_faiss_bench.cpp $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CXX) $(FAISS_CXXFLAGS) -O2 -o $@ $< -L$(BUILD_LIB) -lkvstore $(FAISS_LDFLAGS) $(LDFLAGS) -ldl -lpthread -lm
 
-$(TEST_VCMD_EMBEDDING_CACHE_BENCH): $(TEST_DIR)/vcmd_onnx_faiss_bench.cpp $(LIBKVSTORE) | $(BUILD_TESTS_BIN)
+$(TEST_VCMD_EMBEDDING_CACHE_BENCH): $(TEST_DIR)/vcmd_onnx_faiss_bench.cpp $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CXX) $(FAISS_CXXFLAGS) -O2 -o $@ $< -L$(BUILD_LIB) -lkvstore $(FAISS_LDFLAGS) $(LDFLAGS) -ldl -lpthread -lm
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -637,7 +642,7 @@ $(SRC_EMBED)/embedding_runtime_onnx.o: check-onnx-runtime
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(SRC_DIST)/*.o
+	rm -f $(OBJS) $(VECTOR_OPTIONAL_OBJS) $(TARGET) $(SRC_DIST)/*.o
 	rm -f $(SRC_EMBED)/embedding_runtime.o $(SRC_EMBED)/embedding_runtime_onnx.o
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H) $(VMLINUX_KVER)
