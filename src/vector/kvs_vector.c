@@ -2932,6 +2932,142 @@ void kvs_vector_search_result_reset(kvs_vector_search_result_t *result) {
 	memset(result, 0, sizeof(*result));
 }
 
+/*
+ * TTL filtering:
+ * Keep current behavior unchanged in Stage 1C.
+ * If legacy search path applies lazy TTL elsewhere, do not duplicate it here.
+ * Move TTL filtering here in Step 1E when manager filtering is centralized.
+ */
+
+int kvs_vector_manager_resolve_hits(
+	const kvs_vector_hit_t *hits,
+	size_t hit_count,
+	const char *scope,
+	size_t scope_len,
+	float threshold,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity,
+	size_t *results_count
+) {
+	size_t i;
+	size_t out_count = 0;
+
+	if (!hits || !results || !results_count) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	*results_count = 0;
+
+	for (i = 0; i < hit_count && out_count < results_capacity; i++) {
+		const kvs_vector_hit_t *hit = &hits[i];
+		kvs_vector_record_t *record = NULL;
+		size_t record_index;
+
+		if (hit->score < threshold) {
+			continue;
+		}
+
+		/*
+		 * Stage 1C compatibility path:
+		 * Current manager does not yet have a dedicated record_id -> record slot map.
+		 * Resolve by scanning record store.
+		 *
+		 * Later Stage 1D / Stage 2A should replace this with stable id-slot mapping.
+		 */
+		for (record_index = 0; record_index < g_vector_state.store.capacity; record_index++) {
+			kvs_vector_record_t *candidate = &g_vector_state.store.records[record_index];
+
+			if (candidate->state == KVS_VECTOR_RECORD_EMPTY) {
+				continue;
+			}
+
+			if (candidate->id == hit->record_id) {
+				record = candidate;
+				break;
+			}
+		}
+
+		if (!record) {
+			continue;
+		}
+
+		if (record->state != KVS_VECTOR_RECORD_ACTIVE || record->deleted) {
+			continue;
+		}
+
+		if (!kvs_vector_record_scope_match(record, scope, scope_len)) {
+			continue;
+		}
+
+		kvs_vector_search_result_from_record(&results[out_count], record);
+		results[out_count].score = hit->score;
+		out_count++;
+	}
+
+	*results_count = out_count;
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_manager_get_active_record_id_by_index(
+	size_t record_index,
+	uint64_t *out_record_id
+) {
+	kvs_vector_record_t *record;
+
+	if (!out_record_id) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	*out_record_id = 0;
+
+	if (record_index >= g_vector_state.store.capacity) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	record = &g_vector_state.store.records[record_index];
+
+	if (record->state != KVS_VECTOR_RECORD_ACTIVE || record->deleted) {
+		return KVS_VECTOR_ERR_NOT_FOUND;
+	}
+
+	*out_record_id = record->id;
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_manager_for_each_active_embedding(
+	kvs_vector_manager_active_embedding_iter_fn fn,
+	void *arg
+) {
+	kvs_vector_store_t *store;
+	size_t i;
+
+	if (!fn) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	store = &g_vector_state.store;
+
+	for (i = 0; i < store->capacity; i++) {
+		kvs_vector_record_t *rec = &store->records[i];
+		int ret;
+
+		if (rec->state != KVS_VECTOR_RECORD_ACTIVE || rec->deleted) {
+			continue;
+		}
+
+		if (!rec->embedding || rec->embedding_dim <= 0) {
+			continue;
+		}
+
+		ret = fn(rec->id, rec->embedding, rec->embedding_dim, arg);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
+	}
+
+	return KVS_VECTOR_OK;
+}
+
 //清空批量搜索结果
 void kvs_vector_search_results_reset(
 	kvs_vector_search_result_t *results,

@@ -53,7 +53,7 @@ kvs_faiss_index_t *kvs_faiss_index_create(
  * Add a vector to the index.
  *
  *   index        — opaque handle
- *   record_index — KVLite record index (used as Faiss id)
+ *   record_id    — stable KVLite vector record id used as backend external label
  *   embedding    — float vector data
  *   embedding_dim— vector dimension
  *
@@ -61,7 +61,7 @@ kvs_faiss_index_t *kvs_faiss_index_create(
  */
 int kvs_faiss_index_add(
 	kvs_faiss_index_t *index,
-	size_t record_index,
+	size_t record_id,
 	const float *embedding,
 	int embedding_dim
 );
@@ -72,18 +72,18 @@ int kvs_faiss_index_add(
  *   query_embedding — query vector
  *   query_dim       — vector dimension
  *   topk            — number of results to return
- *   out_record_indices — output array (caller allocates, size >= topk)
+ *   out_record_ids  — output array (caller allocates, size >= topk)
  *   out_scores      — output array (caller allocates, size >= topk)
  *
  * Returns the actual number of results found (0 .. topk).
- * out_record_indices and out_scores are filled in descending score order.
+ * out_record_ids and out_scores are filled in descending score order.
  */
 int kvs_faiss_index_search(
 	kvs_faiss_index_t *index,
 	const float *query_embedding,
 	int query_dim,
 	int topk,
-	size_t *out_record_indices,
+	size_t *out_record_ids,
 	float *out_scores
 );
 

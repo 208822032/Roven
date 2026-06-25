@@ -27,14 +27,14 @@ kvs_hnswlib_index_t *kvs_hnswlib_index_create(
 
 int kvs_hnswlib_index_add(
 	kvs_hnswlib_index_t *index,
-	size_t record_index,
+	size_t record_id,
 	const float *embedding,
 	int embedding_dim
 );
 
 /*
  * Search for topk nearest neighbours.  Returns the actual number of
- * results (0..topk).  out_labels and out_scores are filled in
+ * results (0..topk).  out_record_ids and out_scores are filled in
  * closer-first order with scores in KVLite "larger-is-better" convention.
  */
 int kvs_hnswlib_index_search(
@@ -42,7 +42,7 @@ int kvs_hnswlib_index_search(
 	const float *query_embedding,
 	int query_dim,
 	int topk,
-	size_t *out_labels,
+	size_t *out_record_ids,
 	float *out_scores
 );
 
