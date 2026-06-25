@@ -140,6 +140,12 @@ BASE_SRCS = \
 	$(SRC_VECTOR)/kvs_vector_embedding.c                          \
 	$(SRC_VECTOR)/kvs_vector_distance.c                           \
 	$(SRC_VECTOR)/kvs_vector_distance_avx2.c                      \
+	$(SRC_VECTOR)/core/kvs_vector_id_slot_map.c                   \
+	$(SRC_VECTOR)/core/kvs_vector_heap.c                          \
+	$(SRC_VECTOR)/core/flat/kvs_flat_index.c                      \
+	$(SRC_VECTOR)/core/flat/kvs_flat_storage.c                    \
+	$(SRC_VECTOR)/core/flat/kvs_flat_search.c                     \
+	$(SRC_VECTOR)/core/flat/kvs_flat_info.c                       \
 	$(EMBED_RUNTIME_SRC)
 
 SRCS = $(BASE_SRCS) $(SRC_DIST)/sync_backend_tcp.c

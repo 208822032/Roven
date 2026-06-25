@@ -1739,7 +1739,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
 
     {
-        int array_count = 51;  /* base + worker pool + backend stats */
+        int array_count = 49;  /* base + worker pool + backend stats */
         if (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
             array_count += 7;
         }
@@ -1797,7 +1797,8 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
         (info->index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
          (info->index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
           (info->index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
-           (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" : "flat")))));
+           (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" :
+            (info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" : "flat"))))));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
@@ -1819,6 +1820,12 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
     n = snprintf(item, sizeof(item), "flat_physical_size:%zu", info->flat_physical_size);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "core_flat_deleted_count:%zu", info->core_flat_deleted_count);
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
@@ -2043,7 +2050,8 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
         info->index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
         (info->index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
          (info->index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
-          (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "native_sq8_flat" : "native_flat"))));
+          (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "native_sq8_flat" :
+           (info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" : "native_flat")))));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }

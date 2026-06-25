@@ -370,6 +370,9 @@ static kvs_vector_index_type_t kvs_vector_index_type_from_config(void) {
 		KVS_LOG_ERROR(KVS_VECTOR_LOG_MODULE, "native_hnsw has been removed; use hnswlib_hnsw instead");
 		return -1;
 	}
+	if (strcasecmp(g_cfg.vector_index_type, "core_flat") == 0) {
+		return KVS_VECTOR_INDEX_CORE_FLAT;
+	}
 #ifdef ENABLE_HNSWLIB
 	if (strcasecmp(g_cfg.vector_index_type, "hnsw") == 0 ||
 	    strcasecmp(g_cfg.vector_index_type, "hnswlib_hnsw") == 0) {
@@ -402,6 +405,26 @@ static kvs_vector_index_type_t kvs_vector_index_type_from_config(void) {
 	}
 
 	return KVS_VECTOR_INDEX_TYPE_FLAT;
+}
+
+static const char *kvs_vector_index_type_name(kvs_vector_index_type_t type) {
+	switch (type) {
+	case KVS_VECTOR_INDEX_TYPE_HNSW:
+		return "hnsw";
+	case KVS_VECTOR_INDEX_TYPE_SQ8_FLAT:
+		return "sq8_flat";
+	case KVS_VECTOR_INDEX_FAISS_HNSW:
+		return "faiss_hnsw";
+	case KVS_VECTOR_INDEX_FAISS_FLAT:
+		return "faiss_flat";
+	case KVS_VECTOR_INDEX_HNSWLIB_HNSW:
+		return "hnswlib_hnsw";
+	case KVS_VECTOR_INDEX_CORE_FLAT:
+		return "core_flat";
+	case KVS_VECTOR_INDEX_TYPE_FLAT:
+	default:
+		return "flat";
+	}
 }
 
 static size_t kvs_vector_provider_dimension_or_default(void) {
@@ -611,6 +634,242 @@ static const kvs_vector_index_ops_t g_kvs_vector_hnsw_ops = {
     .destroy = kvs_vector_hnsw_ops_destroy,
 };
 
+/********** core_flat adapter wrappers **********/
+
+typedef struct kvs_vector_core_flat_rebuild_ctx_s {
+	kvs_flat_index_t *index;
+} kvs_vector_core_flat_rebuild_ctx_t;
+
+static int kvs_vector_core_flat_rebuild_add_record(
+	uint64_t record_id,
+	const float *embedding,
+	int embedding_dim,
+	void *arg
+) {
+	kvs_vector_core_flat_rebuild_ctx_t *ctx =
+		(kvs_vector_core_flat_rebuild_ctx_t *)arg;
+
+	if (!ctx || !ctx->index || !embedding || embedding_dim <= 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	return kvs_flat_index_add(
+		ctx->index,
+		record_id,
+		embedding,
+		(size_t)embedding_dim
+	);
+}
+
+static int kvs_vector_core_flat_ops_add(
+	kvs_vector_index_t *index,
+	size_t record_index,
+	const float *embedding,
+	int embedding_dim
+) {
+	uint64_t record_id = 0;
+	int ret;
+
+	if (!index || !index->impl || !embedding || embedding_dim <= 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	ret = kvs_vector_manager_get_active_record_id_by_index(
+		record_index,
+		&record_id
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	return kvs_flat_index_add(
+		(kvs_flat_index_t *)index->impl,
+		record_id,
+		embedding,
+		(size_t)embedding_dim
+	);
+}
+
+static size_t kvs_vector_core_flat_raw_topk(
+	const kvs_flat_index_t *flat,
+	size_t requested_topk,
+	size_t results_capacity
+) {
+	size_t raw_topk;
+	size_t limit;
+
+	if (requested_topk == 0) {
+		requested_topk = 1;
+	}
+
+	raw_topk = requested_topk * 4;
+	if (raw_topk < requested_topk + 32) {
+		raw_topk = requested_topk + 32;
+	}
+
+	limit = flat ? flat->size : 0;
+	if (limit == 0) {
+		limit = results_capacity;
+	}
+	if (limit > 0 && raw_topk > limit) {
+		raw_topk = limit;
+	}
+	if (raw_topk < requested_topk) {
+		raw_topk = requested_topk;
+	}
+
+	return raw_topk;
+}
+
+static int kvs_vector_core_flat_ops_search(
+	kvs_vector_index_t *index,
+	const float *query_embedding,
+	int query_dim,
+	const kvs_vector_index_search_params_t *params,
+	kvs_vector_search_result_t *results,
+	size_t results_capacity,
+	size_t *results_count
+) {
+	kvs_flat_index_t *flat;
+	kvs_vector_hit_t *hits = NULL;
+	size_t raw_topk;
+	size_t hit_count = 0;
+	size_t topk;
+	float effective_threshold;
+	int ret;
+
+	if (results && results_capacity > 0) {
+		kvs_vector_search_results_reset(results, results_capacity);
+	}
+	if (results_count) {
+		*results_count = 0;
+	}
+
+	if (!index || !index->impl || !params || !query_embedding ||
+	    query_dim <= 0 || !results || results_capacity == 0 || !results_count) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	flat = (kvs_flat_index_t *)index->impl;
+	topk = params->topk > 0 ? (size_t)params->topk : 1;
+	if (topk > results_capacity) {
+		topk = results_capacity;
+	}
+
+	raw_topk = kvs_vector_core_flat_raw_topk(flat, topk, results_capacity);
+	if (raw_topk == 0) {
+		return KVS_VECTOR_OK;
+	}
+
+	hits = (kvs_vector_hit_t *)kvs_malloc(raw_topk * sizeof(kvs_vector_hit_t));
+	if (!hits) {
+		return KVS_VECTOR_ERR;
+	}
+	memset(hits, 0, raw_topk * sizeof(kvs_vector_hit_t));
+
+	ret = kvs_flat_index_search(
+		flat,
+		query_embedding,
+		(size_t)query_dim,
+		raw_topk,
+		hits,
+		&hit_count
+	);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_free(hits);
+		return ret;
+	}
+
+	effective_threshold = params->threshold;
+	if (effective_threshold <= 0.0f) {
+		effective_threshold = -1.0f;
+	}
+
+	ret = kvs_vector_manager_resolve_hits(
+		hits,
+		hit_count,
+		params->scope,
+		params->scope_len,
+		effective_threshold,
+		results,
+		results_capacity,
+		results_count
+	);
+
+	kvs_free(hits);
+	return ret;
+}
+
+static int kvs_vector_core_flat_ops_rebuild(kvs_vector_index_t *index) {
+	kvs_vector_core_flat_rebuild_ctx_t ctx;
+	kvs_flat_index_t *flat;
+	int ret;
+
+	if (!index || !index->impl) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	flat = (kvs_flat_index_t *)index->impl;
+	ret = kvs_flat_index_reset(flat);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	if (g_vector_state.store.active_records > 0) {
+		ret = kvs_flat_index_reserve(flat, g_vector_state.store.active_records);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
+	}
+
+	ctx.index = flat;
+	return kvs_vector_manager_for_each_active_embedding(
+		kvs_vector_core_flat_rebuild_add_record,
+		&ctx
+	);
+}
+
+static int kvs_vector_core_flat_ops_info(
+	kvs_vector_index_t *index,
+	kvs_vector_info_t *info
+) {
+	kvs_vector_core_info_t core_info;
+	int ret;
+
+	if (!index || !index->impl || !info) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	memset(&core_info, 0, sizeof(core_info));
+	ret = kvs_flat_index_info((kvs_flat_index_t *)index->impl, &core_info);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	info->metric_type = core_info.metric_type;
+	info->dimension = core_info.dim;
+	info->index_ready = core_info.ready;
+	info->needs_rebuild = core_info.needs_rebuild;
+	info->core_flat_deleted_count = core_info.deleted_count;
+	return KVS_VECTOR_OK;
+}
+
+static void kvs_vector_core_flat_ops_destroy(kvs_vector_index_t *index) {
+	if (!index || !index->impl) {
+		return;
+	}
+
+	kvs_flat_index_destroy((kvs_flat_index_t *)index->impl);
+}
+
+static const kvs_vector_index_ops_t g_kvs_vector_core_flat_ops = {
+	.add = kvs_vector_core_flat_ops_add,
+	.search = kvs_vector_core_flat_ops_search,
+	.rebuild = kvs_vector_core_flat_ops_rebuild,
+	.info = kvs_vector_core_flat_ops_info,
+	.destroy = kvs_vector_core_flat_ops_destroy,
+};
+
 /********** SQ8 Flat ops wrappers **********/
 
 static int kvs_vector_sq8_flat_ops_add(
@@ -692,6 +951,10 @@ int kvs_vector_index_bind_current(void) {
         index->dimension = g_vector_state.ann_index.dimension;
         index->impl = &g_vector_state.ann_index;
         index->ops = &g_kvs_vector_hnsw_ops;
+    } else if (g_vector_state.index_type == KVS_VECTOR_INDEX_CORE_FLAT) {
+        index->dimension = g_vector_state.core_flat_index.dim;
+        index->impl = &g_vector_state.core_flat_index;
+        index->ops = &g_kvs_vector_core_flat_ops;
 #ifdef ENABLE_HNSWLIB
     } else if (g_vector_state.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW &&
                kvs_vector_hnswlib_get_ops_ptr) {
@@ -889,6 +1152,18 @@ static void kvs_vector_info_from_state(
 		info->ann_ready = state->ann_index.ready;
 
 		kvs_vector_sq8_flat_index_info(&state->sq8_flat_index, info);
+	} else if (state->index_type == KVS_VECTOR_INDEX_CORE_FLAT) {
+		kvs_vector_core_info_t core_info;
+
+		memset(&core_info, 0, sizeof(core_info));
+		if (kvs_flat_index_info((kvs_flat_index_t *)&state->core_flat_index, &core_info) == KVS_VECTOR_OK) {
+			info->index_ready = core_info.ready;
+			info->needs_rebuild = core_info.needs_rebuild;
+			info->dimension = core_info.dim;
+			info->metric_type = core_info.metric_type;
+			info->index_memory_bytes = core_info.memory_bytes;
+			info->core_flat_deleted_count = core_info.deleted_count;
+		}
 	} else {
 		info->index_ready = state->flat_index.ready;
 		info->needs_rebuild = state->flat_index.needs_rebuild;
@@ -1041,10 +1316,24 @@ size_t kvs_vector_estimate_sq8_flat_memory_bytes(void) {
 	return total;
 }
 
+static size_t kvs_vector_estimate_core_flat_memory_bytes(void) {
+	kvs_vector_core_info_t info;
+
+	memset(&info, 0, sizeof(info));
+	if (kvs_flat_index_info(&g_vector_state.core_flat_index, &info) != KVS_VECTOR_OK) {
+		return 0;
+	}
+
+	return info.memory_bytes;
+}
+
 size_t kvs_vector_estimate_current_index_memory_bytes(void) {
 	switch (g_vector_state.index_type) {
 		case KVS_VECTOR_INDEX_TYPE_FLAT:
 			return kvs_vector_estimate_flat_memory_bytes();
+		case KVS_VECTOR_INDEX_CORE_FLAT:
+			return kvs_vector_estimate_flat_memory_bytes() +
+			       kvs_vector_estimate_core_flat_memory_bytes();
 		case KVS_VECTOR_INDEX_TYPE_HNSW:
 			return kvs_vector_estimate_flat_memory_bytes() +
 			       kvs_vector_estimate_hnsw_memory_bytes();
@@ -1123,6 +1412,15 @@ int kvs_vector_init(void) {
 
 	g_vector_state.index_type = kvs_vector_index_type_from_config();
 	g_vector_state.metric_type = kvs_vector_metric_from_config();
+
+	ret = kvs_flat_index_init(
+		&g_vector_state.core_flat_index,
+		dimension,
+		g_vector_state.metric_type
+	);
+	if (ret != KVS_VECTOR_OK) {
+		goto fail;
+	}
 
 	ret = kvs_vector_ann_index_init(
 		&g_vector_state.ann_index,
@@ -1242,11 +1540,7 @@ int kvs_vector_init(void) {
 		kvs_vector_distance_backend_name(),
 		g_vector_state.flat_index.dimension,
 		g_vector_state.store.capacity,
-		g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" :
-			(g_vector_state.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
-			 (g_vector_state.index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
-			  (g_vector_state.index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
-			   (g_vector_state.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" : "flat")))),
+		kvs_vector_index_type_name(g_vector_state.index_type),
 		kvs_vector_metric_name(g_vector_state.metric_type),
 		g_vector_state.ann_index.m,
 		g_vector_state.ann_index.ef_construction,
@@ -1276,6 +1570,7 @@ fail:
 #endif
 	kvs_vector_embedding_provider_destroy(&g_vector_state.embedding_provider);
 	kvs_vector_sq8_flat_index_destroy(&g_vector_state.sq8_flat_index);
+	kvs_flat_index_destroy(&g_vector_state.core_flat_index);
 	kvs_vector_ann_index_destroy(&g_vector_state.ann_index);
 	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
 #ifdef ENABLE_HNSWLIB
@@ -1298,6 +1593,7 @@ void kvs_vector_destroy(void) {
 	}
 	kvs_vector_embedding_provider_destroy(&g_vector_state.embedding_provider);
 	kvs_vector_sq8_flat_index_destroy(&g_vector_state.sq8_flat_index);
+	kvs_flat_index_destroy(&g_vector_state.core_flat_index);
 	kvs_vector_ann_index_destroy(&g_vector_state.ann_index);
 	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
 #ifdef ENABLE_FAISS_BASELINE
@@ -1327,6 +1623,7 @@ int kvs_vector_reset_for_load(void) {
 	}
 
 	kvs_vector_sq8_flat_index_destroy(&g_vector_state.sq8_flat_index);
+	kvs_flat_index_destroy(&g_vector_state.core_flat_index);
 	kvs_vector_ann_index_destroy(&g_vector_state.ann_index);
 	kvs_vector_flat_index_destroy(&g_vector_state.flat_index);
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
@@ -1345,6 +1642,13 @@ int kvs_vector_reset_for_load(void) {
 	if (ret != KVS_VECTOR_OK) return ret;
 
 	ret = kvs_vector_flat_index_init(&g_vector_state.flat_index, dimension);
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	ret = kvs_flat_index_init(
+		&g_vector_state.core_flat_index,
+		dimension,
+		g_vector_state.metric_type
+	);
 	if (ret != KVS_VECTOR_OK) return ret;
 
 	ret = kvs_vector_ann_index_init(
@@ -1562,6 +1866,13 @@ int kvs_vector_rebuild_after_load(void) {
 
 	ret = kvs_vector_index_bind_current();
 	if (ret != KVS_VECTOR_OK) return ret;
+
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_CORE_FLAT &&
+	    g_vector_state.current_index.ops &&
+	    g_vector_state.current_index.ops->rebuild) {
+		ret = g_vector_state.current_index.ops->rebuild(&g_vector_state.current_index);
+		if (ret != KVS_VECTOR_OK) return ret;
+	}
 
 	if (g_vector_state.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW &&
 	    g_vector_state.current_index.ops &&
@@ -2682,6 +2993,7 @@ int kvs_vector_del(
 	kvs_vector_record_t *record;
 	kvs_vector_store_t *store;
 	size_t record_index;
+	uint64_t record_id;
 	int ret;
 
 	ret = kvs_vector_validate_initialized();
@@ -2701,10 +3013,29 @@ int kvs_vector_del(
 	if (!record) {
 		return KVS_VECTOR_ERR_NOT_FOUND;
 	}
+	record_id = record->id;
 
 	ret = kvs_vector_record_mark_deleted(record);
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
+	}
+
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_CORE_FLAT) {
+		ret = kvs_flat_index_mark_delete(
+			&g_vector_state.core_flat_index,
+			record_id
+		);
+		if (ret == KVS_VECTOR_ERR_NOT_FOUND) {
+			g_vector_state.core_flat_index.needs_rebuild = 1;
+		} else if (ret != KVS_VECTOR_OK) {
+			KVS_LOG_DEBUG(
+				KVS_VECTOR_LOG_MODULE,
+				"core_flat mark_delete ignored record_id=%llu ret=%d",
+				(unsigned long long)record_id,
+				ret
+			);
+			g_vector_state.core_flat_index.needs_rebuild = 1;
+		}
 	}
 
 	ret = kvs_vector_id_map_remove(
@@ -2851,6 +3182,10 @@ int kvs_vector_index_rebuild(void) {
 		case KVS_VECTOR_INDEX_TYPE_SQ8_FLAT:
 			kvs_vector_sq8_flat_index_destroy(&g_vector_state.sq8_flat_index);
 			g_vector_state.sq8_flat_index = temp_sq8;
+			break;
+		case KVS_VECTOR_INDEX_CORE_FLAT:
+			ret = kvs_vector_core_flat_ops_rebuild(&g_vector_state.current_index);
+			if (ret != KVS_VECTOR_OK) goto fail_rebuild;
 			break;
 		default:
 			break;
