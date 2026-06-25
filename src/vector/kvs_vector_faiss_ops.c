@@ -88,8 +88,15 @@ int kvs_vector_faiss_hnsw_ops_search(
         query_dim <= 0 || !results || results_capacity == 0 || !results_count)
         return KVS_VECTOR_ERR_INVALID_ARG;
 
-    limit = (size_t)params->topk;
-    if (limit > results_capacity) limit = results_capacity;
+    /* Overfetch to compensate for scope/deleted filtering in
+     * kvs_vector_manager_resolve_hits() — same 4× + 32 strategy
+     * used by core_flat and core_hnsw. */
+    limit = (size_t)params->topk * 4 + 32;
+    {
+        size_t ntotal = kvs_faiss_index_ntotal((kvs_faiss_index_t *)index->impl);
+        if (ntotal > 0 && limit > ntotal) limit = ntotal;
+    }
+    if (limit < (size_t)params->topk) limit = (size_t)params->topk;
     if (limit == 0) return KVS_VECTOR_OK;
 
     effective_threshold = params->threshold;
