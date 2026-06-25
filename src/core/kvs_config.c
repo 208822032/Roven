@@ -361,6 +361,7 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
                 strcasecmp(val, "ivf_flat") == 0 ||
                 strcasecmp(val, "sq8_flat") == 0 ||
                 strcasecmp(val, "core_flat") == 0 ||
+                strcasecmp(val, "core_hnsw") == 0 ||
                 strcasecmp(val, "faiss_hnsw") == 0 ||
                 strcasecmp(val, "faiss_flat") == 0) {
                 snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", val);
@@ -685,6 +686,7 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                     strcasecmp(v, "ivf_flat") == 0 ||
                     strcasecmp(v, "sq8_flat") == 0 ||
                     strcasecmp(v, "core_flat") == 0 ||
+                    strcasecmp(v, "core_hnsw") == 0 ||
                     strcasecmp(v, "faiss_hnsw") == 0 ||
                     strcasecmp(v, "faiss_flat") == 0) {
                     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", v);

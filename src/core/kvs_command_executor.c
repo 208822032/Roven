@@ -982,7 +982,8 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 			 (vector_info.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
 			  (vector_info.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" :
 			   (vector_info.index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" :
-			    (vector_info.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat"))))),
+			    (vector_info.index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw" :
+			     (vector_info.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat")))))),
 		vector_info.index_size,
 		vector_info.hnswlib_capacity,
 		vector_info.hnswlib_capacity,

@@ -146,6 +146,14 @@ BASE_SRCS = \
 	$(SRC_VECTOR)/core/flat/kvs_flat_storage.c                    \
 	$(SRC_VECTOR)/core/flat/kvs_flat_search.c                     \
 	$(SRC_VECTOR)/core/flat/kvs_flat_info.c                       \
+	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_index.c                      \
+	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_graph.c                      \
+	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_context.c                    \
+	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_info.c                       \
+	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_random.c                     \
+	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_add.c                        \
+	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_search.c                     \
+	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_delete.c                     \
 	$(EMBED_RUNTIME_SRC)
 
 SRCS = $(BASE_SRCS) $(SRC_DIST)/sync_backend_tcp.c

@@ -10,6 +10,7 @@
 #include "vector/kvs_vector_index_internal.h"
 #include "vector/kvs_vector_core.h"
 #include "vector/kvs_vector_flat.h"
+#include "vector/kvs_vector_hnsw.h"
 
 /*
  * 向量管理层内部状态。
@@ -94,6 +95,8 @@ typedef struct kvs_vector_state_s {
 	kvs_vector_sq8_flat_index_t sq8_flat_index;
 	/* 新版core_flat索引状态；只保存record_id和向量计算缓存。 */
 	kvs_flat_index_t core_flat_index;
+	/* 新版core_hnsw索引状态；只保存record_id、向量和HNSW图缓存。 */
+	kvs_hnsw_index_t core_hnsw_index;
 
 	/* 当前被VSEARCH使用的旧版统一索引包装对象。 */
 	kvs_vector_index_t current_index;

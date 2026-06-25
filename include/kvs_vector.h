@@ -38,6 +38,7 @@ typedef enum kvs_vector_index_type_e {
 	KVS_VECTOR_INDEX_FAISS_FLAT = 5,
 	KVS_VECTOR_INDEX_HNSWLIB_HNSW = 6,
 	KVS_VECTOR_INDEX_CORE_FLAT = 7,
+	KVS_VECTOR_INDEX_CORE_HNSW = 8,
 } kvs_vector_index_type_t;
 
 /*
@@ -123,6 +124,16 @@ typedef struct kvs_vector_info_s {
 
 	/* core_flat fields */
 	size_t core_flat_deleted_count;
+
+	/* core_hnsw fields */
+	size_t core_hnsw_size;
+	size_t core_hnsw_capacity;
+	size_t core_hnsw_m;
+	size_t core_hnsw_m0;
+	size_t core_hnsw_ef_construction;
+	size_t core_hnsw_ef_search;
+	int core_hnsw_max_level;
+	size_t core_hnsw_deleted_count;
 
 	/* runtime stats */
 	int last_rebuild_status;
