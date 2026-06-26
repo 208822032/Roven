@@ -42,6 +42,9 @@ int kvs_hnsw_index_info(
 		sizeof(kvs_vector_id_slot_entry_t);
 	memory_bytes += kvs_hnsw_graph_level0_bytes(index->capacity, index->M0);
 	memory_bytes += index->capacity * sizeof(uint16_t);
+	memory_bytes += index->capacity * sizeof(uint16_t);
+	memory_bytes += index->capacity * sizeof(float);
+	memory_bytes += index->capacity * sizeof(uint8_t);
 	memory_bytes += index->capacity * sizeof(size_t);
 	memory_bytes += index->capacity * KVS_HNSW_MAX_LEVEL *
 		index->M * sizeof(uint32_t);

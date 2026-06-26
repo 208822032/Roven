@@ -474,6 +474,8 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	uint64_t vset_response_build_avg_us = 0;
 	uint64_t vset_response_push_avg_us = 0;
 	uint64_t vsearch_search_avg_us = 0;
+	uint64_t vsearch_backend_search_avg_us = 0;
+	uint64_t vsearch_manager_resolve_avg_us = 0;
 	uint64_t vsearch_response_build_avg_us = 0;
 	uint64_t vsearch_response_push_avg_us = 0;
 	uint64_t vsearch_non_index_avg_us = 0;
@@ -655,6 +657,16 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	if (vector_stats.vsearch_search_count > 0) {
 		vsearch_search_avg_us =
 			vector_stats.vsearch_search_total_us / vector_stats.vsearch_search_count;
+	}
+	if (vector_stats.vsearch_backend_search_count > 0) {
+		vsearch_backend_search_avg_us =
+			vector_stats.vsearch_backend_search_total_us /
+			vector_stats.vsearch_backend_search_count;
+	}
+	if (vector_stats.vsearch_manager_resolve_count > 0) {
+		vsearch_manager_resolve_avg_us =
+			vector_stats.vsearch_manager_resolve_total_us /
+			vector_stats.vsearch_manager_resolve_count;
 	}
 	if (vector_stats.vsearch_response_build_count > 0) {
 		vsearch_response_build_avg_us =
@@ -959,11 +971,22 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	);
 	KVS_LOG_INFO(
 		"core",
-		"vsearch breakdown stats: vsearch_search_count=%llu vsearch_search_avg_us=%llu vsearch_search_total_us=%llu vsearch_search_max_us=%llu vsearch_non_index_avg_us=%llu vsearch_response_build_count=%llu vsearch_response_build_avg_us=%llu vsearch_response_build_total_us=%llu vsearch_response_build_max_us=%llu vsearch_response_push_count=%llu vsearch_response_push_avg_us=%llu vsearch_response_push_total_us=%llu vsearch_response_push_max_us=%llu",
+		"vsearch breakdown stats: vsearch_search_count=%llu vsearch_search_avg_us=%llu vsearch_search_total_us=%llu vsearch_search_max_us=%llu vsearch_backend_search_count=%llu vsearch_backend_search_avg_us=%llu vsearch_backend_search_total_us=%llu vsearch_backend_search_max_us=%llu vsearch_manager_resolve_count=%llu vsearch_manager_resolve_avg_us=%llu vsearch_manager_resolve_total_us=%llu vsearch_manager_resolve_max_us=%llu vsearch_raw_hit_count=%llu vsearch_resolved_hit_count=%llu vsearch_filtered_hit_count=%llu vsearch_non_index_avg_us=%llu vsearch_response_build_count=%llu vsearch_response_build_avg_us=%llu vsearch_response_build_total_us=%llu vsearch_response_build_max_us=%llu vsearch_response_push_count=%llu vsearch_response_push_avg_us=%llu vsearch_response_push_total_us=%llu vsearch_response_push_max_us=%llu",
 		(unsigned long long)vector_stats.vsearch_search_count,
 		(unsigned long long)vsearch_search_avg_us,
 		(unsigned long long)vector_stats.vsearch_search_total_us,
 		(unsigned long long)vector_stats.vsearch_search_max_us,
+		(unsigned long long)vector_stats.vsearch_backend_search_count,
+		(unsigned long long)vsearch_backend_search_avg_us,
+		(unsigned long long)vector_stats.vsearch_backend_search_total_us,
+		(unsigned long long)vector_stats.vsearch_backend_search_max_us,
+		(unsigned long long)vector_stats.vsearch_manager_resolve_count,
+		(unsigned long long)vsearch_manager_resolve_avg_us,
+		(unsigned long long)vector_stats.vsearch_manager_resolve_total_us,
+		(unsigned long long)vector_stats.vsearch_manager_resolve_max_us,
+		(unsigned long long)vector_stats.vsearch_raw_hit_count,
+		(unsigned long long)vector_stats.vsearch_resolved_hit_count,
+		(unsigned long long)vector_stats.vsearch_filtered_hit_count,
 		(unsigned long long)vsearch_non_index_avg_us,
 		(unsigned long long)vector_stats.vsearch_response_build_count,
 		(unsigned long long)vsearch_response_build_avg_us,
@@ -2936,9 +2959,6 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 					&g_executor.stats.vsearch_execute_sync_total_us,
 					&g_executor.stats.vsearch_execute_sync_max_us,
 					end_us >= start_us ? end_us - start_us : 0
-				);
-				kvs_vector_vsearch_record_search(
-					kvs_command_task_get_vsearch_search_us(task)
 				);
 			}
 			start_us = executor_now_us();

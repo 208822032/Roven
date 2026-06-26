@@ -61,6 +61,7 @@ static int kvs_vector_search_prepared_to_resp(
 	int off = 0;
 	uint64_t response_start_us;
 	uint64_t response_end_us;
+	uint64_t total_start_us;
 
 	if (!ctx || !prepared) {
 		return kvs_vector_status_to_resp(KVS_VECTOR_ERR_INVALID_ARG, response);
@@ -74,6 +75,7 @@ static int kvs_vector_search_prepared_to_resp(
 		return kvs_vector_status_to_resp(KVS_VECTOR_ERR_INVALID_ARG, response);
 	}
 
+	total_start_us = kvs_command_task_now_us();
 	results_capacity = (size_t)topk;
 	results = (kvs_vector_search_result_t *)kvs_malloc(
 		results_capacity * sizeof(kvs_vector_search_result_t)
@@ -149,6 +151,9 @@ static int kvs_vector_search_prepared_to_resp(
 	response_end_us = kvs_command_task_now_us();
 	kvs_vector_vsearch_record_response_build(
 		response_end_us >= response_start_us ? response_end_us - response_start_us : 0
+	);
+	kvs_vector_vsearch_record_search(
+		response_end_us >= total_start_us ? response_end_us - total_start_us : 0
 	);
 
 	kvs_free(results);

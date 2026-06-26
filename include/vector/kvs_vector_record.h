@@ -80,6 +80,45 @@
 	uint32_t embedding_model_version;
  } kvs_vector_record_t;
 
+ /********** record_id -> slot fast resolve map **********/
+
+/*
+ * record_id -> record_index map entry状态。
+ *
+ * 该map只属于manager内存态，用于把core/backend返回的稳定record_id快速解析到
+ * record store slot。它不进入RDB/AOF；load/rebuild后从active records重建。
+ */
+typedef enum kvs_vector_record_id_entry_state_e {
+	KVS_VECTOR_RECORD_ID_ENTRY_EMPTY = 0,
+	KVS_VECTOR_RECORD_ID_ENTRY_USED = 1,
+	KVS_VECTOR_RECORD_ID_ENTRY_TOMBSTONE = 2,
+} kvs_vector_record_id_entry_state_t;
+
+/*
+ * record_id -> record_index 单个桶。
+ *
+ * record_index仍然只是manager内部slot；使用者回表后必须校验record->id仍等于
+ * record_id，以防slot复用导致stale hit误命中新record。
+ */
+typedef struct kvs_vector_record_id_entry_s {
+	uint64_t record_id;
+	size_t record_index;
+	uint8_t state;
+} kvs_vector_record_id_entry_t;
+
+/*
+ * record_id -> record_index 的开放寻址hash map。
+ *
+ * 只保存ACTIVE且未deleted的record_id映射。VDEL、slot复用、RDB load和rebuild
+ * 必须同步更新或重建该map。
+ */
+typedef struct kvs_vector_record_id_map_s {
+	kvs_vector_record_id_entry_t *entries;
+	size_t capacity;
+	size_t size;
+	size_t tombstones;
+} kvs_vector_record_id_map_t;
+
  /********** store **********/
 
  /*
@@ -113,8 +152,10 @@
     //free_indices数组容量
 	size_t free_capacity;
 
-    //下一个待分配的全局record_id；只递增，不应因slot复用而回退
+	//下一个待分配的全局record_id；只递增，不应因slot复用而回退
 	uint64_t next_id;
+	//manager-owned record_id -> record_index fast resolve map，不持久化
+	kvs_vector_record_id_map_t record_id_map;
  } kvs_vector_store_t;
 
  /********** key/scope id map **********/
@@ -461,4 +502,30 @@ int kvs_vector_id_map_remove(
 	size_t question_len,
 	const char *scope,
 	size_t scope_len
+);
+
+int kvs_vector_record_id_map_init(kvs_vector_record_id_map_t *map);
+
+void kvs_vector_record_id_map_destroy(kvs_vector_record_id_map_t *map);
+
+int kvs_vector_record_id_map_reserve(
+	kvs_vector_record_id_map_t *map,
+	size_t new_capacity
+);
+
+int kvs_vector_record_id_map_get(
+	kvs_vector_record_id_map_t *map,
+	uint64_t record_id,
+	size_t *out_record_index
+);
+
+int kvs_vector_record_id_map_put(
+	kvs_vector_record_id_map_t *map,
+	uint64_t record_id,
+	size_t record_index
+);
+
+int kvs_vector_record_id_map_remove(
+	kvs_vector_record_id_map_t *map,
+	uint64_t record_id
 );

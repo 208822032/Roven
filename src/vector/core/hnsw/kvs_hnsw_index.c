@@ -4,6 +4,45 @@
 #include "kvs_vector.h"
 
 #include <string.h>
+#include <time.h>
+
+uint64_t kvs_hnsw_profile_now_us(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+		return 0;
+	}
+
+	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+void kvs_hnsw_rebuild_profile_reset(
+	kvs_hnsw_index_t *index
+) {
+	if (!index) {
+		return;
+	}
+
+	memset(&index->rebuild_profile, 0, sizeof(index->rebuild_profile));
+}
+
+void kvs_hnsw_rebuild_profile_record_add(
+	kvs_hnsw_index_t *index,
+	uint64_t elapsed_us
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->rebuild_core_add_count++;
+	profile->rebuild_core_add_total_us += elapsed_us;
+	if (elapsed_us > profile->rebuild_core_add_max_us) {
+		profile->rebuild_core_add_max_us = elapsed_us;
+	}
+}
 
 static void kvs_hnsw_index_clear_storage(kvs_hnsw_index_t *index) {
 	if (!index) {
@@ -16,6 +55,9 @@ static void kvs_hnsw_index_clear_storage(kvs_hnsw_index_t *index) {
 	kvs_free(index->slot_to_record_id);
 	kvs_free(index->level0_neighbors);
 	kvs_free(index->level0_counts);
+	kvs_free(index->level0_worst_pos);
+	kvs_free(index->level0_worst_score);
+	kvs_free(index->level0_worst_valid);
 	kvs_free(index->upper_offsets);
 	kvs_free(index->upper_neighbors);
 	kvs_free(index->upper_counts);
@@ -27,6 +69,9 @@ static void kvs_hnsw_index_clear_storage(kvs_hnsw_index_t *index) {
 	index->slot_to_record_id = NULL;
 	index->level0_neighbors = NULL;
 	index->level0_counts = NULL;
+	index->level0_worst_pos = NULL;
+	index->level0_worst_score = NULL;
+	index->level0_worst_valid = NULL;
 	index->upper_offsets = NULL;
 	index->upper_neighbors = NULL;
 	index->upper_counts = NULL;
@@ -85,6 +130,9 @@ int kvs_hnsw_index_reserve(
 	uint64_t *slot_to_record_id;
 	uint32_t *level0_neighbors;
 	uint16_t *level0_counts;
+	uint16_t *level0_worst_pos;
+	float *level0_worst_score;
+	uint8_t *level0_worst_valid;
 	size_t *upper_offsets;
 	uint32_t *upper_neighbors;
 	uint16_t *upper_counts;
@@ -173,8 +221,50 @@ int kvs_hnsw_index_reserve(
 	}
 	memset(level0_counts, 0, capacity * sizeof(uint16_t));
 
+	level0_worst_pos = (uint16_t *)kvs_malloc(capacity * sizeof(uint16_t));
+	if (!level0_worst_pos) {
+		kvs_free(level0_counts);
+		kvs_free(level0_neighbors);
+		kvs_free(slot_to_record_id);
+		kvs_free(deleted_flags);
+		kvs_free(levels);
+		kvs_free(vectors);
+		return KVS_VECTOR_ERR;
+	}
+	memset(level0_worst_pos, 0, capacity * sizeof(uint16_t));
+
+	level0_worst_score = (float *)kvs_malloc(capacity * sizeof(float));
+	if (!level0_worst_score) {
+		kvs_free(level0_worst_pos);
+		kvs_free(level0_counts);
+		kvs_free(level0_neighbors);
+		kvs_free(slot_to_record_id);
+		kvs_free(deleted_flags);
+		kvs_free(levels);
+		kvs_free(vectors);
+		return KVS_VECTOR_ERR;
+	}
+	memset(level0_worst_score, 0, capacity * sizeof(float));
+
+	level0_worst_valid = (uint8_t *)kvs_malloc(capacity * sizeof(uint8_t));
+	if (!level0_worst_valid) {
+		kvs_free(level0_worst_score);
+		kvs_free(level0_worst_pos);
+		kvs_free(level0_counts);
+		kvs_free(level0_neighbors);
+		kvs_free(slot_to_record_id);
+		kvs_free(deleted_flags);
+		kvs_free(levels);
+		kvs_free(vectors);
+		return KVS_VECTOR_ERR;
+	}
+	memset(level0_worst_valid, 0, capacity * sizeof(uint8_t));
+
 	upper_offsets = (size_t *)kvs_malloc(capacity * sizeof(size_t));
 	if (!upper_offsets) {
+		kvs_free(level0_worst_valid);
+		kvs_free(level0_worst_score);
+		kvs_free(level0_worst_pos);
 		kvs_free(level0_counts);
 		kvs_free(level0_neighbors);
 		kvs_free(slot_to_record_id);
@@ -193,6 +283,9 @@ int kvs_hnsw_index_reserve(
 	);
 	if (!upper_neighbors) {
 		kvs_free(upper_offsets);
+		kvs_free(level0_worst_valid);
+		kvs_free(level0_worst_score);
+		kvs_free(level0_worst_pos);
 		kvs_free(level0_counts);
 		kvs_free(level0_neighbors);
 		kvs_free(slot_to_record_id);
@@ -207,6 +300,9 @@ int kvs_hnsw_index_reserve(
 	if (!upper_counts) {
 		kvs_free(upper_neighbors);
 		kvs_free(upper_offsets);
+		kvs_free(level0_worst_valid);
+		kvs_free(level0_worst_score);
+		kvs_free(level0_worst_pos);
 		kvs_free(level0_counts);
 		kvs_free(level0_neighbors);
 		kvs_free(slot_to_record_id);
@@ -222,6 +318,9 @@ int kvs_hnsw_index_reserve(
 		kvs_free(upper_counts);
 		kvs_free(upper_neighbors);
 		kvs_free(upper_offsets);
+		kvs_free(level0_worst_valid);
+		kvs_free(level0_worst_score);
+		kvs_free(level0_worst_pos);
 		kvs_free(level0_counts);
 		kvs_free(level0_neighbors);
 		kvs_free(slot_to_record_id);
@@ -238,6 +337,9 @@ int kvs_hnsw_index_reserve(
 		kvs_free(upper_counts);
 		kvs_free(upper_neighbors);
 		kvs_free(upper_offsets);
+		kvs_free(level0_worst_valid);
+		kvs_free(level0_worst_score);
+		kvs_free(level0_worst_pos);
 		kvs_free(level0_counts);
 		kvs_free(level0_neighbors);
 		kvs_free(slot_to_record_id);
@@ -259,6 +361,9 @@ int kvs_hnsw_index_reserve(
 		kvs_free(upper_counts);
 		kvs_free(upper_neighbors);
 		kvs_free(upper_offsets);
+		kvs_free(level0_worst_valid);
+		kvs_free(level0_worst_score);
+		kvs_free(level0_worst_pos);
 		kvs_free(level0_counts);
 		kvs_free(level0_neighbors);
 		kvs_free(slot_to_record_id);
@@ -331,6 +436,9 @@ int kvs_hnsw_index_reserve(
 			kvs_free(upper_counts);
 			kvs_free(upper_neighbors);
 			kvs_free(upper_offsets);
+			kvs_free(level0_worst_valid);
+			kvs_free(level0_worst_score);
+			kvs_free(level0_worst_pos);
 			kvs_free(level0_counts);
 			kvs_free(level0_neighbors);
 			kvs_free(slot_to_record_id);
@@ -347,6 +455,9 @@ int kvs_hnsw_index_reserve(
 	kvs_free(index->slot_to_record_id);
 	kvs_free(index->level0_neighbors);
 	kvs_free(index->level0_counts);
+	kvs_free(index->level0_worst_pos);
+	kvs_free(index->level0_worst_score);
+	kvs_free(index->level0_worst_valid);
 	kvs_free(index->upper_offsets);
 	kvs_free(index->upper_neighbors);
 	kvs_free(index->upper_counts);
@@ -361,6 +472,9 @@ int kvs_hnsw_index_reserve(
 	index->record_id_to_slot = new_map;
 	index->level0_neighbors = level0_neighbors;
 	index->level0_counts = level0_counts;
+	index->level0_worst_pos = level0_worst_pos;
+	index->level0_worst_score = level0_worst_score;
+	index->level0_worst_valid = level0_worst_valid;
 	index->upper_offsets = upper_offsets;
 	index->upper_neighbors = upper_neighbors;
 	index->upper_counts = upper_counts;
@@ -397,6 +511,15 @@ int kvs_hnsw_index_reset(
 	}
 	if (index->level0_counts && index->capacity > 0) {
 		memset(index->level0_counts, 0, index->capacity * sizeof(uint16_t));
+	}
+	if (index->level0_worst_pos && index->capacity > 0) {
+		memset(index->level0_worst_pos, 0, index->capacity * sizeof(uint16_t));
+	}
+	if (index->level0_worst_score && index->capacity > 0) {
+		memset(index->level0_worst_score, 0, index->capacity * sizeof(float));
+	}
+	if (index->level0_worst_valid && index->capacity > 0) {
+		memset(index->level0_worst_valid, 0, index->capacity * sizeof(uint8_t));
 	}
 	if (index->upper_offsets && index->capacity > 0) {
 		size_t i;

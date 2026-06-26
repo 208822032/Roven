@@ -1,8 +1,8 @@
 #include "vector/kvs_vector_hnsw.h"
 
 #include "kvs_vector.h"
+#include "kvs_vector_distance.h"
 
-#include <math.h>
 #include <string.h>
 
 static float kvs_hnsw_dot_score(
@@ -10,14 +10,7 @@ static float kvs_hnsw_dot_score(
 	const float *rhs,
 	size_t dim
 ) {
-	float score = 0.0f;
-	size_t i;
-
-	for (i = 0; i < dim; i++) {
-		score += lhs[i] * rhs[i];
-	}
-
-	return score;
+	return kvs_vector_distance_dot(lhs, rhs, dim);
 }
 
 static float kvs_hnsw_l2_score(
@@ -25,15 +18,7 @@ static float kvs_hnsw_l2_score(
 	const float *rhs,
 	size_t dim
 ) {
-	float distance = 0.0f;
-	size_t i;
-
-	for (i = 0; i < dim; i++) {
-		float diff = lhs[i] - rhs[i];
-		distance += diff * diff;
-	}
-
-	return -distance;
+	return -kvs_vector_distance_squared_l2(lhs, rhs, dim);
 }
 
 static float kvs_hnsw_cosine_score(
@@ -41,22 +26,7 @@ static float kvs_hnsw_cosine_score(
 	const float *rhs,
 	size_t dim
 ) {
-	float dot = 0.0f;
-	float lhs_norm = 0.0f;
-	float rhs_norm = 0.0f;
-	size_t i;
-
-	for (i = 0; i < dim; i++) {
-		dot += lhs[i] * rhs[i];
-		lhs_norm += lhs[i] * lhs[i];
-		rhs_norm += rhs[i] * rhs[i];
-	}
-
-	if (lhs_norm <= 0.0f || rhs_norm <= 0.0f) {
-		return 0.0f;
-	}
-
-	return dot / (sqrtf(lhs_norm) * sqrtf(rhs_norm));
+	return kvs_vector_distance_cosine_score(lhs, rhs, dim);
 }
 
 static float kvs_hnsw_metric_score(
@@ -138,15 +108,19 @@ static uint32_t kvs_hnsw_greedy_search_layer(
 	uint32_t current = entry;
 	float current_score;
 	int improved = 1;
+	const float *vectors;
+	size_t dim;
 
 	if (!kvs_hnsw_slot_exists_at_level(index, entry, level)) {
 		return entry;
 	}
 
+	vectors = index->vectors;
+	dim = index->dim;
 	current_score = kvs_hnsw_metric_score(
 		index,
 		query,
-		kvs_hnsw_slot_vector(index, current)
+		vectors + ((size_t)current * dim)
 	);
 
 	while (improved) {
@@ -166,7 +140,7 @@ static uint32_t kvs_hnsw_greedy_search_layer(
 			score = kvs_hnsw_metric_score(
 				index,
 				query,
-				kvs_hnsw_slot_vector(index, neighbor)
+				vectors + ((size_t)neighbor * dim)
 			);
 			if (score > current_score) {
 				current = neighbor;
@@ -209,6 +183,10 @@ static int kvs_hnsw_level0_search(
 	uint32_t visit_tag;
 	size_t ef;
 	size_t hit_count = 0;
+	const float *vectors;
+	size_t dim;
+	uint32_t *visited_tags;
+	size_t candidate_capacity;
 
 	ef = index->ef_search;
 	if (ef < topk) {
@@ -220,19 +198,23 @@ static int kvs_hnsw_level0_search(
 
 	kvs_hnsw_context_reset(ctx);
 	visit_tag = kvs_hnsw_next_visit_tag(index);
+	vectors = index->vectors;
+	dim = index->dim;
+	visited_tags = index->visited_tags;
+	candidate_capacity = ctx->candidate_heap.capacity;
 
 	if (!kvs_hnsw_slot_exists_at_level(index, entry, 0)) {
 		*out_count = 0;
 		return KVS_VECTOR_OK;
 	}
 
-	index->visited_tags[entry] = visit_tag;
+	visited_tags[entry] = visit_tag;
 	item.record_id = index->slot_to_record_id[entry];
 	item.slot = entry;
 	item.score = kvs_hnsw_metric_score(
 		index,
 		query,
-		kvs_hnsw_slot_vector(index, entry)
+		vectors + ((size_t)entry * dim)
 	);
 
 	if (kvs_vector_heap_push(&ctx->candidate_heap, item) != KVS_VECTOR_OK) {
@@ -265,24 +247,26 @@ static int kvs_hnsw_level0_search(
 			uint32_t neighbor = neighbors[i];
 			kvs_vector_heap_item_t next;
 
-			if (!kvs_hnsw_slot_exists_at_level(index, neighbor, 0) ||
-			    index->visited_tags[neighbor] == visit_tag) {
+			if (visited_tags[neighbor] == visit_tag) {
 				continue;
 			}
-			index->visited_tags[neighbor] = visit_tag;
+			visited_tags[neighbor] = visit_tag;
+			if (!kvs_hnsw_slot_exists_at_level(index, neighbor, 0)) {
+				continue;
+			}
 
 			next.record_id = index->slot_to_record_id[neighbor];
 			next.slot = neighbor;
 			next.score = kvs_hnsw_metric_score(
 				index,
 				query,
-				kvs_hnsw_slot_vector(index, neighbor)
+				vectors + ((size_t)neighbor * dim)
 			);
 
 			worst_top = kvs_vector_heap_top(&ctx->top_heap);
 			if (ctx->top_heap.size < ef || !worst_top ||
 			    next.score > worst_top->score) {
-				if (ctx->candidate_heap.size < ctx->candidate_heap.capacity) {
+				if (ctx->candidate_heap.size < candidate_capacity) {
 					(void)kvs_vector_heap_push(&ctx->candidate_heap, next);
 				}
 				if (!index->deleted_flags[neighbor]) {

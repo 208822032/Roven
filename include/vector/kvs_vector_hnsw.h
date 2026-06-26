@@ -56,6 +56,70 @@ typedef struct kvs_hnsw_search_context_pool_s {
 	size_t context_capacity;
 } kvs_hnsw_search_context_pool_t;
 
+typedef struct kvs_hnsw_rebuild_profile_s {
+	uint64_t rebuild_total_us;
+	uint64_t rebuild_manager_scan_us;
+	uint64_t rebuild_core_reset_us;
+	uint64_t rebuild_core_reserve_us;
+	uint64_t rebuild_core_add_total_us;
+	uint64_t rebuild_core_add_max_us;
+	uint64_t rebuild_core_add_count;
+	uint64_t hnsw_add_random_level_us;
+	uint64_t hnsw_add_greedy_search_us;
+	uint64_t hnsw_add_layer_search_us;
+	uint64_t hnsw_add_neighbor_select_us;
+	uint64_t hnsw_add_link_us;
+	uint64_t hnsw_add_vector_copy_us;
+
+	/* Stage 7A: low-invasiveness event counters for memory access pattern audit.
+	 * These count per-add hot-loop events across all layers; zero runtime
+	 * overhead beyond a few integer increments.  They are audit-only and do
+	 * not change algorithm semantics, graph structure, or memory layout. */
+	uint64_t add_distance_compute_count;
+	uint64_t add_neighbor_visit_count;
+	uint64_t add_visited_skip_count;
+	uint64_t add_active_check_count;
+	uint64_t add_top_heap_push_count;
+	uint64_t add_top_heap_replace_count;
+	uint64_t add_candidate_push_count;
+	uint64_t add_level0_neighbor_scan_count;
+	uint64_t add_upper_neighbor_scan_count;
+
+	/* Stage 7D: neighbor_select attribution counters. */
+	uint64_t neighbor_select_call_count;
+	uint64_t neighbor_select_level0_call_count;
+	uint64_t neighbor_select_upper_call_count;
+	uint64_t neighbor_select_candidate_total;
+	uint64_t neighbor_select_candidate_max;
+	uint64_t neighbor_select_selected_total;
+	uint64_t neighbor_select_selected_max;
+	uint64_t neighbor_select_reject_count;
+	uint64_t neighbor_select_heuristic_prune_count;
+	uint64_t neighbor_select_distance_recompute_count;
+	uint64_t neighbor_select_reused_candidate_score_count;
+	uint64_t neighbor_select_duplicate_scan_count;
+	uint64_t neighbor_select_worst_scan_count;
+	uint64_t neighbor_select_worst_cache_hit_count;
+	uint64_t neighbor_select_level0_candidate_total;
+	uint64_t neighbor_select_upper_candidate_total;
+	uint64_t neighbor_select_level0_selected_total;
+	uint64_t neighbor_select_upper_selected_total;
+	uint64_t neighbor_select_level0_reject_count;
+	uint64_t neighbor_select_upper_reject_count;
+	uint64_t neighbor_select_level0_heuristic_prune_count;
+	uint64_t neighbor_select_upper_heuristic_prune_count;
+	uint64_t neighbor_select_level0_distance_recompute_count;
+	uint64_t neighbor_select_upper_distance_recompute_count;
+	uint64_t neighbor_select_level0_reused_candidate_score_count;
+	uint64_t neighbor_select_upper_reused_candidate_score_count;
+	uint64_t neighbor_select_level0_duplicate_scan_count;
+	uint64_t neighbor_select_upper_duplicate_scan_count;
+	uint64_t neighbor_select_level0_worst_scan_count;
+	uint64_t neighbor_select_upper_worst_scan_count;
+	uint64_t neighbor_select_level0_worst_cache_hit_count;
+	uint64_t neighbor_select_upper_worst_cache_hit_count;
+} kvs_hnsw_rebuild_profile_t;
+
 typedef struct kvs_hnsw_index_s {
 	size_t dim;
 	int metric;
@@ -76,6 +140,9 @@ typedef struct kvs_hnsw_index_s {
 
 	uint32_t *level0_neighbors;
 	uint16_t *level0_counts;
+	uint16_t *level0_worst_pos;
+	float *level0_worst_score;
+	uint8_t *level0_worst_valid;
 
 	size_t *upper_offsets;
 	uint32_t *upper_neighbors;
@@ -95,6 +162,7 @@ typedef struct kvs_hnsw_index_s {
 	int ready;
 	int needs_rebuild;
 	size_t deleted_count;
+	kvs_hnsw_rebuild_profile_t rebuild_profile;
 } kvs_hnsw_index_t;
 
 int kvs_hnsw_index_init(
@@ -194,4 +262,15 @@ uint8_t kvs_hnsw_random_level(
 
 uint8_t kvs_hnsw_index_next_level(
 	kvs_hnsw_index_t *index
+);
+
+uint64_t kvs_hnsw_profile_now_us(void);
+
+void kvs_hnsw_rebuild_profile_reset(
+	kvs_hnsw_index_t *index
+);
+
+void kvs_hnsw_rebuild_profile_record_add(
+	kvs_hnsw_index_t *index,
+	uint64_t elapsed_us
 );

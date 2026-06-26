@@ -274,6 +274,11 @@ int kvs_vector_manager_get_active_record_id_by_index(
 	uint64_t *out_record_id
 );
 
+int kvs_vector_manager_get_record_by_id(
+	uint64_t record_id,
+	kvs_vector_record_t **out_record
+);
+
 typedef int (*kvs_vector_manager_active_embedding_iter_fn)(
 	uint64_t record_id,
 	const float *embedding,

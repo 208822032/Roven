@@ -135,12 +135,84 @@ typedef struct kvs_vector_info_s {
 	int core_hnsw_max_level;
 	size_t core_hnsw_deleted_count;
 
-	/* runtime stats */
-	int last_rebuild_status;
-	int64_t last_rebuild_ms;
-	size_t vector_memory_bytes;
-	size_t index_memory_bytes;
-	size_t total_vector_memory_bytes;
+	/* Stage 5C: unified backend observability fields */
+	const char *backend_name;
+	size_t backend_size;
+	size_t backend_capacity;
+	size_t backend_dim;
+	const char *backend_metric;
+	size_t backend_memory_bytes;
+	const char *backend_memory_bytes_source;
+	size_t backend_deleted_count;
+	int backend_needs_rebuild;
+	const char *backend_resize_count;
+	const char *backend_reserve_count;
+	const char *backend_resize_count_source;
+	const char *backend_reserve_count_source;
+
+		/* runtime stats */
+		int last_rebuild_status;
+		int64_t last_rebuild_ms;
+		uint64_t rebuild_total_us;
+		uint64_t rebuild_manager_scan_us;
+		uint64_t rebuild_core_reset_us;
+		uint64_t rebuild_core_reserve_us;
+		uint64_t rebuild_core_add_total_us;
+		uint64_t rebuild_core_add_avg_us;
+		uint64_t rebuild_core_add_max_us;
+		uint64_t rebuild_core_add_count;
+		uint64_t hnsw_add_random_level_us;
+		uint64_t hnsw_add_greedy_search_us;
+		uint64_t hnsw_add_layer_search_us;
+		uint64_t hnsw_add_neighbor_select_us;
+		uint64_t hnsw_add_link_us;
+		uint64_t hnsw_add_vector_copy_us;
+		/* Stage 7A: event counters for memory access pattern audit */
+		uint64_t add_distance_compute_count;
+		uint64_t add_neighbor_visit_count;
+		uint64_t add_visited_skip_count;
+		uint64_t add_active_check_count;
+		uint64_t add_top_heap_push_count;
+		uint64_t add_top_heap_replace_count;
+		uint64_t add_candidate_push_count;
+		uint64_t add_level0_neighbor_scan_count;
+		uint64_t add_upper_neighbor_scan_count;
+		/* Stage 7D: neighbor_select attribution counters */
+		uint64_t neighbor_select_call_count;
+		uint64_t neighbor_select_level0_call_count;
+		uint64_t neighbor_select_upper_call_count;
+		uint64_t neighbor_select_candidate_total;
+		uint64_t neighbor_select_candidate_max;
+		uint64_t neighbor_select_selected_total;
+		uint64_t neighbor_select_selected_max;
+		uint64_t neighbor_select_reject_count;
+		uint64_t neighbor_select_heuristic_prune_count;
+		uint64_t neighbor_select_distance_recompute_count;
+		uint64_t neighbor_select_reused_candidate_score_count;
+		uint64_t neighbor_select_duplicate_scan_count;
+		uint64_t neighbor_select_worst_scan_count;
+		uint64_t neighbor_select_worst_cache_hit_count;
+		uint64_t neighbor_select_level0_candidate_total;
+		uint64_t neighbor_select_upper_candidate_total;
+		uint64_t neighbor_select_level0_selected_total;
+		uint64_t neighbor_select_upper_selected_total;
+		uint64_t neighbor_select_level0_reject_count;
+		uint64_t neighbor_select_upper_reject_count;
+		uint64_t neighbor_select_level0_heuristic_prune_count;
+		uint64_t neighbor_select_upper_heuristic_prune_count;
+		uint64_t neighbor_select_level0_distance_recompute_count;
+		uint64_t neighbor_select_upper_distance_recompute_count;
+		uint64_t neighbor_select_level0_reused_candidate_score_count;
+		uint64_t neighbor_select_upper_reused_candidate_score_count;
+		uint64_t neighbor_select_level0_duplicate_scan_count;
+		uint64_t neighbor_select_upper_duplicate_scan_count;
+		uint64_t neighbor_select_level0_worst_scan_count;
+		uint64_t neighbor_select_upper_worst_scan_count;
+		uint64_t neighbor_select_level0_worst_cache_hit_count;
+		uint64_t neighbor_select_upper_worst_cache_hit_count;
+		size_t vector_memory_bytes;
+		size_t index_memory_bytes;
+		size_t total_vector_memory_bytes;
 
 	/* Stage 2B: worker pool + executor prepared stats */
 	int embedding_worker_pool_enabled;
@@ -169,6 +241,23 @@ typedef struct kvs_vector_info_s {
 	size_t hnswlib_ef_search;
 	uint64_t hnswlib_add_count;
 	uint64_t hnswlib_search_count;
+
+	/* Stage 5B: VSEARCH internal profile stats */
+	uint64_t vsearch_total_count;
+	uint64_t vsearch_total_us;
+	uint64_t vsearch_total_max_us;
+	uint64_t vsearch_backend_search_count;
+	uint64_t vsearch_backend_search_total_us;
+	uint64_t vsearch_backend_search_max_us;
+	uint64_t vsearch_manager_resolve_count;
+	uint64_t vsearch_manager_resolve_total_us;
+	uint64_t vsearch_manager_resolve_max_us;
+	uint64_t vsearch_response_assembly_count;
+	uint64_t vsearch_response_assembly_total_us;
+	uint64_t vsearch_response_assembly_max_us;
+	uint64_t vsearch_raw_hit_count;
+	uint64_t vsearch_resolved_hit_count;
+	uint64_t vsearch_filtered_hit_count;
 } kvs_vector_info_t;
 
 /********** 向量模块公开接口 **********/
@@ -290,6 +379,15 @@ typedef struct kvs_vector_vset_commit_stats_s {
 	uint64_t vsearch_search_count;
 	uint64_t vsearch_search_total_us;
 	uint64_t vsearch_search_max_us;
+	uint64_t vsearch_backend_search_count;
+	uint64_t vsearch_backend_search_total_us;
+	uint64_t vsearch_backend_search_max_us;
+	uint64_t vsearch_manager_resolve_count;
+	uint64_t vsearch_manager_resolve_total_us;
+	uint64_t vsearch_manager_resolve_max_us;
+	uint64_t vsearch_raw_hit_count;
+	uint64_t vsearch_resolved_hit_count;
+	uint64_t vsearch_filtered_hit_count;
 	uint64_t vsearch_response_build_count;
 	uint64_t vsearch_response_build_total_us;
 	uint64_t vsearch_response_build_max_us;
@@ -319,6 +417,12 @@ void kvs_vector_vset_record_dirty_mark(uint64_t elapsed_us);
 void kvs_vector_vset_record_response_build(uint64_t elapsed_us);
 void kvs_vector_vset_record_response_push(uint64_t elapsed_us);
 void kvs_vector_vsearch_record_search(uint64_t elapsed_us);
+void kvs_vector_vsearch_record_backend_search(uint64_t elapsed_us);
+void kvs_vector_vsearch_record_manager_resolve(
+	uint64_t elapsed_us,
+	size_t raw_hit_count,
+	size_t resolved_hit_count
+);
 void kvs_vector_vsearch_record_response_build(uint64_t elapsed_us);
 void kvs_vector_vsearch_record_response_push(uint64_t elapsed_us);
 void kvs_vector_flat_record_search_core(uint64_t elapsed_us);

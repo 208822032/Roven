@@ -1,8 +1,8 @@
 #include "vector/kvs_vector_hnsw.h"
 
 #include "kvs_vector.h"
+#include "kvs_vector_distance.h"
 
-#include <math.h>
 #include <string.h>
 
 static float kvs_hnsw_dot_score(
@@ -10,14 +10,7 @@ static float kvs_hnsw_dot_score(
 	const float *rhs,
 	size_t dim
 ) {
-	float score = 0.0f;
-	size_t i;
-
-	for (i = 0; i < dim; i++) {
-		score += lhs[i] * rhs[i];
-	}
-
-	return score;
+	return kvs_vector_distance_dot(lhs, rhs, dim);
 }
 
 static float kvs_hnsw_l2_score(
@@ -25,15 +18,7 @@ static float kvs_hnsw_l2_score(
 	const float *rhs,
 	size_t dim
 ) {
-	float distance = 0.0f;
-	size_t i;
-
-	for (i = 0; i < dim; i++) {
-		float diff = lhs[i] - rhs[i];
-		distance += diff * diff;
-	}
-
-	return -distance;
+	return -kvs_vector_distance_squared_l2(lhs, rhs, dim);
 }
 
 static float kvs_hnsw_cosine_score(
@@ -41,22 +26,7 @@ static float kvs_hnsw_cosine_score(
 	const float *rhs,
 	size_t dim
 ) {
-	float dot = 0.0f;
-	float lhs_norm = 0.0f;
-	float rhs_norm = 0.0f;
-	size_t i;
-
-	for (i = 0; i < dim; i++) {
-		dot += lhs[i] * rhs[i];
-		lhs_norm += lhs[i] * lhs[i];
-		rhs_norm += rhs[i] * rhs[i];
-	}
-
-	if (lhs_norm <= 0.0f || rhs_norm <= 0.0f) {
-		return 0.0f;
-	}
-
-	return dot / (sqrtf(lhs_norm) * sqrtf(rhs_norm));
+	return kvs_vector_distance_cosine_score(lhs, rhs, dim);
 }
 
 static float kvs_hnsw_metric_score(
@@ -118,6 +88,172 @@ static size_t kvs_hnsw_layer_capacity(
 	return level == 0 ? index->M0 : index->M;
 }
 
+static void kvs_hnsw_profile_neighbor_select_call(
+	kvs_hnsw_index_t *index,
+	uint8_t level,
+	size_t candidate_count
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->neighbor_select_call_count++;
+	if (level == 0) {
+		profile->neighbor_select_level0_call_count++;
+		profile->neighbor_select_level0_candidate_total += candidate_count;
+	} else {
+		profile->neighbor_select_upper_call_count++;
+		profile->neighbor_select_upper_candidate_total += candidate_count;
+	}
+	profile->neighbor_select_candidate_total += candidate_count;
+	if (candidate_count > profile->neighbor_select_candidate_max) {
+		profile->neighbor_select_candidate_max = candidate_count;
+	}
+}
+
+static void kvs_hnsw_profile_neighbor_select_selected(
+	kvs_hnsw_index_t *index,
+	uint8_t level,
+	size_t selected_count
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->neighbor_select_selected_total += selected_count;
+	if (level == 0) {
+		profile->neighbor_select_level0_selected_total += selected_count;
+	} else {
+		profile->neighbor_select_upper_selected_total += selected_count;
+	}
+	if (selected_count > profile->neighbor_select_selected_max) {
+		profile->neighbor_select_selected_max = selected_count;
+	}
+}
+
+static void kvs_hnsw_profile_neighbor_select_reject(
+	kvs_hnsw_index_t *index,
+	uint8_t level
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->neighbor_select_reject_count++;
+	profile->neighbor_select_heuristic_prune_count++;
+	if (level == 0) {
+		profile->neighbor_select_level0_reject_count++;
+		profile->neighbor_select_level0_heuristic_prune_count++;
+	} else {
+		profile->neighbor_select_upper_reject_count++;
+		profile->neighbor_select_upper_heuristic_prune_count++;
+	}
+}
+
+static void kvs_hnsw_profile_neighbor_select_distance_recompute(
+	kvs_hnsw_index_t *index,
+	uint8_t level
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->neighbor_select_distance_recompute_count++;
+	if (level == 0) {
+		profile->neighbor_select_level0_distance_recompute_count++;
+	} else {
+		profile->neighbor_select_upper_distance_recompute_count++;
+	}
+}
+
+static void kvs_hnsw_profile_neighbor_select_reused_score(
+	kvs_hnsw_index_t *index,
+	uint8_t level
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->neighbor_select_reused_candidate_score_count++;
+	if (level == 0) {
+		profile->neighbor_select_level0_reused_candidate_score_count++;
+	} else {
+		profile->neighbor_select_upper_reused_candidate_score_count++;
+	}
+}
+
+static void kvs_hnsw_profile_neighbor_select_duplicate_scan(
+	kvs_hnsw_index_t *index,
+	uint8_t level
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->neighbor_select_duplicate_scan_count++;
+	if (level == 0) {
+		profile->neighbor_select_level0_duplicate_scan_count++;
+	} else {
+		profile->neighbor_select_upper_duplicate_scan_count++;
+	}
+}
+
+static void kvs_hnsw_profile_neighbor_select_worst_scan(
+	kvs_hnsw_index_t *index,
+	uint8_t level
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->neighbor_select_worst_scan_count++;
+	if (level == 0) {
+		profile->neighbor_select_level0_worst_scan_count++;
+	} else {
+		profile->neighbor_select_upper_worst_scan_count++;
+	}
+}
+
+static void kvs_hnsw_profile_neighbor_select_worst_cache_hit(
+	kvs_hnsw_index_t *index,
+	uint8_t level
+) {
+	kvs_hnsw_rebuild_profile_t *profile;
+
+	if (!index) {
+		return;
+	}
+
+	profile = &index->rebuild_profile;
+	profile->neighbor_select_worst_cache_hit_count++;
+	if (level == 0) {
+		profile->neighbor_select_level0_worst_cache_hit_count++;
+	} else {
+		profile->neighbor_select_upper_worst_cache_hit_count++;
+	}
+}
+
 static int kvs_hnsw_slot_active_at_level(
 	const kvs_hnsw_index_t *index,
 	uint32_t slot,
@@ -126,6 +262,19 @@ static int kvs_hnsw_slot_active_at_level(
 	return (size_t)slot < index->size &&
 		!index->deleted_flags[slot] &&
 		index->levels[slot] >= level;
+}
+
+static void kvs_hnsw_layer_worst_cache_invalidate(
+	kvs_hnsw_index_t *index,
+	uint32_t slot,
+	uint8_t level
+) {
+	if (!index || level != 0 || (size_t)slot >= index->capacity ||
+	    !index->level0_worst_valid) {
+		return;
+	}
+
+	index->level0_worst_valid[slot] = 0;
 }
 
 static int kvs_hnsw_layer_has_neighbor(
@@ -187,34 +336,93 @@ static void kvs_hnsw_layer_remove_neighbor(
 		}
 		neighbors[count - 1] = 0;
 		*count_ptr = (uint16_t)(count - 1);
+		kvs_hnsw_layer_worst_cache_invalidate(index, slot, level);
 		return;
 	}
 }
 
-static int kvs_hnsw_layer_append_or_replace(
+static void kvs_hnsw_layer_find_worst_neighbor(
+	kvs_hnsw_index_t *index,
+	uint32_t slot,
+	uint8_t level,
+	uint32_t *neighbors,
+	size_t count,
+	size_t *out_worst_pos,
+	float *out_worst_score
+) {
+	size_t worst_pos = 0;
+	float worst_score = 0.0f;
+	const float *slot_vec;
+	size_t i;
+
+	if (!index || !neighbors || count == 0 ||
+	    !out_worst_pos || !out_worst_score) {
+		return;
+	}
+
+	if (level == 0 &&
+	    index->deleted_count == 0 &&
+	    index->level0_worst_valid &&
+	    index->level0_worst_pos &&
+	    index->level0_worst_score &&
+	    (size_t)slot < index->capacity &&
+	    index->level0_worst_valid[slot] &&
+	    index->level0_worst_pos[slot] < count) {
+		kvs_hnsw_profile_neighbor_select_worst_cache_hit(index, level);
+		*out_worst_pos = index->level0_worst_pos[slot];
+		*out_worst_score = index->level0_worst_score[slot];
+		return;
+	}
+
+	slot_vec = kvs_hnsw_slot_vector(index, slot);
+	for (i = 0; i < count; i++) {
+		const float *current_vec = kvs_hnsw_slot_vector(index, neighbors[i]);
+		float score = kvs_hnsw_metric_score(index, slot_vec, current_vec);
+
+		kvs_hnsw_profile_neighbor_select_worst_scan(index, level);
+		kvs_hnsw_profile_neighbor_select_distance_recompute(index, level);
+		if (i == 0 || score < worst_score) {
+			worst_score = score;
+			worst_pos = i;
+		}
+	}
+
+	if (level == 0 &&
+	    index->deleted_count == 0 &&
+	    index->level0_worst_valid &&
+	    index->level0_worst_pos &&
+	    index->level0_worst_score &&
+	    (size_t)slot < index->capacity &&
+	    worst_pos <= UINT16_MAX) {
+		index->level0_worst_pos[slot] = (uint16_t)worst_pos;
+		index->level0_worst_score[slot] = worst_score;
+		index->level0_worst_valid[slot] = 1;
+	}
+
+	*out_worst_pos = worst_pos;
+	*out_worst_score = worst_score;
+}
+
+static int kvs_hnsw_layer_plan_append_or_replace(
 	kvs_hnsw_index_t *index,
 	uint32_t slot,
 	uint32_t neighbor,
 	uint8_t level,
+	float candidate_score,
+	int has_candidate_score,
 	int *out_accepted,
-	uint32_t *out_removed
+	uint32_t *out_removed,
+	size_t *out_replace_pos
 ) {
 	uint32_t *neighbors;
-	uint16_t *count_ptr;
 	size_t count;
 	size_t capacity;
 	size_t worst_pos = 0;
 	float worst_score = 0.0f;
+	float neighbor_score;
 	const float *slot_vec;
 	const float *neighbor_vec;
-	float neighbor_score;
 	size_t i;
-
-	if (!index || slot == neighbor ||
-	    !kvs_hnsw_slot_active_at_level(index, slot, level) ||
-	    !kvs_hnsw_slot_active_at_level(index, neighbor, level)) {
-		return KVS_VECTOR_ERR_INVALID_ARG;
-	}
 
 	if (out_accepted) {
 		*out_accepted = 0;
@@ -222,100 +430,212 @@ static int kvs_hnsw_layer_append_or_replace(
 	if (out_removed) {
 		*out_removed = UINT32_MAX;
 	}
+	if (out_replace_pos) {
+		*out_replace_pos = (size_t)-1;
+	}
 
-	if (kvs_hnsw_layer_has_neighbor(index, slot, neighbor, level)) {
+	if (!index || slot == neighbor ||
+	    !kvs_hnsw_slot_active_at_level(index, slot, level) ||
+	    !kvs_hnsw_slot_active_at_level(index, neighbor, level)) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	neighbors = kvs_hnsw_layer_neighbors(index, slot, level);
+	count = *kvs_hnsw_layer_count_ptr(index, slot, level);
+	capacity = kvs_hnsw_layer_capacity(index, level);
+	slot_vec = kvs_hnsw_slot_vector(index, slot);
+
+	for (i = 0; i < count; i++) {
+		kvs_hnsw_profile_neighbor_select_duplicate_scan(index, level);
+		if (neighbors[i] == neighbor) {
+			if (out_accepted) {
+				*out_accepted = 1;
+			}
+			return KVS_VECTOR_OK;
+		}
+	}
+
+	if (count < capacity) {
 		if (out_accepted) {
 			*out_accepted = 1;
 		}
+		if (out_replace_pos) {
+			*out_replace_pos = count;
+		}
 		return KVS_VECTOR_OK;
+	}
+
+	kvs_hnsw_layer_find_worst_neighbor(
+		index,
+		slot,
+		level,
+		neighbors,
+		count,
+		&worst_pos,
+		&worst_score
+	);
+
+	if (has_candidate_score && !index->distance) {
+		neighbor_score = candidate_score;
+		kvs_hnsw_profile_neighbor_select_reused_score(index, level);
+	} else {
+		neighbor_vec = kvs_hnsw_slot_vector(index, neighbor);
+		neighbor_score = kvs_hnsw_metric_score(index, slot_vec, neighbor_vec);
+		kvs_hnsw_profile_neighbor_select_distance_recompute(index, level);
+	}
+
+	if (neighbor_score > worst_score) {
+		if (out_accepted) {
+			*out_accepted = 1;
+		}
+		if (out_removed) {
+			*out_removed = neighbors[worst_pos];
+		}
+		if (out_replace_pos) {
+			*out_replace_pos = worst_pos;
+		}
+	} else {
+		kvs_hnsw_profile_neighbor_select_reject(index, level);
+	}
+
+	return KVS_VECTOR_OK;
+}
+
+static int kvs_hnsw_layer_apply_append_or_replace(
+	kvs_hnsw_index_t *index,
+	uint32_t slot,
+	uint32_t neighbor,
+	uint8_t level,
+	int accepted,
+	uint32_t removed,
+	size_t replace_pos
+) {
+	uint32_t *neighbors;
+	uint16_t *count_ptr;
+	size_t count;
+	size_t capacity;
+
+	if (!accepted) {
+		return KVS_VECTOR_OK;
+	}
+
+	if (!index || slot == neighbor ||
+	    !kvs_hnsw_slot_active_at_level(index, slot, level) ||
+	    !kvs_hnsw_slot_active_at_level(index, neighbor, level)) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
 	neighbors = kvs_hnsw_layer_neighbors(index, slot, level);
 	count_ptr = kvs_hnsw_layer_count_ptr(index, slot, level);
 	count = *count_ptr;
 	capacity = kvs_hnsw_layer_capacity(index, level);
-	slot_vec = kvs_hnsw_slot_vector(index, slot);
-	neighbor_vec = kvs_hnsw_slot_vector(index, neighbor);
-	neighbor_score = kvs_hnsw_metric_score(index, slot_vec, neighbor_vec);
 
-	if (count < capacity) {
-		neighbors[count] = neighbor;
-		*count_ptr = (uint16_t)(count + 1);
-		if (out_accepted) {
-			*out_accepted = 1;
-		}
+	if (replace_pos == (size_t)-1) {
 		return KVS_VECTOR_OK;
 	}
 
-	for (i = 0; i < count; i++) {
-		const float *current_vec = kvs_hnsw_slot_vector(index, neighbors[i]);
-		float score = kvs_hnsw_metric_score(index, slot_vec, current_vec);
-
-		if (i == 0 || score < worst_score) {
-			worst_score = score;
-			worst_pos = i;
-		}
+	if (count < capacity && replace_pos == count) {
+		neighbors[count] = neighbor;
+		*count_ptr = (uint16_t)(count + 1);
+		kvs_hnsw_layer_worst_cache_invalidate(index, slot, level);
+		return KVS_VECTOR_OK;
 	}
 
-	if (neighbor_score > worst_score) {
-		if (out_removed) {
-			*out_removed = neighbors[worst_pos];
-		}
-		neighbors[worst_pos] = neighbor;
-		if (out_accepted) {
-			*out_accepted = 1;
-		}
+	if (replace_pos < count && removed != UINT32_MAX) {
+		neighbors[replace_pos] = neighbor;
+		kvs_hnsw_layer_worst_cache_invalidate(index, slot, level);
+		return KVS_VECTOR_OK;
 	}
 
-	return KVS_VECTOR_OK;
+	return KVS_VECTOR_ERR;
 }
 
-static int kvs_hnsw_layer_would_accept(
+static int kvs_hnsw_layer_plan_new_slot_append_or_replace(
 	kvs_hnsw_index_t *index,
 	uint32_t slot,
-	uint32_t neighbor,
-	uint8_t level
+	uint32_t new_slot,
+	uint8_t level,
+	float candidate_score,
+	int *out_accepted,
+	uint32_t *out_removed,
+	size_t *out_replace_pos
 ) {
 	uint32_t *neighbors;
 	size_t count;
 	size_t capacity;
+	size_t worst_pos = 0;
 	float worst_score = 0.0f;
 	float neighbor_score;
 	const float *slot_vec;
-	const float *neighbor_vec;
-	size_t i;
 
-	if (!index || slot == neighbor ||
+	if (out_accepted) {
+		*out_accepted = 0;
+	}
+	if (out_removed) {
+		*out_removed = UINT32_MAX;
+	}
+	if (out_replace_pos) {
+		*out_replace_pos = (size_t)-1;
+	}
+
+	if (!index || slot == new_slot ||
 	    !kvs_hnsw_slot_active_at_level(index, slot, level) ||
-	    !kvs_hnsw_slot_active_at_level(index, neighbor, level)) {
-		return 0;
-	}
-
-	if (kvs_hnsw_layer_has_neighbor(index, slot, neighbor, level)) {
-		return 1;
-	}
-
-	count = *kvs_hnsw_layer_count_ptr(index, slot, level);
-	capacity = kvs_hnsw_layer_capacity(index, level);
-	if (count < capacity) {
-		return 1;
+	    !kvs_hnsw_slot_active_at_level(index, new_slot, level)) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
 	neighbors = kvs_hnsw_layer_neighbors(index, slot, level);
-	slot_vec = kvs_hnsw_slot_vector(index, slot);
-	neighbor_vec = kvs_hnsw_slot_vector(index, neighbor);
-	neighbor_score = kvs_hnsw_metric_score(index, slot_vec, neighbor_vec);
+	count = *kvs_hnsw_layer_count_ptr(index, slot, level);
+	capacity = kvs_hnsw_layer_capacity(index, level);
 
-	for (i = 0; i < count; i++) {
-		const float *current_vec = kvs_hnsw_slot_vector(index, neighbors[i]);
-		float score = kvs_hnsw_metric_score(index, slot_vec, current_vec);
-
-		if (i == 0 || score < worst_score) {
-			worst_score = score;
+	if (count < capacity) {
+		if (out_accepted) {
+			*out_accepted = 1;
 		}
+		if (out_replace_pos) {
+			*out_replace_pos = count;
+		}
+		return KVS_VECTOR_OK;
 	}
 
-	return neighbor_score > worst_score;
+	kvs_hnsw_layer_find_worst_neighbor(
+		index,
+		slot,
+		level,
+		neighbors,
+		count,
+		&worst_pos,
+		&worst_score
+	);
+	slot_vec = kvs_hnsw_slot_vector(index, slot);
+
+	if (index->distance) {
+		neighbor_score = kvs_hnsw_metric_score(
+			index,
+			slot_vec,
+			kvs_hnsw_slot_vector(index, new_slot)
+		);
+		kvs_hnsw_profile_neighbor_select_distance_recompute(index, level);
+	} else {
+		neighbor_score = candidate_score;
+		kvs_hnsw_profile_neighbor_select_reused_score(index, level);
+	}
+
+	if (neighbor_score > worst_score) {
+		if (out_accepted) {
+			*out_accepted = 1;
+		}
+		if (out_removed) {
+			*out_removed = neighbors[worst_pos];
+		}
+		if (out_replace_pos) {
+			*out_replace_pos = worst_pos;
+		}
+	} else {
+		kvs_hnsw_profile_neighbor_select_reject(index, level);
+	}
+
+	return KVS_VECTOR_OK;
 }
 
 static int kvs_hnsw_add_bidirectional_edge(
@@ -328,36 +648,74 @@ static int kvs_hnsw_add_bidirectional_edge(
 	int accepted_ba = 0;
 	uint32_t removed_ab = UINT32_MAX;
 	uint32_t removed_ba = UINT32_MAX;
+	size_t replace_pos_ab = (size_t)-1;
+	size_t replace_pos_ba = (size_t)-1;
+	uint64_t stage_start_us;
 	int ret;
 
 	if (a == b) {
 		return KVS_VECTOR_OK;
 	}
 
-	if (!kvs_hnsw_layer_would_accept(index, a, b, level) ||
-	    !kvs_hnsw_layer_would_accept(index, b, a, level)) {
-		return KVS_VECTOR_OK;
-	}
-
-	ret = kvs_hnsw_layer_append_or_replace(
+	stage_start_us = kvs_hnsw_profile_now_us();
+	ret = kvs_hnsw_layer_plan_append_or_replace(
 		index,
 		a,
 		b,
 		level,
+		0.0f,
+		0,
 		&accepted_ab,
-		&removed_ab
+		&removed_ab,
+		&replace_pos_ab
 	);
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
 
-	ret = kvs_hnsw_layer_append_or_replace(
+	ret = kvs_hnsw_layer_plan_append_or_replace(
 		index,
 		b,
 		a,
 		level,
+		0.0f,
+		0,
 		&accepted_ba,
-		&removed_ba
+		&removed_ba,
+		&replace_pos_ba
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	index->rebuild_profile.hnsw_add_neighbor_select_us +=
+		kvs_hnsw_profile_now_us() - stage_start_us;
+
+	if (!accepted_ab || !accepted_ba) {
+		return KVS_VECTOR_OK;
+	}
+
+	stage_start_us = kvs_hnsw_profile_now_us();
+	ret = kvs_hnsw_layer_apply_append_or_replace(
+		index,
+		a,
+		b,
+		level,
+		accepted_ab,
+		removed_ab,
+		replace_pos_ab
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	ret = kvs_hnsw_layer_apply_append_or_replace(
+		index,
+		b,
+		a,
+		level,
+		accepted_ba,
+		removed_ba,
+		replace_pos_ba
 	);
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
@@ -369,6 +727,95 @@ static int kvs_hnsw_add_bidirectional_edge(
 	if (removed_ba != UINT32_MAX) {
 		kvs_hnsw_layer_remove_neighbor(index, removed_ba, b, level);
 	}
+	index->rebuild_profile.hnsw_add_link_us +=
+		kvs_hnsw_profile_now_us() - stage_start_us;
+
+	return KVS_VECTOR_OK;
+}
+
+static int kvs_hnsw_add_new_slot_bidirectional_edge(
+	kvs_hnsw_index_t *index,
+	uint32_t slot,
+	uint32_t neighbor,
+	uint8_t level,
+	float candidate_score
+) {
+	uint32_t removed_ba = UINT32_MAX;
+	size_t replace_pos_ba = (size_t)-1;
+	int accepted_ba = 0;
+	uint32_t *slot_neighbors;
+	uint16_t *slot_count_ptr;
+	size_t slot_count;
+	size_t slot_capacity;
+	uint64_t stage_start_us;
+	int ret;
+
+	if (slot == neighbor) {
+		return KVS_VECTOR_OK;
+	}
+
+	if (!index ||
+	    !kvs_hnsw_slot_active_at_level(index, slot, level) ||
+	    !kvs_hnsw_slot_active_at_level(index, neighbor, level)) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	slot_neighbors = kvs_hnsw_layer_neighbors(index, slot, level);
+	slot_count_ptr = kvs_hnsw_layer_count_ptr(index, slot, level);
+	slot_count = *slot_count_ptr;
+	slot_capacity = kvs_hnsw_layer_capacity(index, level);
+
+	if (slot_count >= slot_capacity) {
+		return kvs_hnsw_add_bidirectional_edge(index, slot, neighbor, level);
+	}
+
+	stage_start_us = kvs_hnsw_profile_now_us();
+	ret = kvs_hnsw_layer_plan_new_slot_append_or_replace(
+		index,
+		neighbor,
+		slot,
+		level,
+		candidate_score,
+		&accepted_ba,
+		&removed_ba,
+		&replace_pos_ba
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	index->rebuild_profile.hnsw_add_neighbor_select_us +=
+		kvs_hnsw_profile_now_us() - stage_start_us;
+
+	if (!accepted_ba) {
+		return KVS_VECTOR_OK;
+	}
+
+	stage_start_us = kvs_hnsw_profile_now_us();
+	slot_neighbors[slot_count] = neighbor;
+	*slot_count_ptr = (uint16_t)(slot_count + 1);
+	kvs_hnsw_layer_worst_cache_invalidate(index, slot, level);
+
+	ret = kvs_hnsw_layer_apply_append_or_replace(
+		index,
+		neighbor,
+		slot,
+		level,
+		accepted_ba,
+		removed_ba,
+		replace_pos_ba
+	);
+	if (ret != KVS_VECTOR_OK) {
+		*slot_count_ptr = (uint16_t)slot_count;
+		slot_neighbors[slot_count] = 0;
+		kvs_hnsw_layer_worst_cache_invalidate(index, slot, level);
+		return ret;
+	}
+
+	if (removed_ba != UINT32_MAX) {
+		kvs_hnsw_layer_remove_neighbor(index, removed_ba, neighbor, level);
+	}
+	index->rebuild_profile.hnsw_add_link_us +=
+		kvs_hnsw_profile_now_us() - stage_start_us;
 
 	return KVS_VECTOR_OK;
 }
@@ -382,15 +829,19 @@ static uint32_t kvs_hnsw_greedy_search_layer(
 	uint32_t current = entry;
 	float current_score;
 	int improved = 1;
+	const float *vectors;
+	size_t dim;
 
 	if (!kvs_hnsw_slot_active_at_level(index, entry, level)) {
 		return entry;
 	}
 
+	vectors = index->vectors;
+	dim = index->dim;
 	current_score = kvs_hnsw_metric_score(
 		index,
 		query,
-		kvs_hnsw_slot_vector(index, current)
+		vectors + ((size_t)current * dim)
 	);
 
 	while (improved) {
@@ -410,7 +861,7 @@ static uint32_t kvs_hnsw_greedy_search_layer(
 			score = kvs_hnsw_metric_score(
 				index,
 				query,
-				kvs_hnsw_slot_vector(index, neighbor)
+				vectors + ((size_t)neighbor * dim)
 			);
 			if (score > current_score) {
 				current = neighbor;
@@ -440,6 +891,64 @@ static void kvs_hnsw_top_heap_offer(
 	}
 }
 
+static void kvs_hnsw_add_search_context_reset(
+	kvs_hnsw_search_context_t *ctx
+) {
+	if (!ctx) {
+		return;
+	}
+
+	kvs_vector_heap_reset(&ctx->candidate_heap);
+	kvs_vector_heap_reset(&ctx->top_heap);
+}
+
+static void kvs_hnsw_add_export_best_candidates(
+	kvs_hnsw_search_context_t *ctx,
+	size_t limit,
+	size_t *out_count
+) {
+	size_t count = 0;
+	size_t i;
+
+	if (!ctx || !out_count || limit == 0) {
+		if (out_count) {
+			*out_count = 0;
+		}
+		return;
+	}
+
+	if (limit > ctx->capacity) {
+		limit = ctx->capacity;
+	}
+
+	for (i = 0; i < ctx->top_heap.size; i++) {
+		const kvs_vector_heap_item_t *item = &ctx->top_heap.items[i];
+		size_t pos;
+
+		if (count >= limit && item->score <= ctx->distance_buffer[count - 1]) {
+			continue;
+		}
+
+		pos = count;
+		if (pos >= limit) {
+			pos = limit - 1;
+		} else {
+			count++;
+		}
+
+		while (pos > 0 && ctx->distance_buffer[pos - 1] < item->score) {
+			ctx->neighbor_buffer[pos] = ctx->neighbor_buffer[pos - 1];
+			ctx->distance_buffer[pos] = ctx->distance_buffer[pos - 1];
+			pos--;
+		}
+
+		ctx->neighbor_buffer[pos] = item->slot;
+		ctx->distance_buffer[pos] = item->score;
+	}
+
+	*out_count = count;
+}
+
 static int kvs_hnsw_search_layer_for_add(
 	kvs_hnsw_index_t *index,
 	kvs_hnsw_search_context_t *ctx,
@@ -450,23 +959,45 @@ static int kvs_hnsw_search_layer_for_add(
 ) {
 	kvs_vector_heap_item_t item;
 	uint32_t visit_tag;
-	size_t count = 0;
+	size_t export_limit;
+	size_t ef;
+	float lower_bound_score;
+	int no_deleted;
+	/* hoisted locals for hot loop */
+	const float *vectors;
+	size_t dim;
+	uint32_t *visited_tags;
+	size_t candidate_capacity;
 
 	if (!index || !ctx || !out_count ||
 	    !kvs_hnsw_slot_active_at_level(index, entry, level)) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
-	kvs_hnsw_context_reset(ctx);
-	visit_tag = kvs_hnsw_next_visit_tag(index);
-	index->visited_tags[entry] = visit_tag;
+	ef = index->ef_construction;
+	if (ef > ctx->top_heap.capacity) {
+		ef = ctx->top_heap.capacity;
+	}
+	if (ef == 0) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
 
-	item.record_id = index->slot_to_record_id[entry];
+	kvs_hnsw_add_search_context_reset(ctx);
+	visit_tag = kvs_hnsw_next_visit_tag(index);
+	no_deleted = index->deleted_count == 0;
+	vectors = index->vectors;
+	dim = index->dim;
+	visited_tags = index->visited_tags;
+	candidate_capacity = ctx->candidate_heap.capacity;
+	visited_tags[entry] = visit_tag;
+
+	index->rebuild_profile.add_distance_compute_count++;
+	item.record_id = 0;
 	item.slot = entry;
 	item.score = kvs_hnsw_metric_score(
 		index,
 		query,
-		kvs_hnsw_slot_vector(index, entry)
+		vectors + ((size_t)entry * dim)
 	);
 	if (kvs_vector_heap_push(&ctx->candidate_heap, item) != KVS_VECTOR_OK) {
 		return KVS_VECTOR_ERR;
@@ -474,10 +1005,11 @@ static int kvs_hnsw_search_layer_for_add(
 	if (kvs_vector_heap_push(&ctx->top_heap, item) != KVS_VECTOR_OK) {
 		return KVS_VECTOR_ERR;
 	}
+	index->rebuild_profile.add_top_heap_push_count++;
+	lower_bound_score = item.score;
 
 	while (!kvs_vector_heap_empty(&ctx->candidate_heap)) {
 		kvs_vector_heap_item_t current;
-		const kvs_vector_heap_item_t *worst_top;
 		uint32_t *neighbors;
 		size_t neighbor_count;
 		size_t i;
@@ -486,9 +1018,7 @@ static int kvs_hnsw_search_layer_for_add(
 			break;
 		}
 
-		worst_top = kvs_vector_heap_top(&ctx->top_heap);
-		if (worst_top && ctx->top_heap.size >= index->ef_construction &&
-		    current.score < worst_top->score) {
+		if (ctx->top_heap.size >= ef && current.score < lower_bound_score) {
 			break;
 		}
 
@@ -498,57 +1028,70 @@ static int kvs_hnsw_search_layer_for_add(
 		for (i = 0; i < neighbor_count; i++) {
 			uint32_t neighbor = neighbors[i];
 			kvs_vector_heap_item_t next;
+			const kvs_vector_heap_item_t *top;
 
-			if (!kvs_hnsw_slot_active_at_level(index, neighbor, level) ||
-			    index->visited_tags[neighbor] == visit_tag) {
+			if (level == 0) {
+				index->rebuild_profile.add_level0_neighbor_scan_count++;
+			} else {
+				index->rebuild_profile.add_upper_neighbor_scan_count++;
+			}
+			index->rebuild_profile.add_neighbor_visit_count++;
+
+			if (visited_tags[neighbor] == visit_tag) {
+				index->rebuild_profile.add_visited_skip_count++;
 				continue;
 			}
-			index->visited_tags[neighbor] = visit_tag;
+			visited_tags[neighbor] = visit_tag;
+			if (!no_deleted &&
+			    !kvs_hnsw_slot_active_at_level(index, neighbor, level)) {
+				index->rebuild_profile.add_active_check_count++;
+				continue;
+			}
+			if (!no_deleted) {
+				index->rebuild_profile.add_active_check_count++;
+			}
 
-			next.record_id = index->slot_to_record_id[neighbor];
+			index->rebuild_profile.add_distance_compute_count++;
+			next.record_id = 0;
 			next.slot = neighbor;
 			next.score = kvs_hnsw_metric_score(
 				index,
 				query,
-				kvs_hnsw_slot_vector(index, neighbor)
+				vectors + ((size_t)neighbor * dim)
 			);
 
-			worst_top = kvs_vector_heap_top(&ctx->top_heap);
-			if (ctx->top_heap.size < index->ef_construction ||
-			    !worst_top || next.score > worst_top->score) {
-				kvs_hnsw_top_heap_offer(&ctx->top_heap, next);
-				if (ctx->candidate_heap.size < ctx->candidate_heap.capacity) {
+			if (ctx->top_heap.size < ef || next.score > lower_bound_score) {
+				if (ctx->top_heap.size < ef) {
+					if (kvs_vector_heap_push(&ctx->top_heap, next) !=
+					    KVS_VECTOR_OK) {
+						return KVS_VECTOR_ERR;
+					}
+					index->rebuild_profile.add_top_heap_push_count++;
+					if (next.score < lower_bound_score) {
+						lower_bound_score = next.score;
+					}
+				} else {
+					if (kvs_vector_heap_replace_top(&ctx->top_heap, next) !=
+					    KVS_VECTOR_OK) {
+						return KVS_VECTOR_ERR;
+					}
+					index->rebuild_profile.add_top_heap_replace_count++;
+					top = kvs_vector_heap_top(&ctx->top_heap);
+					if (top) {
+						lower_bound_score = top->score;
+					}
+				}
+				if (ctx->candidate_heap.size < candidate_capacity) {
 					(void)kvs_vector_heap_push(&ctx->candidate_heap, next);
+					index->rebuild_profile.add_candidate_push_count++;
 				}
 			}
 		}
 	}
 
-	while (!kvs_vector_heap_empty(&ctx->top_heap) && count < ctx->capacity) {
-		kvs_vector_heap_item_t top;
-		if (kvs_vector_heap_pop(&ctx->top_heap, &top) != KVS_VECTOR_OK) {
-			break;
-		}
-		ctx->neighbor_buffer[count] = top.slot;
-		ctx->distance_buffer[count] = top.score;
-		count++;
-	}
+	export_limit = kvs_hnsw_layer_capacity(index, level);
+	kvs_hnsw_add_export_best_candidates(ctx, export_limit, out_count);
 
-	for (size_t i = 1; i < count; i++) {
-		uint32_t slot = ctx->neighbor_buffer[i];
-		float score = ctx->distance_buffer[i];
-		size_t j = i;
-
-		while (j > 0 && ctx->distance_buffer[j - 1] < score) {
-			ctx->neighbor_buffer[j] = ctx->neighbor_buffer[j - 1];
-			ctx->distance_buffer[j] = ctx->distance_buffer[j - 1];
-			j--;
-		}
-		ctx->neighbor_buffer[j] = slot;
-		ctx->distance_buffer[j] = score;
-	}
-
-	*out_count = count;
 	return KVS_VECTOR_OK;
 }
 
@@ -561,21 +1104,32 @@ static int kvs_hnsw_connect_layer_from_context(
 ) {
 	size_t limit = candidate_count;
 	size_t capacity = kvs_hnsw_layer_capacity(index, level);
+	size_t selected_count;
 	size_t i;
 
 	if (limit > capacity) {
 		limit = capacity;
 	}
+	selected_count = limit;
+	kvs_hnsw_profile_neighbor_select_call(index, level, candidate_count);
+	kvs_hnsw_profile_neighbor_select_selected(index, level, selected_count);
 
 	for (i = 0; i < limit; i++) {
 		uint32_t neighbor = ctx->neighbor_buffer[i];
+		float candidate_score = ctx->distance_buffer[i];
 		int ret;
 
 		if (neighbor == slot) {
 			continue;
 		}
 
-		ret = kvs_hnsw_add_bidirectional_edge(index, slot, neighbor, level);
+		ret = kvs_hnsw_add_new_slot_bidirectional_edge(
+			index,
+			slot,
+			neighbor,
+			level,
+			candidate_score
+		);
 		if (ret != KVS_VECTOR_OK) {
 			return ret;
 		}
@@ -627,6 +1181,7 @@ int kvs_hnsw_index_add(
 	uint8_t connect_start_level;
 	int level;
 	size_t candidate_count = 0;
+	uint64_t stage_start_us;
 	int ret;
 
 	if (!index || !vector || dim == 0) {
@@ -659,6 +1214,9 @@ int kvs_hnsw_index_add(
 			vector,
 			index->dim * sizeof(float)
 		);
+		if (index->level0_worst_valid && index->capacity > 0) {
+			memset(index->level0_worst_valid, 0, index->capacity * sizeof(uint8_t));
+		}
 
 		if (index->deleted_flags[existing_slot]) {
 			index->deleted_flags[existing_slot] = 0;
@@ -679,18 +1237,24 @@ int kvs_hnsw_index_add(
 	}
 
 	slot = (uint32_t)index->size;
+	stage_start_us = kvs_hnsw_profile_now_us();
 	new_level = kvs_hnsw_index_next_level(index);
+	index->rebuild_profile.hnsw_add_random_level_us +=
+		kvs_hnsw_profile_now_us() - stage_start_us;
 	if (new_level >= KVS_HNSW_MAX_LEVEL) {
 		new_level = KVS_HNSW_MAX_LEVEL - 1;
 	}
 	old_max_level = index->max_level;
 	curr = index->entry_point;
 
+	stage_start_us = kvs_hnsw_profile_now_us();
 	memcpy(
 		index->vectors + ((size_t)slot * index->dim),
 		vector,
 		index->dim * sizeof(float)
 	);
+	index->rebuild_profile.hnsw_add_vector_copy_us +=
+		kvs_hnsw_profile_now_us() - stage_start_us;
 	index->levels[slot] = new_level;
 	index->deleted_flags[slot] = 0;
 	index->slot_to_record_id[slot] = record_id;
@@ -724,11 +1288,15 @@ int kvs_hnsw_index_add(
 	}
 
 	for (level = (int)old_max_level; level > (int)new_level; level--) {
+		stage_start_us = kvs_hnsw_profile_now_us();
 		curr = kvs_hnsw_greedy_search_layer(index, curr, vector, (uint8_t)level);
+		index->rebuild_profile.hnsw_add_greedy_search_us +=
+			kvs_hnsw_profile_now_us() - stage_start_us;
 	}
 
 	connect_start_level = new_level < old_max_level ? new_level : old_max_level;
 	for (level = (int)connect_start_level; level >= 0; level--) {
+		stage_start_us = kvs_hnsw_profile_now_us();
 		ret = kvs_hnsw_search_layer_for_add(
 			index,
 			ctx,
@@ -742,6 +1310,8 @@ int kvs_hnsw_index_add(
 			index->needs_rebuild = 1;
 			return ret;
 		}
+		index->rebuild_profile.hnsw_add_layer_search_us +=
+			kvs_hnsw_profile_now_us() - stage_start_us;
 
 		ret = kvs_hnsw_connect_layer_from_context(
 			index,

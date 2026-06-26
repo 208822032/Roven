@@ -1738,16 +1738,16 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
         );
     }
 
-    {
-        int array_count = 49;  /* base + worker pool + backend stats */
-        if (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
-            array_count += 7;
-        }
-        if (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW) {
-            array_count += 8;
-        }
-        off += resp_generate_array_start(response + off, array_count);
-    }
+	    {
+	        int array_count = 88;  /* base + backend stats + worker pool + backend + VSEARCH profile stats */
+	        if (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
+	            array_count += 7;
+	        }
+	        if (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW) {
+	            array_count += 64;  /* core_hnsw stats + HNSW profile + Stage 7A/7D counters */
+	        }
+	        off += resp_generate_array_start(response + off, array_count);
+	    }
     n = snprintf(item, sizeof(item), "total_records:%zu", info->total_records);
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
@@ -1835,6 +1835,110 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
+    n = snprintf(item, sizeof(item), "core_flat_size:%zu",
+        info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? info->backend_size : 0);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "core_flat_capacity:%zu",
+        info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? info->backend_capacity : 0);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "core_flat_memory_bytes:%zu",
+        info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? info->backend_memory_bytes : 0);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_name:%s", info->backend_name ? info->backend_name : "unknown");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_size:%zu", info->backend_size);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_capacity:%zu", info->backend_capacity);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_dim:%zu", info->backend_dim);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_metric:%s", info->backend_metric ? info->backend_metric : "unknown");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_memory_bytes:%zu", info->backend_memory_bytes);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_memory_bytes_source:%s",
+        info->backend_memory_bytes_source ? info->backend_memory_bytes_source : "unknown");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_deleted_count:%zu", info->backend_deleted_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_needs_rebuild:%d", info->backend_needs_rebuild);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_resize_count:%s",
+        info->backend_resize_count ? info->backend_resize_count : "n/a");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_reserve_count:%s",
+        info->backend_reserve_count ? info->backend_reserve_count : "n/a");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_resize_count_source:%s",
+        info->backend_resize_count_source ? info->backend_resize_count_source : "unsupported");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "backend_reserve_count_source:%s",
+        info->backend_reserve_count_source ? info->backend_reserve_count_source : "unsupported");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
     if (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW) {
         n = snprintf(item, sizeof(item), "core_hnsw_size:%zu", info->core_hnsw_size);
         if (n < 0 || n >= (int)sizeof(item)) {
@@ -1883,7 +1987,343 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
             return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
         }
         off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
-    }
+
+	        n = snprintf(item, sizeof(item), "core_hnsw_memory_bytes:%zu", info->backend_memory_bytes);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "rebuild_total_us:%llu", (unsigned long long)info->rebuild_total_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "rebuild_manager_scan_us:%llu", (unsigned long long)info->rebuild_manager_scan_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "rebuild_core_reset_us:%llu", (unsigned long long)info->rebuild_core_reset_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "rebuild_core_reserve_us:%llu", (unsigned long long)info->rebuild_core_reserve_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "rebuild_core_add_total_us:%llu", (unsigned long long)info->rebuild_core_add_total_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "rebuild_core_add_avg_us:%llu", (unsigned long long)info->rebuild_core_add_avg_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "rebuild_core_add_max_us:%llu", (unsigned long long)info->rebuild_core_add_max_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "rebuild_core_add_count:%llu", (unsigned long long)info->rebuild_core_add_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "hnsw_add_random_level_us:%llu", (unsigned long long)info->hnsw_add_random_level_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "hnsw_add_greedy_search_us:%llu", (unsigned long long)info->hnsw_add_greedy_search_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "hnsw_add_layer_search_us:%llu", (unsigned long long)info->hnsw_add_layer_search_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "hnsw_add_neighbor_select_us:%llu", (unsigned long long)info->hnsw_add_neighbor_select_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "hnsw_add_link_us:%llu", (unsigned long long)info->hnsw_add_link_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "hnsw_add_vector_copy_us:%llu", (unsigned long long)info->hnsw_add_vector_copy_us);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_distance_compute_count:%llu", (unsigned long long)info->add_distance_compute_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_neighbor_visit_count:%llu", (unsigned long long)info->add_neighbor_visit_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_visited_skip_count:%llu", (unsigned long long)info->add_visited_skip_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_active_check_count:%llu", (unsigned long long)info->add_active_check_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_top_heap_push_count:%llu", (unsigned long long)info->add_top_heap_push_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_top_heap_replace_count:%llu", (unsigned long long)info->add_top_heap_replace_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_candidate_push_count:%llu", (unsigned long long)info->add_candidate_push_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_level0_neighbor_scan_count:%llu", (unsigned long long)info->add_level0_neighbor_scan_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "add_upper_neighbor_scan_count:%llu", (unsigned long long)info->add_upper_neighbor_scan_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_call_count:%llu", (unsigned long long)info->neighbor_select_call_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_call_count:%llu", (unsigned long long)info->neighbor_select_level0_call_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_call_count:%llu", (unsigned long long)info->neighbor_select_upper_call_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_candidate_total:%llu", (unsigned long long)info->neighbor_select_candidate_total);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_candidate_max:%llu", (unsigned long long)info->neighbor_select_candidate_max);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_selected_total:%llu", (unsigned long long)info->neighbor_select_selected_total);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_selected_max:%llu", (unsigned long long)info->neighbor_select_selected_max);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_reject_count:%llu", (unsigned long long)info->neighbor_select_reject_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_heuristic_prune_count:%llu", (unsigned long long)info->neighbor_select_heuristic_prune_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_distance_recompute_count:%llu", (unsigned long long)info->neighbor_select_distance_recompute_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_reused_candidate_score_count:%llu", (unsigned long long)info->neighbor_select_reused_candidate_score_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_duplicate_scan_count:%llu", (unsigned long long)info->neighbor_select_duplicate_scan_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_worst_scan_count:%llu", (unsigned long long)info->neighbor_select_worst_scan_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_worst_cache_hit_count:%llu", (unsigned long long)info->neighbor_select_worst_cache_hit_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_candidate_total:%llu", (unsigned long long)info->neighbor_select_level0_candidate_total);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_candidate_total:%llu", (unsigned long long)info->neighbor_select_upper_candidate_total);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_selected_total:%llu", (unsigned long long)info->neighbor_select_level0_selected_total);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_selected_total:%llu", (unsigned long long)info->neighbor_select_upper_selected_total);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_reject_count:%llu", (unsigned long long)info->neighbor_select_level0_reject_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_reject_count:%llu", (unsigned long long)info->neighbor_select_upper_reject_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_heuristic_prune_count:%llu", (unsigned long long)info->neighbor_select_level0_heuristic_prune_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_heuristic_prune_count:%llu", (unsigned long long)info->neighbor_select_upper_heuristic_prune_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_distance_recompute_count:%llu", (unsigned long long)info->neighbor_select_level0_distance_recompute_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_distance_recompute_count:%llu", (unsigned long long)info->neighbor_select_upper_distance_recompute_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_reused_candidate_score_count:%llu", (unsigned long long)info->neighbor_select_level0_reused_candidate_score_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_reused_candidate_score_count:%llu", (unsigned long long)info->neighbor_select_upper_reused_candidate_score_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_duplicate_scan_count:%llu", (unsigned long long)info->neighbor_select_level0_duplicate_scan_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_duplicate_scan_count:%llu", (unsigned long long)info->neighbor_select_upper_duplicate_scan_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_worst_scan_count:%llu", (unsigned long long)info->neighbor_select_level0_worst_scan_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_worst_scan_count:%llu", (unsigned long long)info->neighbor_select_upper_worst_scan_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_level0_worst_cache_hit_count:%llu", (unsigned long long)info->neighbor_select_level0_worst_cache_hit_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+	        n = snprintf(item, sizeof(item), "neighbor_select_upper_worst_cache_hit_count:%llu", (unsigned long long)info->neighbor_select_upper_worst_cache_hit_count);
+	        if (n < 0 || n >= (int)sizeof(item)) {
+	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+	        }
+	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+	    }
 
     n = snprintf(item, sizeof(item), "ann_size:%zu", info->ann_size);
     if (n < 0 || n >= (int)sizeof(item)) {
@@ -2184,6 +2624,150 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
+    n = snprintf(item, sizeof(item), "vsearch_total_count:%llu", (unsigned long long)info->vsearch_total_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_total_avg_us:%llu",
+        (unsigned long long)(info->vsearch_total_count ? info->vsearch_total_us / info->vsearch_total_count : 0));
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_total_us:%llu", (unsigned long long)info->vsearch_total_us);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_total_max_us:%llu", (unsigned long long)info->vsearch_total_max_us);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_backend_search_count:%llu", (unsigned long long)info->vsearch_backend_search_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_backend_search_avg_us:%llu",
+        (unsigned long long)(info->vsearch_backend_search_count ? info->vsearch_backend_search_total_us / info->vsearch_backend_search_count : 0));
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_backend_search_total_us:%llu", (unsigned long long)info->vsearch_backend_search_total_us);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_backend_search_max_us:%llu", (unsigned long long)info->vsearch_backend_search_max_us);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_manager_resolve_count:%llu", (unsigned long long)info->vsearch_manager_resolve_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_manager_resolve_avg_us:%llu",
+        (unsigned long long)(info->vsearch_manager_resolve_count ? info->vsearch_manager_resolve_total_us / info->vsearch_manager_resolve_count : 0));
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_manager_resolve_total_us:%llu", (unsigned long long)info->vsearch_manager_resolve_total_us);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_manager_resolve_max_us:%llu", (unsigned long long)info->vsearch_manager_resolve_max_us);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_response_assembly_count:%llu", (unsigned long long)info->vsearch_response_assembly_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_response_assembly_avg_us:%llu",
+        (unsigned long long)(info->vsearch_response_assembly_count ? info->vsearch_response_assembly_total_us / info->vsearch_response_assembly_count : 0));
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_response_assembly_total_us:%llu", (unsigned long long)info->vsearch_response_assembly_total_us);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_response_assembly_max_us:%llu", (unsigned long long)info->vsearch_response_assembly_max_us);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_raw_hit_count:%llu", (unsigned long long)info->vsearch_raw_hit_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_resolved_hit_count:%llu", (unsigned long long)info->vsearch_resolved_hit_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_filtered_hit_count:%llu", (unsigned long long)info->vsearch_filtered_hit_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_legacy_search_count:%llu", (unsigned long long)info->vsearch_total_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_legacy_search_avg_us:%llu",
+        (unsigned long long)(info->vsearch_total_count ? info->vsearch_total_us / info->vsearch_total_count : 0));
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_legacy_response_build_count:%llu", (unsigned long long)info->vsearch_response_assembly_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "vsearch_legacy_response_build_avg_us:%llu",
+        (unsigned long long)(info->vsearch_response_assembly_count ? info->vsearch_response_assembly_total_us / info->vsearch_response_assembly_count : 0));
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
     return off;
 }
 
@@ -2267,6 +2851,7 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 	float threshold;
 	uint64_t response_start_us;
 	uint64_t response_end_us;
+	uint64_t total_start_us;
 
 	if (!ctx) {
 		return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
@@ -2310,6 +2895,7 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 		return handle_vector_status_response(status, response);
 	}
 
+	total_start_us = kvs_operation_now_us();
 	results = (kvs_vector_search_result_t *)kvs_malloc(
 		results_capacity * sizeof(kvs_vector_search_result_t)
 	);
@@ -2418,6 +3004,9 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 	response_end_us = kvs_operation_now_us();
 	kvs_vector_vsearch_record_response_build(
 		response_end_us >= response_start_us ? response_end_us - response_start_us : 0
+	);
+	kvs_vector_vsearch_record_search(
+		response_end_us >= total_start_us ? response_end_us - total_start_us : 0
 	);
 
 	kvs_free(results);

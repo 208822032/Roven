@@ -849,7 +849,7 @@ static int kvs_vector_store_free_list_reserve(
 	store->next_id = 1;
 	store->next_slot = 0;
 
-	return KVS_VECTOR_OK;
+	return kvs_vector_record_id_map_init(&store->record_id_map);
 }
 
 /*
@@ -875,6 +875,7 @@ static int kvs_vector_store_free_list_reserve(
 
 	//释放空闲表
 	kvs_vector_store_free_list_destroy(store);
+	kvs_vector_record_id_map_destroy(&store->record_id_map);
 
 	memset(store, 0, sizeof(*store));
 	store->next_id = 1;
@@ -894,6 +895,7 @@ static int kvs_vector_store_free_list_reserve(
 	kvs_vector_record_t *new_records;
 	size_t old_capacity;
 	size_t i;
+	int ret;
 
 	if (!store) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
@@ -923,6 +925,14 @@ static int kvs_vector_store_free_list_reserve(
 
 	store->records = new_records;
 	store->capacity = new_capacity;
+
+	ret = kvs_vector_record_id_map_reserve(
+		&store->record_id_map,
+		kvs_vector_next_pow2(new_capacity * 2)
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
 
 	return KVS_VECTOR_OK;
 }
@@ -984,6 +994,10 @@ static int kvs_vector_store_free_list_reserve(
 		store->deleted_records = 0;
 		store->next_slot = 0;
 		kvs_vector_store_free_list_clear(store);
+		kvs_vector_record_id_map_destroy(&store->record_id_map);
+		if (kvs_vector_record_id_map_init(&store->record_id_map) != KVS_VECTOR_OK) {
+			return KVS_VECTOR_ERR;
+		}
 		return KVS_VECTOR_OK;
 	}
 
@@ -1030,6 +1044,310 @@ static int kvs_vector_store_free_list_reserve(
 	store->next_id = next_id;
 
 	kvs_vector_store_free_list_clear(store);
+	kvs_vector_record_id_map_destroy(&store->record_id_map);
+	if (kvs_vector_record_id_map_init(&store->record_id_map) != KVS_VECTOR_OK) {
+		return KVS_VECTOR_ERR;
+	}
+	if (write_index > 0 &&
+	    kvs_vector_record_id_map_reserve(
+		    &store->record_id_map,
+		    kvs_vector_next_pow2(write_index * 2)) != KVS_VECTOR_OK) {
+		return KVS_VECTOR_ERR;
+	}
+	for (i = 0; i < write_index; ++i) {
+		if (kvs_vector_record_id_map_put(
+				&store->record_id_map,
+				store->records[i].id,
+				i) != KVS_VECTOR_OK) {
+			return KVS_VECTOR_ERR;
+		}
+	}
+
+	return KVS_VECTOR_OK;
+}
+
+/********** record_id -> record_index fast resolve map **********/
+
+static uint64_t kvs_vector_record_id_hash_u64(uint64_t value) {
+	value ^= value >> 33;
+	value *= 0xff51afd7ed558ccdULL;
+	value ^= value >> 33;
+	value *= 0xc4ceb9fe1a85ec53ULL;
+	value ^= value >> 33;
+	return value;
+}
+
+static int kvs_vector_record_id_map_need_grow(kvs_vector_record_id_map_t *map) {
+	if (!map || map->capacity == 0) {
+		return 1;
+	}
+
+	return ((map->size + map->tombstones + 1) * 100 >= map->capacity * 70);
+}
+
+int kvs_vector_record_id_map_init(kvs_vector_record_id_map_t *map) {
+	if (!map) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	memset(map, 0, sizeof(*map));
+	return kvs_vector_record_id_map_reserve(
+		map,
+		KVS_VECTOR_INITIAL_ID_MAP_CAPACITY
+	);
+}
+
+void kvs_vector_record_id_map_destroy(kvs_vector_record_id_map_t *map) {
+	if (!map) {
+		return;
+	}
+
+	if (map->entries) {
+		kvs_free(map->entries);
+	}
+	memset(map, 0, sizeof(*map));
+}
+
+static int kvs_vector_record_id_map_insert_entry(
+	kvs_vector_record_id_map_t *map,
+	const kvs_vector_record_id_entry_t *src
+) {
+	size_t mask;
+	size_t pos;
+
+	if (!map || !map->entries || !src ||
+	    src->state != KVS_VECTOR_RECORD_ID_ENTRY_USED) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	mask = map->capacity - 1;
+	pos = (size_t)kvs_vector_record_id_hash_u64(src->record_id) & mask;
+	for (;;) {
+		kvs_vector_record_id_entry_t *entry = &map->entries[pos];
+
+		if (entry->state != KVS_VECTOR_RECORD_ID_ENTRY_USED) {
+			*entry = *src;
+			map->size++;
+			return KVS_VECTOR_OK;
+		}
+		pos = (pos + 1) & mask;
+	}
+}
+
+int kvs_vector_record_id_map_reserve(
+	kvs_vector_record_id_map_t *map,
+	size_t new_capacity
+) {
+	kvs_vector_record_id_entry_t *old_entries;
+	kvs_vector_record_id_entry_t *new_entries;
+	size_t old_capacity;
+	size_t i;
+	int ret;
+
+	if (!map) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	new_capacity = kvs_vector_next_pow2(new_capacity);
+	if (new_capacity < KVS_VECTOR_INITIAL_ID_MAP_CAPACITY) {
+		new_capacity = KVS_VECTOR_INITIAL_ID_MAP_CAPACITY;
+	}
+	if (new_capacity <= map->capacity) {
+		return KVS_VECTOR_OK;
+	}
+
+	new_entries = (kvs_vector_record_id_entry_t *)kvs_malloc(
+		new_capacity * sizeof(kvs_vector_record_id_entry_t)
+	);
+	if (!new_entries) {
+		return KVS_VECTOR_ERR;
+	}
+	memset(new_entries, 0, new_capacity * sizeof(kvs_vector_record_id_entry_t));
+
+	old_entries = map->entries;
+	old_capacity = map->capacity;
+	map->entries = new_entries;
+	map->capacity = new_capacity;
+	map->size = 0;
+	map->tombstones = 0;
+
+	if (old_entries) {
+		for (i = 0; i < old_capacity; ++i) {
+			if (old_entries[i].state != KVS_VECTOR_RECORD_ID_ENTRY_USED) {
+				continue;
+			}
+			ret = kvs_vector_record_id_map_insert_entry(map, &old_entries[i]);
+			if (ret != KVS_VECTOR_OK) {
+				kvs_free(old_entries);
+				return ret;
+			}
+		}
+		kvs_free(old_entries);
+	}
+
+	return KVS_VECTOR_OK;
+}
+
+static int kvs_vector_record_id_map_lookup_slot(
+	kvs_vector_record_id_map_t *map,
+	uint64_t record_id,
+	int for_insert,
+	size_t *out_slot,
+	int *found
+) {
+	size_t mask;
+	size_t pos;
+	size_t first_tombstone = (size_t)-1;
+
+	if (found) {
+		*found = 0;
+	}
+	if (!map || !map->entries || map->capacity == 0 || !out_slot) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	mask = map->capacity - 1;
+	pos = (size_t)kvs_vector_record_id_hash_u64(record_id) & mask;
+	for (;;) {
+		kvs_vector_record_id_entry_t *entry = &map->entries[pos];
+
+		if (entry->state == KVS_VECTOR_RECORD_ID_ENTRY_EMPTY) {
+			*out_slot = (for_insert && first_tombstone != (size_t)-1) ?
+				first_tombstone : pos;
+			return KVS_VECTOR_OK;
+		}
+
+		if (entry->state == KVS_VECTOR_RECORD_ID_ENTRY_TOMBSTONE) {
+			if (for_insert && first_tombstone == (size_t)-1) {
+				first_tombstone = pos;
+			}
+		} else if (entry->record_id == record_id) {
+			*out_slot = pos;
+			if (found) {
+				*found = 1;
+			}
+			return KVS_VECTOR_OK;
+		}
+
+		pos = (pos + 1) & mask;
+	}
+}
+
+int kvs_vector_record_id_map_get(
+	kvs_vector_record_id_map_t *map,
+	uint64_t record_id,
+	size_t *out_record_index
+) {
+	size_t slot = 0;
+	int found = 0;
+	int ret;
+
+	if (!map || !out_record_index) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	ret = kvs_vector_record_id_map_lookup_slot(
+		map,
+		record_id,
+		0,
+		&slot,
+		&found
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	if (!found) {
+		return KVS_VECTOR_ERR_NOT_FOUND;
+	}
+
+	*out_record_index = map->entries[slot].record_index;
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_record_id_map_put(
+	kvs_vector_record_id_map_t *map,
+	uint64_t record_id,
+	size_t record_index
+) {
+	size_t slot = 0;
+	int found = 0;
+	int ret;
+
+	if (!map) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	if (kvs_vector_record_id_map_need_grow(map)) {
+		size_t new_capacity = map->capacity ?
+			map->capacity * 2 : KVS_VECTOR_INITIAL_ID_MAP_CAPACITY;
+		ret = kvs_vector_record_id_map_reserve(map, new_capacity);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
+	}
+
+	ret = kvs_vector_record_id_map_lookup_slot(
+		map,
+		record_id,
+		1,
+		&slot,
+		&found
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	if (found) {
+		map->entries[slot].record_index = record_index;
+		return KVS_VECTOR_OK;
+	}
+
+	if (map->entries[slot].state == KVS_VECTOR_RECORD_ID_ENTRY_TOMBSTONE &&
+	    map->tombstones > 0) {
+		map->tombstones--;
+	}
+
+	map->entries[slot].record_id = record_id;
+	map->entries[slot].record_index = record_index;
+	map->entries[slot].state = KVS_VECTOR_RECORD_ID_ENTRY_USED;
+	map->size++;
+
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_record_id_map_remove(
+	kvs_vector_record_id_map_t *map,
+	uint64_t record_id
+) {
+	size_t slot = 0;
+	int found = 0;
+	int ret;
+
+	if (!map) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	ret = kvs_vector_record_id_map_lookup_slot(
+		map,
+		record_id,
+		0,
+		&slot,
+		&found
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	if (!found) {
+		return KVS_VECTOR_ERR_NOT_FOUND;
+	}
+
+	map->entries[slot].state = KVS_VECTOR_RECORD_ID_ENTRY_TOMBSTONE;
+	map->entries[slot].record_id = 0;
+	map->entries[slot].record_index = 0;
+	if (map->size > 0) {
+		map->size--;
+	}
+	map->tombstones++;
 
 	return KVS_VECTOR_OK;
 }
@@ -1435,8 +1753,13 @@ static int kvs_vector_id_map_lookup_slot(
 	int ret;
 
 	kvs_vector_id_map_destroy(map);
+	kvs_vector_record_id_map_destroy(&store->record_id_map);
 
 	ret = kvs_vector_id_map_init(map);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	ret = kvs_vector_record_id_map_init(&store->record_id_map);
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
@@ -1447,6 +1770,13 @@ static int kvs_vector_id_map_lookup_slot(
 	}
 
 	ret = kvs_vector_id_map_reserve(map, target_capacity);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	ret = kvs_vector_record_id_map_reserve(
+		&store->record_id_map,
+		target_capacity
+	);
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
@@ -1464,6 +1794,14 @@ static int kvs_vector_id_map_lookup_slot(
 			record->question_len,
 			record->scope,
 			record->scope_len,
+			i
+		);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
+		ret = kvs_vector_record_id_map_put(
+			&store->record_id_map,
+			record->id,
 			i
 		);
 		if (ret != KVS_VECTOR_OK) {

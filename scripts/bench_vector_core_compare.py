@@ -22,6 +22,74 @@ DEFAULT_BACKENDS = [
     "faiss_hnsw",
 ]
 
+BACKEND_STATS_KEYS = [
+    "backend_name",
+    "backend_size",
+    "backend_capacity",
+    "backend_dim",
+    "backend_metric",
+    "backend_memory_bytes",
+    "backend_memory_bytes_source",
+    "backend_deleted_count",
+    "backend_needs_rebuild",
+    "backend_resize_count",
+    "backend_reserve_count",
+    "backend_resize_count_source",
+    "backend_reserve_count_source",
+]
+
+VSEARCH_PROFILE_KEYS = [
+    "vsearch_total_count",
+    "vsearch_total_avg_us",
+    "vsearch_total_us",
+    "vsearch_total_max_us",
+    "vsearch_backend_search_count",
+    "vsearch_backend_search_avg_us",
+    "vsearch_backend_search_total_us",
+    "vsearch_backend_search_max_us",
+    "vsearch_manager_resolve_count",
+    "vsearch_manager_resolve_avg_us",
+    "vsearch_manager_resolve_total_us",
+    "vsearch_manager_resolve_max_us",
+    "vsearch_response_assembly_count",
+    "vsearch_response_assembly_avg_us",
+    "vsearch_response_assembly_total_us",
+    "vsearch_response_assembly_max_us",
+    "vsearch_raw_hit_count",
+    "vsearch_resolved_hit_count",
+    "vsearch_filtered_hit_count",
+]
+
+REBUILD_PROFILE_KEYS = [
+    "rebuild_total_us",
+    "rebuild_manager_scan_us",
+    "rebuild_core_reset_us",
+    "rebuild_core_reserve_us",
+    "rebuild_core_add_total_us",
+    "rebuild_core_add_avg_us",
+    "rebuild_core_add_max_us",
+    "rebuild_core_add_count",
+    "hnsw_add_random_level_us",
+    "hnsw_add_greedy_search_us",
+    "hnsw_add_layer_search_us",
+    "hnsw_add_neighbor_select_us",
+    "hnsw_add_link_us",
+    "hnsw_add_vector_copy_us",
+    # Stage 7A: event counters for memory access pattern audit
+    "add_distance_compute_count",
+    "add_neighbor_visit_count",
+    "add_visited_skip_count",
+    "add_active_check_count",
+    "add_top_heap_push_count",
+    "add_top_heap_replace_count",
+    "add_candidate_push_count",
+    "add_level0_neighbor_scan_count",
+    "add_upper_neighbor_scan_count",
+]
+
+MEASURED_MEMORY_BACKENDS = {"core_flat", "core_hnsw"}
+EXTERNAL_MEMORY_BACKENDS = {"hnswlib_hnsw", "faiss_flat", "faiss_hnsw"}
+
 
 def pick_port() -> int:
     sock = socket.socket()
@@ -134,6 +202,96 @@ def latency_summary(values: List[float]) -> Dict[str, Optional[float]]:
         "avg_ms": statistics.fmean(values),
         "p50_ms": percentile(values, 50),
         "p95_ms": percentile(values, 95),
+    }
+
+
+def int_info(info: Dict[str, str], key: str) -> Optional[int]:
+    value = info.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def vsearch_profile_summary(info: Dict[str, str]) -> Dict[str, Optional[int]]:
+    return {key: int_info(info, key) for key in VSEARCH_PROFILE_KEYS}
+
+
+def rebuild_profile_summary(info: Dict[str, str]) -> Dict[str, Optional[int]]:
+    return {key: int_info(info, key) for key in REBUILD_PROFILE_KEYS}
+
+
+def backend_stats_summary(info: Dict[str, str]) -> Dict[str, Any]:
+    keys = [
+        "backend_name",
+        "backend_metric",
+        "backend_memory_bytes_source",
+        "backend_resize_count",
+        "backend_reserve_count",
+        "backend_resize_count_source",
+        "backend_reserve_count_source",
+    ]
+    out: Dict[str, Any] = {key: info.get(key) for key in keys}
+    for key in [
+        "backend_size",
+        "backend_capacity",
+        "backend_dim",
+        "backend_memory_bytes",
+        "backend_deleted_count",
+        "backend_needs_rebuild",
+    ]:
+        out[key] = int_info(info, key)
+    source = out.get("backend_memory_bytes_source")
+    memory = out.get("backend_memory_bytes")
+    out["backend_memory_warning"] = (
+        "unsupported" if source == "unsupported" or memory is None else
+        "estimated" if source == "estimated" else
+        ""
+    )
+    return out
+
+
+def validate_stats_fields(backend: str, info: Dict[str, str]) -> Dict[str, Any]:
+    missing_backend = [key for key in BACKEND_STATS_KEYS if key not in info]
+    missing_profile = [key for key in VSEARCH_PROFILE_KEYS if key not in info]
+    memory_source = info.get("backend_memory_bytes_source", "")
+    memory_bytes = int_info(info, "backend_memory_bytes")
+
+    memory_ok = memory_source in {"measured", "estimated", "unsupported"}
+    if backend in MEASURED_MEMORY_BACKENDS:
+        memory_ok = memory_ok and memory_source == "measured" and (memory_bytes or 0) > 0
+    if backend in EXTERNAL_MEMORY_BACKENDS:
+        memory_ok = memory_ok and memory_source in {"estimated", "unsupported"}
+
+    resize_ok = (
+        info.get("backend_resize_count") == "n/a"
+        and info.get("backend_reserve_count") == "n/a"
+        and info.get("backend_resize_count_source") == "unsupported"
+        and info.get("backend_reserve_count_source") == "unsupported"
+    )
+
+    raw_hits = int_info(info, "vsearch_raw_hit_count")
+    resolved_hits = int_info(info, "vsearch_resolved_hit_count")
+    profile_ok = (
+        not missing_profile
+        and (int_info(info, "vsearch_total_count") or 0) > 0
+        and (int_info(info, "vsearch_backend_search_count") or 0) > 0
+        and (int_info(info, "vsearch_manager_resolve_count") or 0) > 0
+        and (int_info(info, "vsearch_response_assembly_count") or 0) > 0
+        and raw_hits is not None
+        and resolved_hits is not None
+        and raw_hits >= resolved_hits
+    )
+
+    return {
+        "missing_backend_stats_keys": missing_backend,
+        "missing_vsearch_profile_keys": missing_profile,
+        "backend_stats_fields_ok": not missing_backend,
+        "vsearch_profile_fields_ok": profile_ok,
+        "memory_source_ok": memory_ok,
+        "resize_reserve_source_ok": resize_ok,
     }
 
 
@@ -342,6 +500,11 @@ def run_backend(
                 "vector_memory_bytes": int(info_after_search.get("vector_memory_bytes", "0") or 0),
                 "total_vector_memory_bytes": int(info_after_search.get("total_vector_memory_bytes", "0") or 0),
             }
+            result["backend_stats"] = backend_stats_summary(info_after_search)
+            result["vsearch_profile"] = vsearch_profile_summary(info_after_search)
+            result["stats_field_check"] = validate_stats_fields(backend, info_after_search)
+            result["backend_memory_bytes"] = result["backend_stats"].get("backend_memory_bytes")
+            result["backend_memory_source"] = result["backend_stats"].get("backend_memory_bytes_source")
             result["info_after_search"] = info_after_search
 
             rebuild_resp, rebuild_ms = timed_cmd(client, "VINDEX", "REBUILD")
@@ -351,6 +514,7 @@ def run_backend(
                 "wall_ms": rebuild_ms,
                 "last_rebuild_ms": int(info_after_rebuild.get("last_rebuild_ms", "-1") or -1),
                 "last_rebuild_status": int(info_after_rebuild.get("last_rebuild_status", "-999") or -999),
+                "profile": rebuild_profile_summary(info_after_rebuild),
             }
 
             smoke: Dict[str, Any] = {}
@@ -410,44 +574,106 @@ def fmt_ms(value: Optional[float]) -> str:
     return f"{value:.3f}"
 
 
+def fmt_source(value: Any) -> str:
+    if value == "estimated":
+        return "estimated (not measured)"
+    if value == "unsupported":
+        return "unsupported"
+    if value == "measured":
+        return "measured"
+    return "n/a"
+
+
 def write_markdown(path: Path, data: Dict[str, Any]) -> None:
     rows = data["results"]
+    stage = data.get("stage", "unknown")
+    title = "Stage 5D VINFO / benchmark stats hardening benchmark"
+    if stage == "6B":
+        title = "Stage 6B core_hnsw rebuild optimization benchmark"
+    elif stage == "6C":
+        title = "Stage 6C core_hnsw layer search optimization benchmark"
+    elif stage == "6D":
+        title = "Stage 6D core_hnsw neighbor select optimization benchmark"
+    elif stage == "7B":
+        title = "Stage 7B core_hnsw AVX2 distance backend benchmark"
     lines = [
-        f"# Stage 4{'B Corrected' if data.get('is_corrected_benchmark') else ''} vector core benchmark {data['n']} / {data['dim']}d",
+        f"# {title} {data['n']} / {data['dim']}d",
         "",
         f"- generated_at: `{data['generated_at']}`",
-        f"- is_corrected_benchmark: `{data.get('is_corrected_benchmark', False)}`",
+        f"- stage: `{stage}`",
+        f"- stage5d_stats_hardening_benchmark: `{data.get('is_corrected_benchmark', False)}`",
+        f"- benchmark_name: `{data.get('benchmark_name', 'unknown')}`",
         f"- overfetch_strategy: `{data.get('overfetch_strategy', 'none')}`",
+        f"- backend_search_timing_source: `{data.get('backend_search_timing_source', 'unknown')}`",
+        f"- memory_source_policy: `{data.get('memory_source_policy', 'unknown')}`",
+        f"- rebuild_profile_keys: `{', '.join(data.get('rebuild_profile_keys', []))}`",
         f"- embedding_provider: `{data['config']['embedding_provider']}`",
+        f"- text_embedding_path_dim: `{data.get('text_embedding_path_dim', 'unknown')}`",
+        f"- benchmark_requested_dim_effective_for_hash_text_path: `{data.get('benchmark_requested_dim_effective_for_hash_text_path', 'unknown')}`",
+        f"- direct_vector_synthetic_dim: `{data.get('direct_vector_synthetic_dim', 'not_used')}`",
+        f"- onnx_real_embedding_dim: `{data.get('onnx_real_embedding_dim', 'not_validated_by_this_script')}`",
         f"- vector_metric: `{data['config']['vector_metric']}`",
         f"- topk: `{data['topk']}`",
         f"- queries: `{data['queries']}`",
         "",
-        "| backend | status | VSET avg ms | VSET p50 ms | VSET p95 ms | VSEARCH avg ms | VSEARCH p50 ms | VSEARCH p95 ms | recall@10 | index memory bytes | rebuild wall ms | RDB load+rebuild ms | notes |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| backend | status | endpoint VSEARCH avg ms | backend search avg us (estimated) | manager resolve avg us | response assembly avg us | raw hits/query | resolved hits/query | recall@10 | backend size | backend capacity | backend memory bytes | memory source | resize/reserve | stats fields | rebuild wall ms | rebuild add total us | rebuild manager scan us | RDB load+rebuild ms | notes |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|---:|---:|---|",
     ]
     for row in rows:
-        vset = row.get("vset_latency") or {}
         search = row.get("vsearch_latency") or {}
-        memory = row.get("memory_bytes") or {}
         rebuild = row.get("rebuild") or {}
+        rebuild_profile = rebuild.get("profile") or {}
         rdb = row.get("rdb_load_rebuild") or {}
+        profile = row.get("vsearch_profile") or {}
+        backend_stats = row.get("backend_stats") or {}
+        field_check = row.get("stats_field_check") or {}
         recall = row.get("recall_at_10")
+        profile_count = profile.get("vsearch_manager_resolve_count") or 0
+        raw_hits = profile.get("vsearch_raw_hit_count")
+        resolved_hits = profile.get("vsearch_resolved_hit_count")
+        raw_per_query = "n/a"
+        resolved_per_query = "n/a"
+        if profile_count and raw_hits is not None:
+            raw_per_query = f"{raw_hits / profile_count:.2f}"
+        if profile_count and resolved_hits is not None:
+            resolved_per_query = f"{resolved_hits / profile_count:.2f}"
         lines.append(
-            "| {backend} | {status} | {vset_avg} | {vset_p50} | {vset_p95} | "
-            "{search_avg} | {search_p50} | {search_p95} | {recall} | {memory} | "
-            "{rebuild_ms} | {rdb_ms} | {notes} |".format(
+            "| {backend} | {status} | {search_avg} | "
+            "{backend_search_us} | {manager_resolve_us} | {response_assembly_us} | "
+            "{raw_hits} | {resolved_hits} | {recall} | {backend_size} | "
+            "{backend_capacity} | {backend_memory} | {memory_source} | {resize_reserve} | "
+            "{stats_fields} | "
+            "{rebuild_ms} | {rebuild_add_us} | {rebuild_scan_us} | {rdb_ms} | {notes} |".format(
                 backend=row.get("backend", ""),
                 status=row.get("status", ""),
-                vset_avg=fmt_ms(vset.get("avg_ms")),
-                vset_p50=fmt_ms(vset.get("p50_ms")),
-                vset_p95=fmt_ms(vset.get("p95_ms")),
                 search_avg=fmt_ms(search.get("avg_ms")),
-                search_p50=fmt_ms(search.get("p50_ms")),
-                search_p95=fmt_ms(search.get("p95_ms")),
+                backend_search_us=profile.get("vsearch_backend_search_avg_us", "n/a"),
+                manager_resolve_us=profile.get("vsearch_manager_resolve_avg_us", "n/a"),
+                response_assembly_us=profile.get("vsearch_response_assembly_avg_us", "n/a"),
+                raw_hits=raw_per_query,
+                resolved_hits=resolved_per_query,
                 recall="n/a" if recall is None else f"{recall:.4f}",
-                memory=memory.get("index_memory_bytes", "n/a"),
+                backend_size=backend_stats.get("backend_size", "n/a"),
+                backend_capacity=backend_stats.get("backend_capacity", "n/a"),
+                backend_memory=backend_stats.get("backend_memory_bytes", "n/a"),
+                memory_source=fmt_source(backend_stats.get("backend_memory_bytes_source")),
+                resize_reserve=(
+                    f"{backend_stats.get('backend_resize_count', 'n/a')}"
+                    f"({backend_stats.get('backend_resize_count_source', 'n/a')})/"
+                    f"{backend_stats.get('backend_reserve_count', 'n/a')}"
+                    f"({backend_stats.get('backend_reserve_count_source', 'n/a')})"
+                ),
+                stats_fields=(
+                    "ok"
+                    if field_check.get("backend_stats_fields_ok")
+                    and field_check.get("vsearch_profile_fields_ok")
+                    and field_check.get("memory_source_ok")
+                    and field_check.get("resize_reserve_source_ok")
+                    else "check"
+                ),
                 rebuild_ms=fmt_ms(rebuild.get("wall_ms")),
+                rebuild_add_us=rebuild_profile.get("rebuild_core_add_total_us", "n/a"),
+                rebuild_scan_us=rebuild_profile.get("rebuild_manager_scan_us", "n/a"),
                 rdb_ms=fmt_ms(rdb.get("startup_to_ready_ms")),
                 notes=str(row.get("notes", "")).replace("|", "/"),
             )
@@ -468,7 +694,19 @@ def main() -> int:
     parser.add_argument("--ef-construction", type=int, default=128)
     parser.add_argument("--ef-search", type=int, default=128)
     parser.add_argument("--corrected", action="store_true",
-                        help="Mark as Stage 4B corrected benchmark")
+                        help="Mark as Stage 5D stats hardening benchmark")
+    parser.add_argument("--stage6b", action="store_true",
+                        help="Write Stage 6B core_hnsw rebuild optimization benchmark outputs")
+    parser.add_argument("--stage6c", action="store_true",
+                        help="Write Stage 6C core_hnsw layer search optimization benchmark outputs")
+    parser.add_argument("--stage6d", action="store_true",
+                        help="Write Stage 6D core_hnsw neighbor select optimization benchmark outputs")
+    parser.add_argument("--stage6e", action="store_true",
+                        help="Write Stage 6E core_hnsw layer search remaining hotspot benchmark outputs")
+    parser.add_argument("--stage7a", action="store_true",
+                        help="Write Stage 7A core_hnsw memory layout / cache locality audit benchmark outputs")
+    parser.add_argument("--stage7b", action="store_true",
+                        help="Write Stage 7B core_hnsw AVX2 distance backend benchmark outputs")
     args = parser.parse_args()
 
     root = Path.cwd()
@@ -481,7 +719,22 @@ def main() -> int:
 
     out_dir = root / args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    prefix = "stage4b_corrected_benchmark" if args.corrected else "stage4_vector_core_benchmark"
+    if args.stage7b:
+        prefix = "stage7b_hnsw_avx2_distance_backend_benchmark"
+    elif args.stage7a:
+        prefix = "stage7a_hnsw_memory_layout_audit_benchmark"
+    elif args.stage6e:
+        prefix = "stage6e_hnsw_layer_search_hotspot_benchmark"
+    elif args.stage6d:
+        prefix = "stage6d_hnsw_neighbor_select_opt_benchmark"
+    elif args.stage6c:
+        prefix = "stage6c_hnsw_layer_search_opt_benchmark"
+    elif args.stage6b:
+        prefix = "stage6b_hnsw_rebuild_opt_benchmark"
+    elif args.corrected:
+        prefix = "stage5d_stats_hardening_benchmark"
+    else:
+        prefix = "stage4_vector_core_benchmark"
     result_base = out_dir / f"{prefix}_{args.n // 1000 if args.n % 1000 == 0 else args.n}k_{args.dim}d"
     if args.n < 1000:
         result_base = out_dir / f"{prefix}_{args.n}_{args.dim}d"
@@ -490,7 +743,7 @@ def main() -> int:
     if "core_flat" not in backends:
         backends = ["core_flat"] + backends
 
-    with tempfile.TemporaryDirectory(prefix="kvlite_stage4_vector_bench_") as td:
+    with tempfile.TemporaryDirectory(prefix="kvlite_stage5d_vector_bench_") as td:
         tmp_root = Path(td)
         results: List[Dict[str, Any]] = []
         gt: Optional[Dict[str, List[str]]] = None
@@ -511,7 +764,19 @@ def main() -> int:
         "topk": args.topk,
         "queries": args.queries,
         "is_corrected_benchmark": args.corrected,
+        "stage": "7B" if args.stage7b else "7A" if args.stage7a else "6E" if args.stage6e else "6D" if args.stage6d else "6C" if args.stage6c else "6B" if args.stage6b else "5D",
+        "benchmark_name": prefix,
         "overfetch_strategy": "topk*4+32",
+        "backend_stats_keys": BACKEND_STATS_KEYS,
+        "vsearch_profile_keys": VSEARCH_PROFILE_KEYS,
+        "rebuild_profile_keys": REBUILD_PROFILE_KEYS,
+        "backend_search_timing_source": "estimated_from_ops_search_wall_us_minus_manager_resolve_us",
+        "memory_source_policy": "core_flat/core_hnsw measured; hnswlib/faiss estimated-or-unsupported",
+        "text_embedding_path_dim": 64,
+        "benchmark_requested_dim_effective_for_hash_text_path": False,
+        "direct_vector_synthetic_dim": None,
+        "onnx_real_embedding_dim": None,
+        "onnx_real_embedding_dim_source": "config/kvstore-embedding.conf embedding_dim=512; provider runtime validates embedding_dimension(handle)",
         "config": {
             "embedding_provider": "hash",
             "embedding_dim": args.dim,

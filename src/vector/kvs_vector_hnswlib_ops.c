@@ -215,4 +215,5 @@ const kvs_vector_index_ops_t *(*kvs_vector_hnswlib_get_ops_ptr)(void) = kvs_vect
 void *(*kvs_vector_hnswlib_create_ptr)(size_t, size_t, size_t, size_t) = kvs_vector_hnswlib_create;
 void (*kvs_vector_hnswlib_destroy_ptr)(void *) = kvs_vector_hnswlib_destroy_handle;
 size_t (*kvs_vector_hnswlib_ntotal_ptr)(const void *) = (size_t (*)(const void *))kvs_hnswlib_index_ntotal;
+size_t (*kvs_vector_hnswlib_max_elements_ptr)(const void *) = (size_t (*)(const void *))kvs_hnswlib_index_get_max_elements;
 void (*kvs_vector_hnswlib_set_ef_ptr)(void *, size_t) = kvs_vector_hnswlib_set_ef_handle;
