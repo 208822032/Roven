@@ -73,6 +73,70 @@ PROFILE_KEYS = [
     "neighbor_select_upper_worst_scan_count",
     "neighbor_select_level0_worst_cache_hit_count",
     "neighbor_select_upper_worst_cache_hit_count",
+    "bidirectional_selected_neighbor_count",
+    "bidirectional_forward_edge_attempt_count",
+    "bidirectional_forward_edge_added_count",
+    "bidirectional_reverse_edge_attempt_count",
+    "bidirectional_reverse_edge_accepted_count",
+    "bidirectional_reverse_edge_rejected_count",
+    "bidirectional_forward_edge_skipped_due_to_reverse_reject_count",
+    "layer_search_call_count",
+    "layer_search_level0_call_count",
+    "layer_search_upper_call_count",
+    "layer_search_level0_us",
+    "layer_search_upper_us",
+    "layer_search_distance_compute_count",
+    "layer_search_visited_skip_count",
+    "layer_search_neighbor_visit_count",
+    "layer_search_level0_neighbor_scan_count",
+    "layer_search_upper_neighbor_scan_count",
+    "layer_search_candidate_heap_push_count",
+    "layer_search_candidate_heap_pop_count",
+    "layer_search_candidate_heap_replace_count",
+    "layer_search_top_heap_push_count",
+    "layer_search_top_heap_replace_count",
+    "layer_search_lower_bound_update_count",
+    "layer_search_deleted_active_check_count",
+    "layer_search_unique_visit_count",
+    "layer_search_repeated_visit_count",
+    "layer_search_visited_tag_access_count",
+    "layer_search_slot_state_touch_count",
+    "layer_search_level0_unique_visit_count",
+    "layer_search_level0_repeated_visit_count",
+    "layer_search_level0_visited_tag_access_count",
+    "layer_search_level0_slot_state_touch_count",
+    "layer_search_level0_neighbor_row_access_count",
+    "layer_search_level0_neighbor_row_sequential_count",
+    "layer_search_level0_neighbor_row_random_count",
+    "layer_search_level0_neighbor_slot_sequential_count",
+    "layer_search_level0_neighbor_slot_random_count",
+    "layer_search_level0_candidate_row_expansion_count",
+    "layer_search_level0_distance_compute_count",
+    "layer_search_upper_distance_compute_count",
+    "layer_search_level0_deleted_active_check_count",
+    "layer_search_upper_deleted_active_check_count",
+    "layer_search_candidate_heap_skip_count",
+    "layer_search_candidate_heap_full_skip_count",
+    "layer_search_top_heap_skip_count",
+    "layer_search_level0_candidate_heap_push_count",
+    "layer_search_level0_candidate_heap_pop_count",
+    "layer_search_level0_candidate_heap_skip_count",
+    "layer_search_level0_top_heap_push_count",
+    "layer_search_level0_top_heap_replace_count",
+    "layer_search_level0_top_heap_skip_count",
+    "layer_search_level0_lower_bound_update_count",
+    "core_hnsw_level0_count_min",
+    "core_hnsw_level0_count_avg",
+    "core_hnsw_level0_count_p50",
+    "core_hnsw_level0_count_p95",
+    "core_hnsw_level0_count_max",
+    "core_hnsw_memory_vectors_bytes",
+    "core_hnsw_memory_level0_neighbors_bytes",
+    "core_hnsw_memory_level0_scores_bytes",
+    "core_hnsw_memory_upper_neighbors_bytes",
+    "core_hnsw_memory_visited_tags_bytes",
+    "core_hnsw_memory_slot_state_bytes",
+    "core_hnsw_memory_context_bytes",
 ]
 
 def pick_port():
@@ -240,6 +304,32 @@ with tempfile.TemporaryDirectory(prefix="kvlite_core_hnsw_rebuild_profile_") as 
             assert int(info["hnsw_add_layer_search_us"]) > 0, info
             assert int(info["hnsw_add_link_us"]) > 0, info
             assert int(info["hnsw_add_vector_copy_us"]) > 0, info
+            assert int(info["layer_search_call_count"]) > 0, info
+            assert int(info["layer_search_level0_call_count"]) > 0, info
+            assert int(info["layer_search_distance_compute_count"]) > 0, info
+            assert int(info["layer_search_neighbor_visit_count"]) > 0, info
+            assert int(info["layer_search_candidate_heap_push_count"]) > 0, info
+            assert int(info["layer_search_candidate_heap_pop_count"]) > 0, info
+            assert int(info["layer_search_top_heap_push_count"]) > 0, info
+            assert int(info["layer_search_unique_visit_count"]) > 0, info
+            assert int(info["layer_search_repeated_visit_count"]) > 0, info
+            assert int(info["layer_search_visited_tag_access_count"]) >= int(info["layer_search_neighbor_visit_count"]), info
+            assert int(info["layer_search_level0_neighbor_row_access_count"]) > 0, info
+            assert int(info["layer_search_level0_candidate_row_expansion_count"]) == int(info["layer_search_level0_neighbor_row_access_count"]), info
+            assert int(info["layer_search_level0_distance_compute_count"]) > 0, info
+            assert int(info["layer_search_level0_candidate_heap_pop_count"]) > 0, info
+            assert int(info["layer_search_level0_top_heap_push_count"]) > 0, info
+            assert int(info["core_hnsw_level0_count_p95"]) > 0, info
+            assert int(info["core_hnsw_memory_vectors_bytes"]) > 0, info
+            assert int(info["core_hnsw_memory_level0_neighbors_bytes"]) > 0, info
+            assert int(info["core_hnsw_memory_slot_state_bytes"]) > 0, info
+            assert int(info["neighbor_select_level0_worst_scan_count"]) > 0, info
+            assert int(info["neighbor_select_level0_distance_recompute_count"]) == 0, info
+            assert int(info["bidirectional_selected_neighbor_count"]) > 0, info
+            assert int(info["bidirectional_forward_edge_attempt_count"]) > 0, info
+            assert int(info["bidirectional_reverse_edge_attempt_count"]) == int(info["bidirectional_forward_edge_attempt_count"]), info
+            assert int(info["bidirectional_forward_edge_added_count"]) <= int(info["bidirectional_forward_edge_attempt_count"]), info
+            assert int(info["bidirectional_reverse_edge_accepted_count"]) + int(info["bidirectional_reverse_edge_rejected_count"]) == int(info["bidirectional_reverse_edge_attempt_count"]), info
             assert int(info["core_hnsw_deleted_count"]) == 0, info
             assert int(info["core_hnsw_size"]) == 998, info
 

@@ -792,7 +792,7 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
     }else if(cmd >= KVS_CMD_VSET && cmd <= KVS_CMD_VINFO){
         /**
          * V族命令 使用自己的数据结构
-         * 
+         *
          * 最小协议：
         * VSET question answer [scope]
         * VGET question [scope]
@@ -854,7 +854,7 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
             *   VSEARCH query scope topk
             *   VSEARCH query scope topk threshold
             *
-    
+
             */
             if (count < 2) {
                 return -1;
@@ -950,8 +950,8 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
 
         return -1;
     }else{
-        return -1; //未知命令 
-    }  
+        return -1; //未知命令
+    }
 
     //解析通用参数
     if (count > 1) {
@@ -984,7 +984,7 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
                     ctx->limit = atoi(tokens[1]);
                     if (ctx->limit <= 0) ctx->limit = -1;
                 }
-                
+
                 // 处理第二个参数
                 if (count >= 3) {
                     ctx->limit = atoi(tokens[2]);
@@ -1174,7 +1174,7 @@ int handle_set(command_context_t *ctx, char *response){
     } else {
         return resp_generate_simple_string_n(response, '+', "EXIST", sizeof("EXIST") - 1);
     }
-    
+
 }
 
 int handle_get(command_context_t *ctx, char *response){
@@ -1435,7 +1435,7 @@ int handle_sort(command_context_t *ctx, char *response){
         case DATA_STRUCTURE_SKIPTABLE:
     			ret = kvs_skiptable_sort(kvs_get_global_skiptable(), ctx->order, ctx->limit, temp_response, KVS_MAX_RESPONSE_LENGTH);
             break;
-#endif       
+#endif
 
         default:
         kvs_free(temp_response);
@@ -1459,10 +1459,10 @@ int handle_quit(command_context_t *ctx, char *response){
 }
 
 //安全地往 response[] 末尾追加数据
-static int fulldump_append_raw(char* resp, 
-                                int max_len, 
+static int fulldump_append_raw(char* resp,
+                                int max_len,
                                 int* off,
-                                const char* data, 
+                                const char* data,
                                 int len)
 {
     if(*off + len > max_len){
@@ -1473,10 +1473,10 @@ static int fulldump_append_raw(char* resp,
     return 0;
 }
 // 追加 "*<n>\r\n"
-static int fulldump_append_array_header(char *resp, 
-                                        int max_len, 
-                                        int *off, 
-                                        int count) 
+static int fulldump_append_array_header(char *resp,
+                                        int max_len,
+                                        int *off,
+                                        int count)
 {
 
     char tmp[64];
@@ -1739,12 +1739,12 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
 
 	    {
-	        int array_count = 88;  /* base + backend stats + worker pool + backend + VSEARCH profile stats */
+		        int array_count = 88;  /* base + backend stats + worker pool + backend + VSEARCH profile stats */
 	        if (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
 	            array_count += 7;
 	        }
 	        if (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW) {
-	            array_count += 64;  /* core_hnsw stats + HNSW profile + Stage 7A/7D counters */
+		            array_count += 128;  /* core_hnsw stats + HNSW profile + Stage 7A/7D/7F/7H/7L/9A1 counters */
 	        }
 	        off += resp_generate_array_start(response + off, array_count);
 	    }
@@ -2132,7 +2132,84 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
 	        }
 	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
-	        n = snprintf(item, sizeof(item), "neighbor_select_call_count:%llu", (unsigned long long)info->neighbor_select_call_count);
+#define KVS_APPEND_U64_INFO_FIELD(field) \
+	        do { \
+	            n = snprintf(item, sizeof(item), #field ":%llu", (unsigned long long)info->field); \
+	            if (n < 0 || n >= (int)sizeof(item)) { \
+	                return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1); \
+	            } \
+	            off += resp_generate_bulk_string_n(response + off, item, (size_t)n); \
+	        } while (0)
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_call_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_call_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_upper_call_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_us);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_upper_us);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_distance_compute_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_visited_skip_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_neighbor_visit_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_neighbor_scan_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_upper_neighbor_scan_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_candidate_heap_push_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_candidate_heap_pop_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_candidate_heap_replace_count);
+	        KVS_APPEND_U64_INFO_FIELD(layer_search_top_heap_push_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_top_heap_replace_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_lower_bound_update_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_deleted_active_check_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_unique_visit_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_repeated_visit_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_visited_tag_access_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_slot_state_touch_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_unique_visit_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_repeated_visit_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_visited_tag_access_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_slot_state_touch_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_neighbor_row_access_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_neighbor_row_sequential_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_neighbor_row_random_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_neighbor_slot_sequential_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_neighbor_slot_random_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_candidate_row_expansion_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_distance_compute_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_upper_distance_compute_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_deleted_active_check_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_upper_deleted_active_check_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_candidate_heap_skip_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_candidate_heap_full_skip_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_top_heap_skip_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_candidate_heap_push_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_candidate_heap_pop_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_candidate_heap_skip_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_top_heap_push_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_top_heap_replace_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_top_heap_skip_count);
+		        KVS_APPEND_U64_INFO_FIELD(layer_search_level0_lower_bound_update_count);
+		        KVS_APPEND_U64_INFO_FIELD(core_hnsw_level0_count_min);
+		        KVS_APPEND_U64_INFO_FIELD(core_hnsw_level0_count_avg);
+		        KVS_APPEND_U64_INFO_FIELD(core_hnsw_level0_count_p50);
+		        KVS_APPEND_U64_INFO_FIELD(core_hnsw_level0_count_p95);
+		        KVS_APPEND_U64_INFO_FIELD(core_hnsw_level0_count_max);
+#undef KVS_APPEND_U64_INFO_FIELD
+
+#define KVS_APPEND_SIZE_INFO_FIELD(field) \
+		        do { \
+		            n = snprintf(item, sizeof(item), #field ":%zu", info->field); \
+		            if (n < 0 || n >= (int)sizeof(item)) { \
+		                return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1); \
+		            } \
+		            off += resp_generate_bulk_string_n(response + off, item, (size_t)n); \
+		        } while (0)
+		        KVS_APPEND_SIZE_INFO_FIELD(core_hnsw_memory_vectors_bytes);
+		        KVS_APPEND_SIZE_INFO_FIELD(core_hnsw_memory_level0_neighbors_bytes);
+		        KVS_APPEND_SIZE_INFO_FIELD(core_hnsw_memory_level0_scores_bytes);
+		        KVS_APPEND_SIZE_INFO_FIELD(core_hnsw_memory_upper_neighbors_bytes);
+		        KVS_APPEND_SIZE_INFO_FIELD(core_hnsw_memory_visited_tags_bytes);
+		        KVS_APPEND_SIZE_INFO_FIELD(core_hnsw_memory_slot_state_bytes);
+		        KVS_APPEND_SIZE_INFO_FIELD(core_hnsw_memory_context_bytes);
+#undef KVS_APPEND_SIZE_INFO_FIELD
+
+		        n = snprintf(item, sizeof(item), "neighbor_select_call_count:%llu", (unsigned long long)info->neighbor_select_call_count);
 	        if (n < 0 || n >= (int)sizeof(item)) {
 	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
 	        }
@@ -2323,6 +2400,23 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
 	            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
 	        }
 	        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+#define KVS_APPEND_U64_INFO_FIELD(field) \
+	        do { \
+	            n = snprintf(item, sizeof(item), #field ":%llu", (unsigned long long)info->field); \
+	            if (n < 0 || n >= (int)sizeof(item)) { \
+	                return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1); \
+	            } \
+	            off += resp_generate_bulk_string_n(response + off, item, (size_t)n); \
+	        } while (0)
+	        KVS_APPEND_U64_INFO_FIELD(bidirectional_selected_neighbor_count);
+	        KVS_APPEND_U64_INFO_FIELD(bidirectional_forward_edge_attempt_count);
+	        KVS_APPEND_U64_INFO_FIELD(bidirectional_forward_edge_added_count);
+	        KVS_APPEND_U64_INFO_FIELD(bidirectional_reverse_edge_attempt_count);
+	        KVS_APPEND_U64_INFO_FIELD(bidirectional_reverse_edge_accepted_count);
+	        KVS_APPEND_U64_INFO_FIELD(bidirectional_reverse_edge_rejected_count);
+	        KVS_APPEND_U64_INFO_FIELD(bidirectional_forward_edge_skipped_due_to_reverse_reject_count);
+#undef KVS_APPEND_U64_INFO_FIELD
 	    }
 
     n = snprintf(item, sizeof(item), "ann_size:%zu", info->ann_size);

@@ -500,6 +500,3 @@ VDEL_CLIENTS=100 VDEL_PIPELINE=16 \
 | 测试 | `build/tests/bin/vector_benchmark` | 向量压测工具 |
 | 数据 | `results/raw.csv` | KV 压测原始数据 |
 | 数据 | `results/vector_rw_raw.csv` | 向量压测原始数据 |
-
-
-export OPENAI_API_KEY="sk-92b39db2fedf7123c81eb225afc7502fb5e091ed95134119b2fab6509126a536"

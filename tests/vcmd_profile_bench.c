@@ -113,7 +113,7 @@ static double recall_for_results(
     const int *truth,
     int topk
 );
-static int write_ann_core_stage7d_files(
+static int write_ann_core_stage7l_files(
     int nb,
     int dim,
     int topk,
@@ -307,7 +307,7 @@ static int bench_ann_core(int nb, int dim, int topk, int iterations) {
     summary.search_qps = search_qps;
     summary.recall_at_k = recall_total / (double)iterations;
 
-    printf("\n--- STAGE7D_NEIGHBOR_SELECT_SUMMARY ---\n");
+    printf("\n--- STAGE7L_LAYER_SEARCH_HOTSPOT_SUMMARY ---\n");
     printf("backend_dim=%zu\n", summary.info.backend_dim);
     printf("distance_backend=%s\n", kvs_vector_distance_backend_name());
     printf("rebuild_core_add_total_us=%lu\n",
@@ -318,6 +318,94 @@ static int bench_ann_core(int nb, int dim, int topk, int iterations) {
            (unsigned long)summary.info.hnsw_add_neighbor_select_us);
     printf("hnsw_add_link_us=%lu\n",
            (unsigned long)summary.info.hnsw_add_link_us);
+    printf("layer_search_call_count=%lu\n",
+           (unsigned long)summary.info.layer_search_call_count);
+    printf("layer_search_level0_us=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_us);
+    printf("layer_search_upper_us=%lu\n",
+           (unsigned long)summary.info.layer_search_upper_us);
+    printf("layer_search_distance_compute_count=%lu\n",
+           (unsigned long)summary.info.layer_search_distance_compute_count);
+    printf("layer_search_neighbor_visit_count=%lu\n",
+           (unsigned long)summary.info.layer_search_neighbor_visit_count);
+    printf("layer_search_visited_skip_count=%lu\n",
+           (unsigned long)summary.info.layer_search_visited_skip_count);
+    printf("layer_search_level0_neighbor_scan_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_neighbor_scan_count);
+    printf("layer_search_upper_neighbor_scan_count=%lu\n",
+           (unsigned long)summary.info.layer_search_upper_neighbor_scan_count);
+    printf("layer_search_candidate_heap_push_count=%lu\n",
+           (unsigned long)summary.info.layer_search_candidate_heap_push_count);
+    printf("layer_search_candidate_heap_pop_count=%lu\n",
+           (unsigned long)summary.info.layer_search_candidate_heap_pop_count);
+    printf("layer_search_candidate_heap_replace_count=%lu\n",
+           (unsigned long)summary.info.layer_search_candidate_heap_replace_count);
+    printf("layer_search_top_heap_push_count=%lu\n",
+           (unsigned long)summary.info.layer_search_top_heap_push_count);
+    printf("layer_search_top_heap_replace_count=%lu\n",
+           (unsigned long)summary.info.layer_search_top_heap_replace_count);
+    printf("layer_search_lower_bound_update_count=%lu\n",
+           (unsigned long)summary.info.layer_search_lower_bound_update_count);
+    printf("layer_search_deleted_active_check_count=%lu\n",
+           (unsigned long)summary.info.layer_search_deleted_active_check_count);
+    printf("layer_search_unique_visit_count=%lu\n",
+           (unsigned long)summary.info.layer_search_unique_visit_count);
+    printf("layer_search_repeated_visit_count=%lu\n",
+           (unsigned long)summary.info.layer_search_repeated_visit_count);
+    printf("layer_search_visited_tag_access_count=%lu\n",
+           (unsigned long)summary.info.layer_search_visited_tag_access_count);
+    printf("layer_search_slot_state_touch_count=%lu\n",
+           (unsigned long)summary.info.layer_search_slot_state_touch_count);
+    printf("layer_search_level0_unique_visit_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_unique_visit_count);
+    printf("layer_search_level0_repeated_visit_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_repeated_visit_count);
+    printf("layer_search_level0_visited_tag_access_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_visited_tag_access_count);
+    printf("layer_search_level0_slot_state_touch_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_slot_state_touch_count);
+    printf("layer_search_level0_neighbor_row_access_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_neighbor_row_access_count);
+    printf("layer_search_level0_neighbor_row_random_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_neighbor_row_random_count);
+    printf("layer_search_level0_neighbor_slot_sequential_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_neighbor_slot_sequential_count);
+    printf("layer_search_level0_candidate_row_expansion_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_candidate_row_expansion_count);
+    printf("layer_search_level0_distance_compute_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_distance_compute_count);
+    printf("layer_search_upper_distance_compute_count=%lu\n",
+           (unsigned long)summary.info.layer_search_upper_distance_compute_count);
+    printf("layer_search_level0_deleted_active_check_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_deleted_active_check_count);
+    printf("layer_search_candidate_heap_skip_count=%lu\n",
+           (unsigned long)summary.info.layer_search_candidate_heap_skip_count);
+    printf("layer_search_candidate_heap_full_skip_count=%lu\n",
+           (unsigned long)summary.info.layer_search_candidate_heap_full_skip_count);
+    printf("layer_search_top_heap_skip_count=%lu\n",
+           (unsigned long)summary.info.layer_search_top_heap_skip_count);
+    printf("layer_search_level0_candidate_heap_push_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_candidate_heap_push_count);
+    printf("layer_search_level0_candidate_heap_pop_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_candidate_heap_pop_count);
+    printf("layer_search_level0_candidate_heap_skip_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_candidate_heap_skip_count);
+    printf("layer_search_level0_top_heap_push_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_top_heap_push_count);
+    printf("layer_search_level0_top_heap_replace_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_top_heap_replace_count);
+    printf("layer_search_level0_top_heap_skip_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_top_heap_skip_count);
+    printf("layer_search_level0_lower_bound_update_count=%lu\n",
+           (unsigned long)summary.info.layer_search_level0_lower_bound_update_count);
+    printf("core_hnsw_level0_count_avg=%lu\n",
+           (unsigned long)summary.info.core_hnsw_level0_count_avg);
+    printf("core_hnsw_level0_count_p95=%lu\n",
+           (unsigned long)summary.info.core_hnsw_level0_count_p95);
+    printf("core_hnsw_memory_vectors_bytes=%zu\n",
+           summary.info.core_hnsw_memory_vectors_bytes);
+    printf("core_hnsw_memory_slot_state_bytes=%zu\n",
+           summary.info.core_hnsw_memory_slot_state_bytes);
     printf("neighbor_select_call_count=%lu\n",
            (unsigned long)summary.info.neighbor_select_call_count);
     printf("neighbor_select_candidate_avg=%.2f\n",
@@ -336,6 +424,20 @@ static int bench_ann_core(int nb, int dim, int topk, int iterations) {
            (unsigned long)summary.info.neighbor_select_level0_distance_recompute_count);
     printf("neighbor_select_upper_distance_recompute_count=%lu\n",
            (unsigned long)summary.info.neighbor_select_upper_distance_recompute_count);
+    printf("bidirectional_selected_neighbor_count=%lu\n",
+           (unsigned long)summary.info.bidirectional_selected_neighbor_count);
+    printf("bidirectional_forward_edge_attempt_count=%lu\n",
+           (unsigned long)summary.info.bidirectional_forward_edge_attempt_count);
+    printf("bidirectional_forward_edge_added_count=%lu\n",
+           (unsigned long)summary.info.bidirectional_forward_edge_added_count);
+    printf("bidirectional_reverse_edge_attempt_count=%lu\n",
+           (unsigned long)summary.info.bidirectional_reverse_edge_attempt_count);
+    printf("bidirectional_reverse_edge_accepted_count=%lu\n",
+           (unsigned long)summary.info.bidirectional_reverse_edge_accepted_count);
+    printf("bidirectional_reverse_edge_rejected_count=%lu\n",
+           (unsigned long)summary.info.bidirectional_reverse_edge_rejected_count);
+    printf("bidirectional_forward_edge_skipped_due_to_reverse_reject_count=%lu\n",
+           (unsigned long)summary.info.bidirectional_forward_edge_skipped_due_to_reverse_reject_count);
     printf("vsearch_backend_search_avg_us=%lu\n",
            (unsigned long)(summary.info.vsearch_backend_search_count ?
            summary.info.vsearch_backend_search_total_us /
@@ -343,8 +445,8 @@ static int bench_ann_core(int nb, int dim, int topk, int iterations) {
     printf("backend_memory_bytes=%zu\n", summary.info.backend_memory_bytes);
     printf("recall@%d=%.4f\n", topk, summary.recall_at_k);
 
-    if (write_ann_core_stage7d_files(nb, dim, topk, iterations, &summary) != 0) {
-        fprintf(stderr, "  warning: failed to write Stage 7D result files\n");
+    if (write_ann_core_stage7l_files(nb, dim, topk, iterations, &summary) != 0) {
+        fprintf(stderr, "  warning: failed to write Stage 7L result files\n");
     }
 
     /* CSV output */
@@ -509,7 +611,7 @@ static double recall_for_results(
     return (double)hits / (double)topk;
 }
 
-static int write_ann_core_stage7d_files(
+static int write_ann_core_stage7l_files(
     int nb,
     int dim,
     int topk,
@@ -529,10 +631,10 @@ static int write_ann_core_stage7d_files(
     }
 
     snprintf(json_path, sizeof(json_path),
-             "results/vector_core_benchmark/stage7d_highdim_neighbor_select_%dk_%dd.json",
+             "results/vector_core_benchmark/stage7l_post_layout_layer_search_%dk_%dd.json",
              nb / 1000, dim);
     snprintf(md_path, sizeof(md_path),
-             "results/vector_core_benchmark/stage7d_highdim_neighbor_select_%dk_%dd.md",
+             "results/vector_core_benchmark/stage7l_post_layout_layer_search_%dk_%dd.md",
              nb / 1000, dim);
 
     fp = fopen(json_path, "w");
@@ -540,7 +642,7 @@ static int write_ann_core_stage7d_files(
         return -1;
     }
     fprintf(fp, "{\n");
-    fprintf(fp, "  \"stage\": \"7D\",\n");
+    fprintf(fp, "  \"stage\": \"7F\",\n");
     fprintf(fp, "  \"mode\": \"ann_core_direct_vector\",\n");
     fprintf(fp, "  \"index_type\": \"core_hnsw\",\n");
     fprintf(fp, "  \"nb\": %d,\n", nb);
@@ -563,6 +665,74 @@ static int write_ann_core_stage7d_files(
             (unsigned long)summary->info.hnsw_add_neighbor_select_us);
     fprintf(fp, "  \"hnsw_add_link_us\": %lu,\n",
             (unsigned long)summary->info.hnsw_add_link_us);
+#define KVS_BENCH_JSON_U64(field) \
+    fprintf(fp, "  \"" #field "\": %lu,\n", \
+            (unsigned long)summary->info.field)
+    KVS_BENCH_JSON_U64(layer_search_call_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_call_count);
+    KVS_BENCH_JSON_U64(layer_search_upper_call_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_us);
+    KVS_BENCH_JSON_U64(layer_search_upper_us);
+    KVS_BENCH_JSON_U64(layer_search_distance_compute_count);
+    KVS_BENCH_JSON_U64(layer_search_visited_skip_count);
+    KVS_BENCH_JSON_U64(layer_search_neighbor_visit_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_neighbor_scan_count);
+    KVS_BENCH_JSON_U64(layer_search_upper_neighbor_scan_count);
+    KVS_BENCH_JSON_U64(layer_search_candidate_heap_push_count);
+    KVS_BENCH_JSON_U64(layer_search_candidate_heap_pop_count);
+    KVS_BENCH_JSON_U64(layer_search_candidate_heap_replace_count);
+    KVS_BENCH_JSON_U64(layer_search_top_heap_push_count);
+    KVS_BENCH_JSON_U64(layer_search_top_heap_replace_count);
+    KVS_BENCH_JSON_U64(layer_search_lower_bound_update_count);
+    KVS_BENCH_JSON_U64(layer_search_deleted_active_check_count);
+    KVS_BENCH_JSON_U64(layer_search_unique_visit_count);
+    KVS_BENCH_JSON_U64(layer_search_repeated_visit_count);
+    KVS_BENCH_JSON_U64(layer_search_visited_tag_access_count);
+    KVS_BENCH_JSON_U64(layer_search_slot_state_touch_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_unique_visit_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_repeated_visit_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_visited_tag_access_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_slot_state_touch_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_neighbor_row_access_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_neighbor_row_sequential_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_neighbor_row_random_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_neighbor_slot_sequential_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_neighbor_slot_random_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_candidate_row_expansion_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_distance_compute_count);
+    KVS_BENCH_JSON_U64(layer_search_upper_distance_compute_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_deleted_active_check_count);
+    KVS_BENCH_JSON_U64(layer_search_upper_deleted_active_check_count);
+    KVS_BENCH_JSON_U64(layer_search_candidate_heap_skip_count);
+    KVS_BENCH_JSON_U64(layer_search_candidate_heap_full_skip_count);
+    KVS_BENCH_JSON_U64(layer_search_top_heap_skip_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_candidate_heap_push_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_candidate_heap_pop_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_candidate_heap_skip_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_top_heap_push_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_top_heap_replace_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_top_heap_skip_count);
+    KVS_BENCH_JSON_U64(layer_search_level0_lower_bound_update_count);
+    KVS_BENCH_JSON_U64(core_hnsw_level0_count_min);
+    KVS_BENCH_JSON_U64(core_hnsw_level0_count_avg);
+    KVS_BENCH_JSON_U64(core_hnsw_level0_count_p50);
+    KVS_BENCH_JSON_U64(core_hnsw_level0_count_p95);
+    KVS_BENCH_JSON_U64(core_hnsw_level0_count_max);
+#undef KVS_BENCH_JSON_U64
+    fprintf(fp, "  \"core_hnsw_memory_vectors_bytes\": %zu,\n",
+            summary->info.core_hnsw_memory_vectors_bytes);
+    fprintf(fp, "  \"core_hnsw_memory_level0_neighbors_bytes\": %zu,\n",
+            summary->info.core_hnsw_memory_level0_neighbors_bytes);
+    fprintf(fp, "  \"core_hnsw_memory_level0_scores_bytes\": %zu,\n",
+            summary->info.core_hnsw_memory_level0_scores_bytes);
+    fprintf(fp, "  \"core_hnsw_memory_upper_neighbors_bytes\": %zu,\n",
+            summary->info.core_hnsw_memory_upper_neighbors_bytes);
+    fprintf(fp, "  \"core_hnsw_memory_visited_tags_bytes\": %zu,\n",
+            summary->info.core_hnsw_memory_visited_tags_bytes);
+    fprintf(fp, "  \"core_hnsw_memory_slot_state_bytes\": %zu,\n",
+            summary->info.core_hnsw_memory_slot_state_bytes);
+    fprintf(fp, "  \"core_hnsw_memory_context_bytes\": %zu,\n",
+            summary->info.core_hnsw_memory_context_bytes);
     fprintf(fp, "  \"neighbor_select_call_count\": %lu,\n",
             (unsigned long)summary->info.neighbor_select_call_count);
     fprintf(fp, "  \"neighbor_select_level0_call_count\": %lu,\n",
@@ -631,6 +801,20 @@ static int write_ann_core_stage7d_files(
             (unsigned long)summary->info.neighbor_select_level0_worst_cache_hit_count);
     fprintf(fp, "  \"neighbor_select_upper_worst_cache_hit_count\": %lu,\n",
             (unsigned long)summary->info.neighbor_select_upper_worst_cache_hit_count);
+    fprintf(fp, "  \"bidirectional_selected_neighbor_count\": %lu,\n",
+            (unsigned long)summary->info.bidirectional_selected_neighbor_count);
+    fprintf(fp, "  \"bidirectional_forward_edge_attempt_count\": %lu,\n",
+            (unsigned long)summary->info.bidirectional_forward_edge_attempt_count);
+    fprintf(fp, "  \"bidirectional_forward_edge_added_count\": %lu,\n",
+            (unsigned long)summary->info.bidirectional_forward_edge_added_count);
+    fprintf(fp, "  \"bidirectional_reverse_edge_attempt_count\": %lu,\n",
+            (unsigned long)summary->info.bidirectional_reverse_edge_attempt_count);
+    fprintf(fp, "  \"bidirectional_reverse_edge_accepted_count\": %lu,\n",
+            (unsigned long)summary->info.bidirectional_reverse_edge_accepted_count);
+    fprintf(fp, "  \"bidirectional_reverse_edge_rejected_count\": %lu,\n",
+            (unsigned long)summary->info.bidirectional_reverse_edge_rejected_count);
+    fprintf(fp, "  \"bidirectional_forward_edge_skipped_due_to_reverse_reject_count\": %lu,\n",
+            (unsigned long)summary->info.bidirectional_forward_edge_skipped_due_to_reverse_reject_count);
     fprintf(fp, "  \"vsearch_backend_search_avg_us\": %lu,\n",
             (unsigned long)backend_avg);
     fprintf(fp, "  \"recall_at_%d\": %.4f,\n", topk, summary->recall_at_k);
@@ -643,7 +827,7 @@ static int write_ann_core_stage7d_files(
     if (!fp) {
         return -1;
     }
-    fprintf(fp, "# Stage 7D high-dim neighbor_select benchmark %dk/%dd\n\n", nb / 1000, dim);
+    fprintf(fp, "# Stage 7L post-layout layer_search hotspot benchmark %dk/%dd\n\n", nb / 1000, dim);
     fprintf(fp, "| field | value |\n");
     fprintf(fp, "| --- | --- |\n");
     fprintf(fp, "| nb | %d |\n", nb);
@@ -660,6 +844,74 @@ static int write_ann_core_stage7d_files(
             (unsigned long)summary->info.hnsw_add_neighbor_select_us);
     fprintf(fp, "| hnsw_add_link_us | %lu |\n",
             (unsigned long)summary->info.hnsw_add_link_us);
+#define KVS_BENCH_MD_U64(field) \
+    fprintf(fp, "| " #field " | %lu |\n", \
+            (unsigned long)summary->info.field)
+    KVS_BENCH_MD_U64(layer_search_call_count);
+    KVS_BENCH_MD_U64(layer_search_level0_call_count);
+    KVS_BENCH_MD_U64(layer_search_upper_call_count);
+    KVS_BENCH_MD_U64(layer_search_level0_us);
+    KVS_BENCH_MD_U64(layer_search_upper_us);
+    KVS_BENCH_MD_U64(layer_search_distance_compute_count);
+    KVS_BENCH_MD_U64(layer_search_visited_skip_count);
+    KVS_BENCH_MD_U64(layer_search_neighbor_visit_count);
+    KVS_BENCH_MD_U64(layer_search_level0_neighbor_scan_count);
+    KVS_BENCH_MD_U64(layer_search_upper_neighbor_scan_count);
+    KVS_BENCH_MD_U64(layer_search_candidate_heap_push_count);
+    KVS_BENCH_MD_U64(layer_search_candidate_heap_pop_count);
+    KVS_BENCH_MD_U64(layer_search_candidate_heap_replace_count);
+    KVS_BENCH_MD_U64(layer_search_top_heap_push_count);
+    KVS_BENCH_MD_U64(layer_search_top_heap_replace_count);
+    KVS_BENCH_MD_U64(layer_search_lower_bound_update_count);
+    KVS_BENCH_MD_U64(layer_search_deleted_active_check_count);
+    KVS_BENCH_MD_U64(layer_search_unique_visit_count);
+    KVS_BENCH_MD_U64(layer_search_repeated_visit_count);
+    KVS_BENCH_MD_U64(layer_search_visited_tag_access_count);
+    KVS_BENCH_MD_U64(layer_search_slot_state_touch_count);
+    KVS_BENCH_MD_U64(layer_search_level0_unique_visit_count);
+    KVS_BENCH_MD_U64(layer_search_level0_repeated_visit_count);
+    KVS_BENCH_MD_U64(layer_search_level0_visited_tag_access_count);
+    KVS_BENCH_MD_U64(layer_search_level0_slot_state_touch_count);
+    KVS_BENCH_MD_U64(layer_search_level0_neighbor_row_access_count);
+    KVS_BENCH_MD_U64(layer_search_level0_neighbor_row_sequential_count);
+    KVS_BENCH_MD_U64(layer_search_level0_neighbor_row_random_count);
+    KVS_BENCH_MD_U64(layer_search_level0_neighbor_slot_sequential_count);
+    KVS_BENCH_MD_U64(layer_search_level0_neighbor_slot_random_count);
+    KVS_BENCH_MD_U64(layer_search_level0_candidate_row_expansion_count);
+    KVS_BENCH_MD_U64(layer_search_level0_distance_compute_count);
+    KVS_BENCH_MD_U64(layer_search_upper_distance_compute_count);
+    KVS_BENCH_MD_U64(layer_search_level0_deleted_active_check_count);
+    KVS_BENCH_MD_U64(layer_search_upper_deleted_active_check_count);
+    KVS_BENCH_MD_U64(layer_search_candidate_heap_skip_count);
+    KVS_BENCH_MD_U64(layer_search_candidate_heap_full_skip_count);
+    KVS_BENCH_MD_U64(layer_search_top_heap_skip_count);
+    KVS_BENCH_MD_U64(layer_search_level0_candidate_heap_push_count);
+    KVS_BENCH_MD_U64(layer_search_level0_candidate_heap_pop_count);
+    KVS_BENCH_MD_U64(layer_search_level0_candidate_heap_skip_count);
+    KVS_BENCH_MD_U64(layer_search_level0_top_heap_push_count);
+    KVS_BENCH_MD_U64(layer_search_level0_top_heap_replace_count);
+    KVS_BENCH_MD_U64(layer_search_level0_top_heap_skip_count);
+    KVS_BENCH_MD_U64(layer_search_level0_lower_bound_update_count);
+    KVS_BENCH_MD_U64(core_hnsw_level0_count_min);
+    KVS_BENCH_MD_U64(core_hnsw_level0_count_avg);
+    KVS_BENCH_MD_U64(core_hnsw_level0_count_p50);
+    KVS_BENCH_MD_U64(core_hnsw_level0_count_p95);
+    KVS_BENCH_MD_U64(core_hnsw_level0_count_max);
+#undef KVS_BENCH_MD_U64
+    fprintf(fp, "| core_hnsw_memory_vectors_bytes | %zu |\n",
+            summary->info.core_hnsw_memory_vectors_bytes);
+    fprintf(fp, "| core_hnsw_memory_level0_neighbors_bytes | %zu |\n",
+            summary->info.core_hnsw_memory_level0_neighbors_bytes);
+    fprintf(fp, "| core_hnsw_memory_level0_scores_bytes | %zu |\n",
+            summary->info.core_hnsw_memory_level0_scores_bytes);
+    fprintf(fp, "| core_hnsw_memory_upper_neighbors_bytes | %zu |\n",
+            summary->info.core_hnsw_memory_upper_neighbors_bytes);
+    fprintf(fp, "| core_hnsw_memory_visited_tags_bytes | %zu |\n",
+            summary->info.core_hnsw_memory_visited_tags_bytes);
+    fprintf(fp, "| core_hnsw_memory_slot_state_bytes | %zu |\n",
+            summary->info.core_hnsw_memory_slot_state_bytes);
+    fprintf(fp, "| core_hnsw_memory_context_bytes | %zu |\n",
+            summary->info.core_hnsw_memory_context_bytes);
     fprintf(fp, "| neighbor_select_call_count | %lu |\n",
             (unsigned long)summary->info.neighbor_select_call_count);
     fprintf(fp, "| neighbor_select_level0_call_count | %lu |\n",
@@ -728,6 +980,20 @@ static int write_ann_core_stage7d_files(
             (unsigned long)summary->info.neighbor_select_level0_worst_cache_hit_count);
     fprintf(fp, "| neighbor_select_upper_worst_cache_hit_count | %lu |\n",
             (unsigned long)summary->info.neighbor_select_upper_worst_cache_hit_count);
+    fprintf(fp, "| bidirectional_selected_neighbor_count | %lu |\n",
+            (unsigned long)summary->info.bidirectional_selected_neighbor_count);
+    fprintf(fp, "| bidirectional_forward_edge_attempt_count | %lu |\n",
+            (unsigned long)summary->info.bidirectional_forward_edge_attempt_count);
+    fprintf(fp, "| bidirectional_forward_edge_added_count | %lu |\n",
+            (unsigned long)summary->info.bidirectional_forward_edge_added_count);
+    fprintf(fp, "| bidirectional_reverse_edge_attempt_count | %lu |\n",
+            (unsigned long)summary->info.bidirectional_reverse_edge_attempt_count);
+    fprintf(fp, "| bidirectional_reverse_edge_accepted_count | %lu |\n",
+            (unsigned long)summary->info.bidirectional_reverse_edge_accepted_count);
+    fprintf(fp, "| bidirectional_reverse_edge_rejected_count | %lu |\n",
+            (unsigned long)summary->info.bidirectional_reverse_edge_rejected_count);
+    fprintf(fp, "| bidirectional_forward_edge_skipped_due_to_reverse_reject_count | %lu |\n",
+            (unsigned long)summary->info.bidirectional_forward_edge_skipped_due_to_reverse_reject_count);
     fprintf(fp, "| vsearch_backend_search_avg_us | %lu |\n",
             (unsigned long)backend_avg);
     fprintf(fp, "| backend_memory_bytes | %zu |\n", summary->info.backend_memory_bytes);
@@ -737,7 +1003,7 @@ static int write_ann_core_stage7d_files(
     fprintf(fp, "| recall@%d | %.4f |\n", topk, summary->recall_at_k);
     fclose(fp);
 
-    printf("  Stage 7D result files:\n");
+    printf("  Stage 7L result files:\n");
     printf("    %s\n", json_path);
     printf("    %s\n", md_path);
     return 0;

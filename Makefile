@@ -113,6 +113,17 @@ NTYCO_OBJS     := $(NTYCO_DIR)/objs/nty_socket.o \
                   $(NTYCO_DIR)/objs/nty_schedule.o
 
 # ── 源文件 ───────────────────────────────────────────────────────────────
+HNSW_V2_SRCS = \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_index.c \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_storage.c \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_context.c \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_info.c \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_random.c \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_graph.c \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_neighbor_select.c \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_add.c \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_search.c
+
 BASE_SRCS = \
 	$(SRC_CORE)/kvstore.c        $(SRC_CORE)/kvs_config.c        \
 	$(SRC_CORE)/kvs_globals.c    $(SRC_CORE)/kvs_operation.c     \
@@ -137,6 +148,8 @@ BASE_SRCS = \
 	$(SRC_UTILS)/kvs_log.c       $(SRC_UTILS)/kvs_log_writer.c   \
 	$(SRC_UTILS)/netbuf.c        $(SRC_UTILS)/tx_batcher.c        \
 	$(SRC_VECTOR)/kvs_vector.c   $(SRC_VECTOR)/kvs_vector_index.c \
+	$(SRC_VECTOR)/kvs_vector_rebuild.c                            \
+	$(SRC_VECTOR)/kvs_vector_rebuild_shadow.c                     \
 	$(SRC_VECTOR)/kvs_vector_embedding.c                          \
 	$(SRC_VECTOR)/kvs_vector_distance.c                           \
 	$(SRC_VECTOR)/kvs_vector_distance_avx2.c                      \
@@ -154,6 +167,7 @@ BASE_SRCS = \
 	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_add.c                        \
 	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_search.c                     \
 	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_delete.c                     \
+	$(HNSW_V2_SRCS)                                               \
 	$(EMBED_RUNTIME_SRC)
 
 SRCS = $(BASE_SRCS) $(SRC_DIST)/sync_backend_tcp.c
@@ -246,6 +260,17 @@ TEST_VECTOR_IMPORT_BENCH := $(BUILD_TESTS_BIN)/vector_import_bench
 TEST_VECTOR_BENCHMARK   := $(BUILD_TESTS_BIN)/vector_benchmark
 TEST_BINARY_KEY         := $(BUILD_TESTS_BIN)/test_binary_key
 TEST_VCMD_PROFILE_BENCH := $(BUILD_TESTS_BIN)/vcmd_profile_bench
+TEST_HNSW_V2_SKELETON := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_skeleton_test
+TEST_HNSW_V2_GRAPH := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_graph_construction_test
+TEST_HNSW_V2_SEARCH := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_search_recall_test
+TEST_HNSW_V2_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_performance_profile_test
+TEST_HNSW_V2_DISTANCE_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_distance_profile_test
+TEST_HNSW_V2_REVERSE_PRUNE_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_reverse_prune_profile_test
+TEST_HNSW_V2_TOMBSTONE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_tombstone_test
+TEST_VECTOR_REBUILD_STATE_MACHINE := $(BUILD_TESTS_BIN)/vector_rebuild_state_machine_test
+TEST_VECTOR_REBUILD_DELTA_CAPTURE := $(BUILD_TESTS_BIN)/vector_rebuild_delta_capture_test
+TEST_VECTOR_REBUILD_SHADOW_REPLAY := $(BUILD_TESTS_BIN)/vector_rebuild_shadow_replay_test
+TEST_VECTOR_REBUILD_SHADOW_SWAP := $(BUILD_TESTS_BIN)/vector_rebuild_shadow_swap_test
 TEST_FAISS_BASELINE     := $(BUILD_TESTS_BIN)/faiss_baseline
 TEST_VCMD_ONNX_FAISS_BENCH := $(BUILD_TESTS_BIN)/vcmd_onnx_faiss_bench
 TEST_VCMD_EMBEDDING_CACHE_BENCH := $(BUILD_TESTS_BIN)/vcmd_embedding_cache_bench
@@ -257,7 +282,13 @@ TEST_BINARIES = \
 	$(TEST_BIGVALUE) $(TEST_AI_CHAT_SCHEMA) $(TEST_VECTOR) \
 	$(TEST_VECTOR_IMPORT_BENCH) $(TEST_VECTOR_BENCHMARK) \
 	$(TEST_TTL_LOOKUP_SPLIT) $(TEST_SKIPTABLE_TARGETED) \
-	$(TEST_BINARY_KEY) $(TEST_VCMD_PROFILE_BENCH)
+	$(TEST_BINARY_KEY) $(TEST_VCMD_PROFILE_BENCH) \
+	$(TEST_HNSW_V2_SKELETON) $(TEST_HNSW_V2_GRAPH) \
+	$(TEST_HNSW_V2_SEARCH) $(TEST_HNSW_V2_PROFILE) \
+	$(TEST_HNSW_V2_DISTANCE_PROFILE) $(TEST_HNSW_V2_REVERSE_PRUNE_PROFILE) \
+	$(TEST_HNSW_V2_TOMBSTONE) \
+	$(TEST_VECTOR_REBUILD_STATE_MACHINE) $(TEST_VECTOR_REBUILD_DELTA_CAPTURE) \
+	$(TEST_VECTOR_REBUILD_SHADOW_REPLAY) $(TEST_VECTOR_REBUILD_SHADOW_SWAP)
 
 ifeq ($(ENABLE_FAISS),1)
 TEST_BINARIES += $(TEST_FAISS_BASELINE) $(TEST_VCMD_ONNX_FAISS_BENCH) $(TEST_VCMD_EMBEDDING_CACHE_BENCH)
@@ -537,6 +568,83 @@ $(TEST_BINARY_KEY): $(TEST_DIR)/test_binary_key.c | $(BUILD_TESTS_BIN)
 $(TEST_VCMD_PROFILE_BENCH): $(TEST_DIR)/vcmd_profile_bench.c $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS) -ldl
 
+$(TEST_HNSW_V2_SKELETON): \
+	$(TEST_DIR)/vector_core_hnsw_v2_skeleton_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_skeleton_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_GRAPH): \
+	$(TEST_DIR)/vector_core_hnsw_v2_graph_construction_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_graph_construction_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_SEARCH): \
+	$(TEST_DIR)/vector_core_hnsw_v2_search_recall_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_search_recall_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_PROFILE): \
+	$(TEST_DIR)/vector_core_hnsw_v2_performance_profile_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_performance_profile_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_DISTANCE_PROFILE): \
+	$(TEST_DIR)/vector_core_hnsw_v2_distance_profile_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_distance_profile_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_REVERSE_PRUNE_PROFILE): \
+	$(TEST_DIR)/vector_core_hnsw_v2_reverse_prune_profile_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_reverse_prune_profile_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_TOMBSTONE): \
+	$(TEST_DIR)/vector_core_hnsw_v2_tombstone_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_tombstone_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_VECTOR_REBUILD_STATE_MACHINE): \
+	$(TEST_DIR)/vector_rebuild_state_machine_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_rebuild_state_machine_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_VECTOR_REBUILD_DELTA_CAPTURE): \
+	$(TEST_DIR)/vector_rebuild_delta_capture_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_rebuild_delta_capture_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_VECTOR_REBUILD_SHADOW_REPLAY): \
+	$(TEST_DIR)/vector_rebuild_shadow_replay_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_rebuild_shadow_replay_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_VECTOR_REBUILD_SHADOW_SWAP): \
+	$(TEST_DIR)/vector_rebuild_shadow_swap_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_rebuild_shadow_swap_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
 $(TEST_FAISS_BASELINE): $(TEST_DIR)/faiss_baseline.cpp | $(BUILD_TESTS_BIN)
 	$(CXX) $(FAISS_CXXFLAGS) -O3 -o $@ $< $(FAISS_LDFLAGS) -lpthread -lm
 
@@ -609,6 +717,19 @@ $(EBPF_SYNCD_BIN): $(BOOTSTRAP_LIBBPF) $(EBPF_SYNCD_SRCS)
 # AVX2 kernel — 必须在通用 %.o 规则之前
 src/vector/kvs_vector_distance_avx2.o: src/vector/kvs_vector_distance_avx2.c
 	$(CC) $(CFLAGS) $(AVX2_CFLAGS) -c $< -o $@
+
+$(HNSW_V2_SRCS:.c=.o): include/vector/kvs_vector_hnsw_v2.h \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_heap.h \
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_score_cache.h
+
+$(SRC_VECTOR)/kvs_vector.o \
+$(SRC_VECTOR)/kvs_vector_embedding.o \
+$(SRC_VECTOR)/kvs_vector_index.o \
+$(SRC_VECTOR)/kvs_vector_rebuild.o \
+$(SRC_VECTOR)/kvs_vector_rebuild_shadow.o: \
+	include/vector/kvs_vector_manager.h \
+	include/vector/kvs_vector_rebuild.h \
+	include/vector/kvs_vector_rebuild_shadow.h
 
 check-onnx-runtime:
 	@if [ ! -f "$(ONNXRUNTIME_HEADER)" ]; then \

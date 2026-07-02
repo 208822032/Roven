@@ -41,6 +41,7 @@ int kvs_hnsw_index_info(
 	memory_bytes += index->record_id_to_slot.capacity *
 		sizeof(kvs_vector_id_slot_entry_t);
 	memory_bytes += kvs_hnsw_graph_level0_bytes(index->capacity, index->M0);
+	memory_bytes += index->capacity * index->M0 * sizeof(float);
 	memory_bytes += index->capacity * sizeof(uint16_t);
 	memory_bytes += index->capacity * sizeof(uint16_t);
 	memory_bytes += index->capacity * sizeof(float);

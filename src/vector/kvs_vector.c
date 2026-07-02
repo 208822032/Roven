@@ -1,11 +1,16 @@
 #define KVS_VECTOR_INTERNAL
 #include "kvs_vector.h"
 #include "kvs_vector_distance.h"
+#include "vector/kvs_vector_rebuild.h"
 
 #ifdef ENABLE_FAISS_BASELINE
 #include "kvs_vector_faiss_backend.h"
 #endif
 
+#include "kvs_memory.h"
+
+#include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
 kvs_vector_state_t g_vector_state;
@@ -40,6 +45,111 @@ static void kvs_vector_stats_update_max(uint64_t *field, uint64_t value) {
 	}
 }
 
+static void kvs_vector_manager_mark_rebuild_capture_failed(
+	int error_code,
+	const char *message
+) {
+	if (!kvs_vector_rebuild_is_capture_active(&g_vector_state.rebuild)) {
+		return;
+	}
+
+	if (kvs_vector_rebuild_fail(
+		    &g_vector_state.rebuild,
+		    error_code,
+		    message
+	    ) != KVS_VECTOR_OK) {
+		g_vector_state.rebuild.state = KVS_VECTOR_REBUILD_FAILED;
+		g_vector_state.rebuild.error_code = error_code;
+		if (message && message[0]) {
+			snprintf(
+				g_vector_state.rebuild.error_message,
+				sizeof(g_vector_state.rebuild.error_message),
+				"%s",
+				message
+			);
+		} else {
+			g_vector_state.rebuild.error_message[0] = '\0';
+		}
+		g_vector_state.rebuild.cancel_requested = 0;
+	}
+}
+
+int kvs_vector_manager_capture_upsert_delta(
+	uint64_t record_id,
+	const float *embedding,
+	int embedding_dim
+) {
+	int ret;
+
+	if (!kvs_vector_rebuild_is_capture_active(&g_vector_state.rebuild)) {
+		return KVS_VECTOR_OK;
+	}
+	if (!embedding || embedding_dim <= 0) {
+		kvs_vector_manager_mark_rebuild_capture_failed(
+			KVS_VECTOR_ERR_INVALID_ARG,
+			"invalid upsert delta"
+		);
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	ret = kvs_vector_rebuild_append_upsert_delta(
+		&g_vector_state.rebuild,
+		record_id,
+		embedding,
+		(size_t)embedding_dim
+	);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_vector_manager_mark_rebuild_capture_failed(
+			ret,
+			"append upsert delta failed"
+		);
+	}
+	return ret;
+}
+
+int kvs_vector_manager_capture_delete_delta(
+	uint64_t record_id
+) {
+	int ret;
+
+	if (!kvs_vector_rebuild_is_capture_active(&g_vector_state.rebuild)) {
+		return KVS_VECTOR_OK;
+	}
+
+	ret = kvs_vector_rebuild_append_delete_delta(
+		&g_vector_state.rebuild,
+		record_id
+	);
+	if (ret != KVS_VECTOR_OK) {
+		kvs_vector_manager_mark_rebuild_capture_failed(
+			ret,
+			"append delete delta failed"
+		);
+	}
+	return ret;
+}
+
+int kvs_vector_manager_rebuild_capture_begin_for_test(void) {
+	if (!g_vector_state.initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	return kvs_vector_rebuild_begin(
+		&g_vector_state.rebuild,
+		&g_vector_state.current_index,
+		(void *)1
+	);
+}
+
+int kvs_vector_manager_rebuild_capture_stop_for_test(void) {
+	if (!g_vector_state.initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	if (kvs_vector_rebuild_is_capture_active(&g_vector_state.rebuild)) {
+		return kvs_vector_rebuild_cancel(&g_vector_state.rebuild);
+	}
+	return kvs_vector_rebuild_reset_idle(&g_vector_state.rebuild);
+}
+
 static uint64_t kvs_vector_now_us(void) {
 	struct timespec ts;
 
@@ -47,6 +157,98 @@ static uint64_t kvs_vector_now_us(void) {
 		return 0;
 	}
 	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+static int kvs_vector_cmp_u16(
+	const void *lhs,
+	const void *rhs
+) {
+	uint16_t a = *(const uint16_t *)lhs;
+	uint16_t b = *(const uint16_t *)rhs;
+
+	return (a > b) - (a < b);
+}
+
+static size_t kvs_vector_hnsw_context_pool_memory_bytes(
+	const kvs_hnsw_search_context_pool_t *pool
+) {
+	size_t per_context;
+
+	if (!pool || !pool->contexts || pool->count == 0) {
+		return 0;
+	}
+
+	per_context = sizeof(kvs_hnsw_search_context_t);
+	per_context += pool->context_capacity * sizeof(kvs_vector_heap_item_t) * 2;
+	per_context += pool->context_capacity * sizeof(uint32_t);
+	per_context += pool->context_capacity * sizeof(float);
+	per_context += pool->context_capacity * sizeof(kvs_vector_hit_t);
+
+	return pool->count * per_context;
+}
+
+static void kvs_vector_hnsw_fill_layout_audit(
+	const kvs_hnsw_index_t *hnsw,
+	kvs_vector_info_t *info
+) {
+	size_t level0_cache_bytes;
+	size_t upper_slots;
+	size_t slot_state_bytes;
+
+	if (!hnsw || !info) {
+		return;
+	}
+
+	info->core_hnsw_memory_vectors_bytes =
+		hnsw->capacity * hnsw->dim * sizeof(float);
+	info->core_hnsw_memory_level0_neighbors_bytes =
+		kvs_hnsw_graph_level0_bytes(hnsw->capacity, hnsw->M0);
+	info->core_hnsw_memory_level0_scores_bytes =
+		hnsw->capacity * hnsw->M0 * sizeof(float);
+	upper_slots = hnsw->capacity * KVS_HNSW_MAX_LEVEL;
+	info->core_hnsw_memory_upper_neighbors_bytes =
+		upper_slots * hnsw->M * sizeof(uint32_t);
+	info->core_hnsw_memory_visited_tags_bytes =
+		hnsw->capacity * sizeof(uint32_t);
+	info->core_hnsw_memory_context_bytes =
+		kvs_vector_hnsw_context_pool_memory_bytes(&hnsw->search_context_pool);
+
+	level0_cache_bytes = hnsw->capacity * sizeof(uint16_t);
+	level0_cache_bytes += hnsw->capacity * sizeof(float);
+	level0_cache_bytes += hnsw->capacity * sizeof(uint8_t);
+
+	slot_state_bytes = hnsw->capacity * sizeof(uint8_t);
+	slot_state_bytes += hnsw->capacity * sizeof(uint8_t);
+	slot_state_bytes += hnsw->capacity * sizeof(uint64_t);
+	slot_state_bytes += hnsw->record_id_to_slot.capacity *
+		sizeof(kvs_vector_id_slot_entry_t);
+	slot_state_bytes += hnsw->capacity * sizeof(uint16_t);
+	slot_state_bytes += level0_cache_bytes;
+	slot_state_bytes += hnsw->capacity * sizeof(size_t);
+	slot_state_bytes += upper_slots * sizeof(uint16_t);
+	info->core_hnsw_memory_slot_state_bytes = slot_state_bytes;
+
+	if (hnsw->level0_counts && hnsw->size > 0) {
+		uint16_t *counts;
+		uint64_t total = 0;
+		size_t i;
+
+		counts = (uint16_t *)kvs_malloc(hnsw->size * sizeof(uint16_t));
+		if (counts) {
+			for (i = 0; i < hnsw->size; i++) {
+				counts[i] = hnsw->level0_counts[i];
+				total += counts[i];
+			}
+			qsort(counts, hnsw->size, sizeof(uint16_t), kvs_vector_cmp_u16);
+			info->core_hnsw_level0_count_min = counts[0];
+			info->core_hnsw_level0_count_avg = total / (uint64_t)hnsw->size;
+			info->core_hnsw_level0_count_p50 = counts[hnsw->size / 2];
+			info->core_hnsw_level0_count_p95 =
+				counts[(hnsw->size * 95) / 100];
+			info->core_hnsw_level0_count_max = counts[hnsw->size - 1];
+			kvs_free(counts);
+		}
+	}
 }
 
 static void kvs_vector_record_timing(
@@ -1224,6 +1426,52 @@ static int kvs_vector_core_hnsw_ops_info(
 	info->add_candidate_push_count = hnsw->rebuild_profile.add_candidate_push_count;
 	info->add_level0_neighbor_scan_count = hnsw->rebuild_profile.add_level0_neighbor_scan_count;
 	info->add_upper_neighbor_scan_count = hnsw->rebuild_profile.add_upper_neighbor_scan_count;
+	info->layer_search_call_count = hnsw->rebuild_profile.layer_search_call_count;
+	info->layer_search_level0_call_count = hnsw->rebuild_profile.layer_search_level0_call_count;
+	info->layer_search_upper_call_count = hnsw->rebuild_profile.layer_search_upper_call_count;
+	info->layer_search_level0_us = hnsw->rebuild_profile.layer_search_level0_us;
+	info->layer_search_upper_us = hnsw->rebuild_profile.layer_search_upper_us;
+	info->layer_search_distance_compute_count = hnsw->rebuild_profile.layer_search_distance_compute_count;
+	info->layer_search_visited_skip_count = hnsw->rebuild_profile.layer_search_visited_skip_count;
+	info->layer_search_neighbor_visit_count = hnsw->rebuild_profile.layer_search_neighbor_visit_count;
+	info->layer_search_level0_neighbor_scan_count = hnsw->rebuild_profile.layer_search_level0_neighbor_scan_count;
+	info->layer_search_upper_neighbor_scan_count = hnsw->rebuild_profile.layer_search_upper_neighbor_scan_count;
+	info->layer_search_candidate_heap_push_count = hnsw->rebuild_profile.layer_search_candidate_heap_push_count;
+	info->layer_search_candidate_heap_pop_count = hnsw->rebuild_profile.layer_search_candidate_heap_pop_count;
+	info->layer_search_candidate_heap_replace_count = hnsw->rebuild_profile.layer_search_candidate_heap_replace_count;
+	info->layer_search_top_heap_push_count = hnsw->rebuild_profile.layer_search_top_heap_push_count;
+	info->layer_search_top_heap_replace_count = hnsw->rebuild_profile.layer_search_top_heap_replace_count;
+	info->layer_search_lower_bound_update_count = hnsw->rebuild_profile.layer_search_lower_bound_update_count;
+	info->layer_search_deleted_active_check_count = hnsw->rebuild_profile.layer_search_deleted_active_check_count;
+	info->layer_search_unique_visit_count = hnsw->rebuild_profile.layer_search_unique_visit_count;
+	info->layer_search_repeated_visit_count = hnsw->rebuild_profile.layer_search_repeated_visit_count;
+	info->layer_search_visited_tag_access_count = hnsw->rebuild_profile.layer_search_visited_tag_access_count;
+	info->layer_search_slot_state_touch_count = hnsw->rebuild_profile.layer_search_slot_state_touch_count;
+	info->layer_search_level0_unique_visit_count = hnsw->rebuild_profile.layer_search_level0_unique_visit_count;
+	info->layer_search_level0_repeated_visit_count = hnsw->rebuild_profile.layer_search_level0_repeated_visit_count;
+	info->layer_search_level0_visited_tag_access_count = hnsw->rebuild_profile.layer_search_level0_visited_tag_access_count;
+	info->layer_search_level0_slot_state_touch_count = hnsw->rebuild_profile.layer_search_level0_slot_state_touch_count;
+	info->layer_search_level0_neighbor_row_access_count = hnsw->rebuild_profile.layer_search_level0_neighbor_row_access_count;
+	info->layer_search_level0_neighbor_row_sequential_count = hnsw->rebuild_profile.layer_search_level0_neighbor_row_sequential_count;
+	info->layer_search_level0_neighbor_row_random_count = hnsw->rebuild_profile.layer_search_level0_neighbor_row_random_count;
+	info->layer_search_level0_neighbor_slot_sequential_count = hnsw->rebuild_profile.layer_search_level0_neighbor_slot_sequential_count;
+	info->layer_search_level0_neighbor_slot_random_count = hnsw->rebuild_profile.layer_search_level0_neighbor_slot_random_count;
+	info->layer_search_level0_candidate_row_expansion_count = hnsw->rebuild_profile.layer_search_level0_candidate_row_expansion_count;
+	info->layer_search_level0_distance_compute_count = hnsw->rebuild_profile.layer_search_level0_distance_compute_count;
+	info->layer_search_upper_distance_compute_count = hnsw->rebuild_profile.layer_search_upper_distance_compute_count;
+	info->layer_search_level0_deleted_active_check_count = hnsw->rebuild_profile.layer_search_level0_deleted_active_check_count;
+	info->layer_search_upper_deleted_active_check_count = hnsw->rebuild_profile.layer_search_upper_deleted_active_check_count;
+	info->layer_search_candidate_heap_skip_count = hnsw->rebuild_profile.layer_search_candidate_heap_skip_count;
+	info->layer_search_candidate_heap_full_skip_count = hnsw->rebuild_profile.layer_search_candidate_heap_full_skip_count;
+	info->layer_search_top_heap_skip_count = hnsw->rebuild_profile.layer_search_top_heap_skip_count;
+	info->layer_search_level0_candidate_heap_push_count = hnsw->rebuild_profile.layer_search_level0_candidate_heap_push_count;
+	info->layer_search_level0_candidate_heap_pop_count = hnsw->rebuild_profile.layer_search_level0_candidate_heap_pop_count;
+	info->layer_search_level0_candidate_heap_skip_count = hnsw->rebuild_profile.layer_search_level0_candidate_heap_skip_count;
+	info->layer_search_level0_top_heap_push_count = hnsw->rebuild_profile.layer_search_level0_top_heap_push_count;
+	info->layer_search_level0_top_heap_replace_count = hnsw->rebuild_profile.layer_search_level0_top_heap_replace_count;
+	info->layer_search_level0_top_heap_skip_count = hnsw->rebuild_profile.layer_search_level0_top_heap_skip_count;
+	info->layer_search_level0_lower_bound_update_count = hnsw->rebuild_profile.layer_search_level0_lower_bound_update_count;
+	kvs_vector_hnsw_fill_layout_audit(hnsw, info);
 	info->neighbor_select_call_count = hnsw->rebuild_profile.neighbor_select_call_count;
 	info->neighbor_select_level0_call_count = hnsw->rebuild_profile.neighbor_select_level0_call_count;
 	info->neighbor_select_upper_call_count = hnsw->rebuild_profile.neighbor_select_upper_call_count;
@@ -1256,6 +1504,14 @@ static int kvs_vector_core_hnsw_ops_info(
 	info->neighbor_select_upper_worst_scan_count = hnsw->rebuild_profile.neighbor_select_upper_worst_scan_count;
 	info->neighbor_select_level0_worst_cache_hit_count = hnsw->rebuild_profile.neighbor_select_level0_worst_cache_hit_count;
 	info->neighbor_select_upper_worst_cache_hit_count = hnsw->rebuild_profile.neighbor_select_upper_worst_cache_hit_count;
+	info->bidirectional_selected_neighbor_count = hnsw->rebuild_profile.bidirectional_selected_neighbor_count;
+	info->bidirectional_forward_edge_attempt_count = hnsw->rebuild_profile.bidirectional_forward_edge_attempt_count;
+	info->bidirectional_forward_edge_added_count = hnsw->rebuild_profile.bidirectional_forward_edge_added_count;
+	info->bidirectional_reverse_edge_attempt_count = hnsw->rebuild_profile.bidirectional_reverse_edge_attempt_count;
+	info->bidirectional_reverse_edge_accepted_count = hnsw->rebuild_profile.bidirectional_reverse_edge_accepted_count;
+	info->bidirectional_reverse_edge_rejected_count = hnsw->rebuild_profile.bidirectional_reverse_edge_rejected_count;
+	info->bidirectional_forward_edge_skipped_due_to_reverse_reject_count =
+		hnsw->rebuild_profile.bidirectional_forward_edge_skipped_due_to_reverse_reject_count;
 	return KVS_VECTOR_OK;
 }
 
@@ -1996,6 +2252,11 @@ int kvs_vector_init(void) {
 		goto fail;
 	}
 
+	ret = kvs_vector_rebuild_context_init(&g_vector_state.rebuild);
+	if (ret != KVS_VECTOR_OK) {
+		goto fail;
+	}
+
 	ret = kvs_vector_embedding_provider_init(&g_vector_state.embedding_provider);
 	if (ret != KVS_VECTOR_OK) {
 		goto fail;
@@ -2220,6 +2481,7 @@ fail:
 	}
 #endif
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
+	kvs_vector_rebuild_context_destroy(&g_vector_state.rebuild);
 	kvs_vector_store_destroy(&g_vector_state.store);
 	memset(&g_vector_state, 0, sizeof(g_vector_state));
 
@@ -2250,6 +2512,7 @@ void kvs_vector_destroy(void) {
 	}
 #endif
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
+	kvs_vector_rebuild_context_destroy(&g_vector_state.rebuild);
 	kvs_vector_store_destroy(&g_vector_state.store);
 
 	memset(&g_vector_state, 0, sizeof(g_vector_state));
@@ -2281,6 +2544,10 @@ int kvs_vector_reset_for_load(void) {
 	if (ret != KVS_VECTOR_OK) return ret;
 
 	ret = kvs_vector_id_map_reserve(&g_vector_state.id_map, KVS_VECTOR_INITIAL_ID_MAP_CAPACITY);
+	if (ret != KVS_VECTOR_OK) return ret;
+
+	kvs_vector_rebuild_context_destroy(&g_vector_state.rebuild);
+	ret = kvs_vector_rebuild_context_init(&g_vector_state.rebuild);
 	if (ret != KVS_VECTOR_OK) return ret;
 
 	ret = kvs_vector_flat_index_init(&g_vector_state.flat_index, dimension);
@@ -2990,6 +3257,12 @@ int kvs_vector_set(const char* question, size_t question_len,
 				scope_len,
 				ret
 			);
+		} else {
+			(void)kvs_vector_manager_capture_upsert_delta(
+				record->id,
+				record->embedding,
+				record->embedding_dim
+			);
 		}
 		return ret;
 	}
@@ -3154,6 +3427,12 @@ int kvs_vector_set(const char* question, size_t question_len,
 
 	g_vector_state.generation++;
 
+	(void)kvs_vector_manager_capture_upsert_delta(
+		free_slot->id,
+		free_slot->embedding,
+		free_slot->embedding_dim
+	);
+
 	/*
 	 * CLEANUP_CANDIDATE:
 	 * Too noisy during batch import. Re-enable only for single-record debugging.
@@ -3256,6 +3535,13 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 			&g_vset_commit_stats.vset_commit_max_us,
 			end_us >= commit_start_us ? end_us - commit_start_us : 0
 		);
+		if (ret == KVS_VECTOR_OK) {
+			(void)kvs_vector_manager_capture_upsert_delta(
+				record->id,
+				record->embedding,
+				record->embedding_dim
+			);
+		}
 		return ret;
 	}
 
@@ -3496,6 +3782,12 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 	);
 
 	g_vector_state.generation++;
+
+	(void)kvs_vector_manager_capture_upsert_delta(
+		free_slot->id,
+		free_slot->embedding,
+		free_slot->embedding_dim
+	);
 
 	return KVS_VECTOR_OK;
 }
@@ -3867,6 +4159,8 @@ int kvs_vector_del(
 	g_vector_state.sq8_flat_index.needs_rebuild = 1;
 
 	g_vector_state.generation++;
+
+	(void)kvs_vector_manager_capture_delete_delta(record_id);
 
 	return KVS_VECTOR_OK;
 }

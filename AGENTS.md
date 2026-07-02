@@ -762,3 +762,71 @@ For any future Codex/agent prompt:
 5. If roadmap, audit report, and latest stage report conflict, stop and report the conflict instead of planning a new route.
 6. Each prompt must contain only the current stage delta: goal, allowed files, forbidden changes, required commands, acceptance checks, and report requirements.
 7. Stable constraints must live in `AGENTS.md`, not be repeated in every prompt.
+## Vector core / HNSW v2 stage discipline
+
+KVLite vector module follows a strict KVmanager / Vector_core boundary.
+
+KVmanager owns:
+
+* VSET / VSEARCH / VDEL / VINDEX / VINFO semantics
+* record store, key/scope, TTL, metadata, question, answer
+* AOF / RDB / replication
+* rebuild orchestration
+* threshold / scope / TTL / active/deleted filtering
+* response assembly
+
+Vector_core owns only:
+
+* record_id
+* vector
+* score
+* index-local graph/search state
+
+Vector_core must not access:
+
+* g_vector_state
+* manager-owned record_id_map
+* scope / TTL / metadata / question / answer
+* response assembly
+* RDB/AOF serialization formats
+
+Record store is the source of truth. HNSW graph is derived runtime state and must be rebuildable from active records. RDB/AOF save records, not HNSW graph.
+
+core_flat is exact recall baseline / correctness oracle, not a FAISS IndexFlat performance target.
+
+current core_hnsw is legacy / regression reference / fallback. Do not perform broad in-place refactors or Stage 7-style local optimization on current core_hnsw unless a prompt explicitly asks for a narrow audit.
+
+core_hnsw_v2 is the new self-contained ANN candidate. It must remain independent until explicitly integrated.
+
+Before product integration:
+
+* v2 must pass index-only graph construction tests.
+* v2 must pass index-only search recall gates.
+* v2 must complete performance profiling and targeted optimization.
+* v2 must not become the default backend before product hardening.
+
+Do not change unless explicitly requested:
+
+* RDB/AOF format
+* kvs_vector_index_ops_t signature
+* VSEARCH response format
+* manager/core ownership boundary
+* current core_hnsw behavior
+* core_flat behavior
+* FAISS/hnswlib adapters
+
+FAISS / hnswlib are baseline only. They are used for recall, latency, memory, and parameter semantics comparison, not as replacement architecture.
+
+For HNSW v2 performance stages:
+
+* Do not use lower recall to claim speed improvement.
+* Do not optimize SIMD before build/search attribution.
+* Do not integrate VINDEX/VSEARCH before index-only performance is acceptable.
+* Prefer FAISS/USearch-style proven HNSW paths:
+
+  1. HNSW-style add-time layer search instead of full candidate construction.
+  2. Bounded candidate/top heaps instead of O(ef) array scans.
+  3. Metric-specialized distance backend after algorithmic bottlenecks are addressed.
+  4. Compact graph/layout work only after recall and primary performance bottlenecks are understood.
+* Each stage should optimize or audit one bottleneck class only.
+* Every optimization stage must rerun v2 skeleton, graph construction, search recall, current core_hnsw regression tests, static boundary grep, and git diff --check.

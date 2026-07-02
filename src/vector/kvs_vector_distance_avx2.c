@@ -14,6 +14,17 @@
 
 #if defined(__AVX2__) && (defined(__x86_64__) || defined(__i386__))
 
+static float kvs_vector_distance_hsum256_ps(__m256 v)
+{
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 sum = _mm_add_ps(lo, hi);
+
+    sum = _mm_hadd_ps(sum, sum);
+    sum = _mm_hadd_ps(sum, sum);
+    return _mm_cvtss_f32(sum);
+}
+
 /* ------------------------------------------------------------------ */
 /*  AVX2 dot product                                                   */
 /* ------------------------------------------------------------------ */
@@ -23,7 +34,8 @@ float kvs_vector_distance_dot_avx2(
     size_t dim
 ) {
     size_t i = 0;
-    float sum = 0.0f;
+    __m256 sum_v = _mm256_setzero_ps();
+    float sum;
 
     if (!lhs || !rhs || dim == 0) {
         return 0.0f;
@@ -33,19 +45,11 @@ float kvs_vector_distance_dot_avx2(
         __m256 a = _mm256_loadu_ps(lhs + i);
         __m256 b = _mm256_loadu_ps(rhs + i);
         __m256 prod = _mm256_mul_ps(a, b);
-        float tmp[8];
 
-        _mm256_storeu_ps(tmp, prod);
-        sum += tmp[0];
-        sum += tmp[1];
-        sum += tmp[2];
-        sum += tmp[3];
-        sum += tmp[4];
-        sum += tmp[5];
-        sum += tmp[6];
-        sum += tmp[7];
+        sum_v = _mm256_add_ps(sum_v, prod);
     }
 
+    sum = kvs_vector_distance_hsum256_ps(sum_v);
     for (; i < dim; ++i) {
         sum += lhs[i] * rhs[i];
     }
@@ -62,7 +66,8 @@ float kvs_vector_distance_squared_l2_avx2(
     size_t dim
 ) {
     size_t i = 0;
-    float dist = 0.0f;
+    __m256 dist_v = _mm256_setzero_ps();
+    float dist;
 
     if (!lhs || !rhs || dim == 0) {
         return 0.0f;
@@ -73,19 +78,11 @@ float kvs_vector_distance_squared_l2_avx2(
         __m256 b   = _mm256_loadu_ps(rhs + i);
         __m256 diff = _mm256_sub_ps(a, b);
         __m256 sq = _mm256_mul_ps(diff, diff);
-        float tmp[8];
 
-        _mm256_storeu_ps(tmp, sq);
-        dist += tmp[0];
-        dist += tmp[1];
-        dist += tmp[2];
-        dist += tmp[3];
-        dist += tmp[4];
-        dist += tmp[5];
-        dist += tmp[6];
-        dist += tmp[7];
+        dist_v = _mm256_add_ps(dist_v, sq);
     }
 
+    dist = kvs_vector_distance_hsum256_ps(dist_v);
     for (; i < dim; ++i) {
         float d = lhs[i] - rhs[i];
         dist += d * d;
@@ -103,9 +100,12 @@ float kvs_vector_distance_cosine_avx2(
     size_t dim
 ) {
     size_t i = 0;
-    float dot      = 0.0f;
-    float lhs_norm = 0.0f;
-    float rhs_norm = 0.0f;
+    __m256 dot_v = _mm256_setzero_ps();
+    __m256 lhs_norm_v = _mm256_setzero_ps();
+    __m256 rhs_norm_v = _mm256_setzero_ps();
+    float dot;
+    float lhs_norm;
+    float rhs_norm;
 
     if (!lhs || !rhs || dim == 0) {
         return 0.0f;
@@ -114,41 +114,18 @@ float kvs_vector_distance_cosine_avx2(
     for (; i + 8 <= dim; i += 8) {
         __m256 a = _mm256_loadu_ps(lhs + i);
         __m256 b = _mm256_loadu_ps(rhs + i);
-        __m256 dot_v = _mm256_mul_ps(a, b);
-        __m256 lhs_v = _mm256_mul_ps(a, a);
-        __m256 rhs_v = _mm256_mul_ps(b, b);
-        float tmp_dot[8], tmp_l2[8], tmp_r2[8];
+        __m256 prod = _mm256_mul_ps(a, b);
+        __m256 lhs_sq = _mm256_mul_ps(a, a);
+        __m256 rhs_sq = _mm256_mul_ps(b, b);
 
-        _mm256_storeu_ps(tmp_dot, dot_v);
-        _mm256_storeu_ps(tmp_l2, lhs_v);
-        _mm256_storeu_ps(tmp_r2, rhs_v);
-
-        dot      += tmp_dot[0];
-        lhs_norm += tmp_l2[0];
-        rhs_norm += tmp_r2[0];
-        dot      += tmp_dot[1];
-        lhs_norm += tmp_l2[1];
-        rhs_norm += tmp_r2[1];
-        dot      += tmp_dot[2];
-        lhs_norm += tmp_l2[2];
-        rhs_norm += tmp_r2[2];
-        dot      += tmp_dot[3];
-        lhs_norm += tmp_l2[3];
-        rhs_norm += tmp_r2[3];
-        dot      += tmp_dot[4];
-        lhs_norm += tmp_l2[4];
-        rhs_norm += tmp_r2[4];
-        dot      += tmp_dot[5];
-        lhs_norm += tmp_l2[5];
-        rhs_norm += tmp_r2[5];
-        dot      += tmp_dot[6];
-        lhs_norm += tmp_l2[6];
-        rhs_norm += tmp_r2[6];
-        dot      += tmp_dot[7];
-        lhs_norm += tmp_l2[7];
-        rhs_norm += tmp_r2[7];
+        dot_v = _mm256_add_ps(dot_v, prod);
+        lhs_norm_v = _mm256_add_ps(lhs_norm_v, lhs_sq);
+        rhs_norm_v = _mm256_add_ps(rhs_norm_v, rhs_sq);
     }
 
+    dot = kvs_vector_distance_hsum256_ps(dot_v);
+    lhs_norm = kvs_vector_distance_hsum256_ps(lhs_norm_v);
+    rhs_norm = kvs_vector_distance_hsum256_ps(rhs_norm_v);
     for (; i < dim; ++i) {
         dot      += lhs[i] * rhs[i];
         lhs_norm += lhs[i] * lhs[i];

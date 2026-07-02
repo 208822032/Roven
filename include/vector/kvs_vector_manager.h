@@ -11,6 +11,7 @@
 #include "vector/kvs_vector_core.h"
 #include "vector/kvs_vector_flat.h"
 #include "vector/kvs_vector_hnsw.h"
+#include "vector/kvs_vector_rebuild.h"
 
 /*
  * 向量管理层内部状态。
@@ -122,6 +123,9 @@ typedef struct kvs_vector_state_s {
 
 	/* 当前embedding provider状态。 */
 	kvs_vector_embedding_provider_t embedding_provider;
+
+	/* Manager-owned background rebuild control-plane skeleton. */
+	kvs_vector_rebuild_context_t rebuild;
 } kvs_vector_state_t;
 
 /* 向量模块全局状态实例，由vector manager实现文件定义。 */
@@ -290,6 +294,19 @@ int kvs_vector_manager_for_each_active_embedding(
 	kvs_vector_manager_active_embedding_iter_fn fn,
 	void *arg
 );
+
+int kvs_vector_manager_capture_upsert_delta(
+	uint64_t record_id,
+	const float *embedding,
+	int embedding_dim
+);
+
+int kvs_vector_manager_capture_delete_delta(
+	uint64_t record_id
+);
+
+int kvs_vector_manager_rebuild_capture_begin_for_test(void);
+int kvs_vector_manager_rebuild_capture_stop_for_test(void);
 
 /********** manager控制接口 **********/
 

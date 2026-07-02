@@ -85,6 +85,57 @@ typedef struct kvs_hnsw_rebuild_profile_s {
 	uint64_t add_level0_neighbor_scan_count;
 	uint64_t add_upper_neighbor_scan_count;
 
+	/* Stage 7F: layer_search attribution counters. */
+	uint64_t layer_search_call_count;
+	uint64_t layer_search_level0_call_count;
+	uint64_t layer_search_upper_call_count;
+	uint64_t layer_search_level0_us;
+	uint64_t layer_search_upper_us;
+	uint64_t layer_search_distance_compute_count;
+	uint64_t layer_search_visited_skip_count;
+	uint64_t layer_search_neighbor_visit_count;
+	uint64_t layer_search_level0_neighbor_scan_count;
+	uint64_t layer_search_upper_neighbor_scan_count;
+	uint64_t layer_search_candidate_heap_push_count;
+	uint64_t layer_search_candidate_heap_pop_count;
+	uint64_t layer_search_candidate_heap_replace_count;
+	uint64_t layer_search_top_heap_push_count;
+	uint64_t layer_search_top_heap_replace_count;
+	uint64_t layer_search_lower_bound_update_count;
+	uint64_t layer_search_deleted_active_check_count;
+
+	/* Stage 7H: level0 neighbor access / visited_tags layout audit. */
+	uint64_t layer_search_unique_visit_count;
+	uint64_t layer_search_repeated_visit_count;
+	uint64_t layer_search_visited_tag_access_count;
+	uint64_t layer_search_slot_state_touch_count;
+	uint64_t layer_search_level0_unique_visit_count;
+	uint64_t layer_search_level0_repeated_visit_count;
+	uint64_t layer_search_level0_visited_tag_access_count;
+	uint64_t layer_search_level0_slot_state_touch_count;
+	uint64_t layer_search_level0_neighbor_row_access_count;
+	uint64_t layer_search_level0_neighbor_row_sequential_count;
+	uint64_t layer_search_level0_neighbor_row_random_count;
+	uint64_t layer_search_level0_neighbor_slot_sequential_count;
+	uint64_t layer_search_level0_neighbor_slot_random_count;
+
+	/* Stage 7L: post-layout remaining layer_search hotspot audit. */
+	uint64_t layer_search_level0_candidate_row_expansion_count;
+	uint64_t layer_search_level0_distance_compute_count;
+	uint64_t layer_search_upper_distance_compute_count;
+	uint64_t layer_search_level0_deleted_active_check_count;
+	uint64_t layer_search_upper_deleted_active_check_count;
+	uint64_t layer_search_candidate_heap_skip_count;
+	uint64_t layer_search_candidate_heap_full_skip_count;
+	uint64_t layer_search_top_heap_skip_count;
+	uint64_t layer_search_level0_candidate_heap_push_count;
+	uint64_t layer_search_level0_candidate_heap_pop_count;
+	uint64_t layer_search_level0_candidate_heap_skip_count;
+	uint64_t layer_search_level0_top_heap_push_count;
+	uint64_t layer_search_level0_top_heap_replace_count;
+	uint64_t layer_search_level0_top_heap_skip_count;
+	uint64_t layer_search_level0_lower_bound_update_count;
+
 	/* Stage 7D: neighbor_select attribution counters. */
 	uint64_t neighbor_select_call_count;
 	uint64_t neighbor_select_level0_call_count;
@@ -118,6 +169,15 @@ typedef struct kvs_hnsw_rebuild_profile_s {
 	uint64_t neighbor_select_upper_worst_scan_count;
 	uint64_t neighbor_select_level0_worst_cache_hit_count;
 	uint64_t neighbor_select_upper_worst_cache_hit_count;
+
+	/* Stage 9A1: bidirectional link acceptance audit counters. */
+	uint64_t bidirectional_selected_neighbor_count;
+	uint64_t bidirectional_forward_edge_attempt_count;
+	uint64_t bidirectional_forward_edge_added_count;
+	uint64_t bidirectional_reverse_edge_attempt_count;
+	uint64_t bidirectional_reverse_edge_accepted_count;
+	uint64_t bidirectional_reverse_edge_rejected_count;
+	uint64_t bidirectional_forward_edge_skipped_due_to_reverse_reject_count;
 } kvs_hnsw_rebuild_profile_t;
 
 typedef struct kvs_hnsw_index_s {
@@ -139,6 +199,7 @@ typedef struct kvs_hnsw_index_s {
 	kvs_vector_id_slot_map_t record_id_to_slot;
 
 	uint32_t *level0_neighbors;
+	float *level0_neighbor_scores;
 	uint16_t *level0_counts;
 	uint16_t *level0_worst_pos;
 	float *level0_worst_score;
