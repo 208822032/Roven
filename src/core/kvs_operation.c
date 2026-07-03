@@ -1739,12 +1739,15 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
 
 	    {
-		        int array_count = 88;  /* base + backend stats + worker pool + backend + VSEARCH profile stats */
+		        int array_count = 95;  /* base + v2 flag/rebuild status + backend stats + worker pool + backend + VSEARCH profile stats */
 	        if (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
 	            array_count += 7;
 	        }
 	        if (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW) {
 		            array_count += 128;  /* core_hnsw stats + HNSW profile + Stage 7A/7D/7F/7H/7L/9A1 counters */
+	        }
+	        if (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2) {
+	            array_count += 11;
 	        }
 	        off += resp_generate_array_start(response + off, array_count);
 	    }
@@ -1802,7 +1805,8 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
           (info->index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
            (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" :
             (info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" :
-             (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw" : "flat")))))));
+             (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw" :
+              (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2 ? "core_hnsw_v2" : "flat"))))))));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
@@ -1851,6 +1855,13 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
 
     n = snprintf(item, sizeof(item), "core_flat_memory_bytes:%zu",
         info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? info->backend_memory_bytes : 0);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "core_hnsw_v2_experimental_enabled:%d",
+        info->core_hnsw_v2_experimental_enabled);
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
@@ -2419,6 +2430,37 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
 #undef KVS_APPEND_U64_INFO_FIELD
 	    }
 
+    if (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2) {
+#define KVS_APPEND_V2_SIZE_FIELD(field) \
+        do { \
+            n = snprintf(item, sizeof(item), #field ":%zu", info->field); \
+            if (n < 0 || n >= (int)sizeof(item)) { \
+                return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1); \
+            } \
+            off += resp_generate_bulk_string_n(response + off, item, (size_t)n); \
+        } while (0)
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_size);
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_capacity);
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_m);
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_m0);
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_ef_construction);
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_ef_search);
+        n = snprintf(item, sizeof(item), "core_hnsw_v2_max_level:%d", info->core_hnsw_v2_max_level);
+        if (n < 0 || n >= (int)sizeof(item)) {
+            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+        }
+        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_deleted_count);
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_active_count);
+        KVS_APPEND_V2_SIZE_FIELD(core_hnsw_v2_memory_bytes);
+        n = snprintf(item, sizeof(item), "core_hnsw_v2_ready:%d", info->core_hnsw_v2_ready);
+        if (n < 0 || n >= (int)sizeof(item)) {
+            return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+        }
+        off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+#undef KVS_APPEND_V2_SIZE_FIELD
+    }
+
     n = snprintf(item, sizeof(item), "ann_size:%zu", info->ann_size);
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
@@ -2555,6 +2597,44 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
+    n = snprintf(item, sizeof(item), "rebuild_state:%s",
+        info->rebuild_state ? info->rebuild_state : "unknown");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "rebuild_delta_count:%zu", info->rebuild_delta_count);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "rebuild_error_code:%d", info->rebuild_error_code);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "rebuild_error_message:%.90s",
+        info->rebuild_error_message ? info->rebuild_error_message : "");
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "rebuild_shadow_present:%d", info->rebuild_shadow_present);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "rebuild_retired_present:%d", info->rebuild_retired_present);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
     n = snprintf(item, sizeof(item), "vector_memory_bytes:%zu", info->vector_memory_bytes);
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
@@ -2638,9 +2718,10 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
         info->index_type == KVS_VECTOR_INDEX_FAISS_HNSW ? "faiss_hnsw" :
         (info->index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
          (info->index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
-          (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "native_sq8_flat" :
+         (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "native_sq8_flat" :
            (info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" :
-            (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw" : "native_flat"))))));
+            (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw" :
+             (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2 ? "core_hnsw_v2" : "native_flat")))))));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }

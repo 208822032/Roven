@@ -10,8 +10,9 @@
 #    all             默认，构建全部 (含 eBPF，按 ENABLE_EBPF 控制)
 #    kvstore         仅构建主服务二进制
 #    ebpf            仅构建 eBPF 内核对象 + 用户态守护进程
-#    tests           仅构建测试二进制
+#    tests           仅构建默认测试二进制（correctness / product gates）
 #    test            构建默认测试二进制
+#    optional-profile-tests  构建显式 profiling / attribution 二进制
 #    test-embedding  运行 ONNX embedding 语义召回检查（需服务已启动）
 #    setup           初始化：vendored 依赖检查 + bootstrap
 #    embedding       构建 ONNX embedding 版本
@@ -259,7 +260,6 @@ TEST_SKIPTABLE_TARGETED := $(BUILD_TESTS_BIN)/skiptable_targeted_bench
 TEST_VECTOR_IMPORT_BENCH := $(BUILD_TESTS_BIN)/vector_import_bench
 TEST_VECTOR_BENCHMARK   := $(BUILD_TESTS_BIN)/vector_benchmark
 TEST_BINARY_KEY         := $(BUILD_TESTS_BIN)/test_binary_key
-TEST_VCMD_PROFILE_BENCH := $(BUILD_TESTS_BIN)/vcmd_profile_bench
 TEST_HNSW_V2_SKELETON := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_skeleton_test
 TEST_HNSW_V2_GRAPH := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_graph_construction_test
 TEST_HNSW_V2_SEARCH := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_search_recall_test
@@ -267,6 +267,10 @@ TEST_HNSW_V2_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_performance_profi
 TEST_HNSW_V2_DISTANCE_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_distance_profile_test
 TEST_HNSW_V2_REVERSE_PRUNE_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_reverse_prune_profile_test
 TEST_HNSW_V2_TOMBSTONE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_tombstone_test
+TEST_HNSW_V2_PRODUCT_INTEGRATION := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_product_integration_test
+TEST_HNSW_V2_DEFAULT_BACKEND := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_default_backend_test
+TEST_HNSW_V2_SCALE_STABILITY := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_scale_stability_test
+TEST_HNSW_V2_TOMBSTONE_POLICY := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_tombstone_policy_test
 TEST_VECTOR_REBUILD_STATE_MACHINE := $(BUILD_TESTS_BIN)/vector_rebuild_state_machine_test
 TEST_VECTOR_REBUILD_DELTA_CAPTURE := $(BUILD_TESTS_BIN)/vector_rebuild_delta_capture_test
 TEST_VECTOR_REBUILD_SHADOW_REPLAY := $(BUILD_TESTS_BIN)/vector_rebuild_shadow_replay_test
@@ -282,13 +286,18 @@ TEST_BINARIES = \
 	$(TEST_BIGVALUE) $(TEST_AI_CHAT_SCHEMA) $(TEST_VECTOR) \
 	$(TEST_VECTOR_IMPORT_BENCH) $(TEST_VECTOR_BENCHMARK) \
 	$(TEST_TTL_LOOKUP_SPLIT) $(TEST_SKIPTABLE_TARGETED) \
-	$(TEST_BINARY_KEY) $(TEST_VCMD_PROFILE_BENCH) \
+	$(TEST_BINARY_KEY) \
 	$(TEST_HNSW_V2_SKELETON) $(TEST_HNSW_V2_GRAPH) \
-	$(TEST_HNSW_V2_SEARCH) $(TEST_HNSW_V2_PROFILE) \
-	$(TEST_HNSW_V2_DISTANCE_PROFILE) $(TEST_HNSW_V2_REVERSE_PRUNE_PROFILE) \
-	$(TEST_HNSW_V2_TOMBSTONE) \
+	$(TEST_HNSW_V2_SEARCH) $(TEST_HNSW_V2_TOMBSTONE) \
+	$(TEST_HNSW_V2_PRODUCT_INTEGRATION) $(TEST_HNSW_V2_DEFAULT_BACKEND) \
+	$(TEST_HNSW_V2_SCALE_STABILITY) $(TEST_HNSW_V2_TOMBSTONE_POLICY) \
 	$(TEST_VECTOR_REBUILD_STATE_MACHINE) $(TEST_VECTOR_REBUILD_DELTA_CAPTURE) \
 	$(TEST_VECTOR_REBUILD_SHADOW_REPLAY) $(TEST_VECTOR_REBUILD_SHADOW_SWAP)
+
+TEST_OPTIONAL_PROFILE_BINARIES = \
+	$(TEST_HNSW_V2_PROFILE) \
+	$(TEST_HNSW_V2_DISTANCE_PROFILE) \
+	$(TEST_HNSW_V2_REVERSE_PRUNE_PROFILE)
 
 ifeq ($(ENABLE_FAISS),1)
 TEST_BINARIES += $(TEST_FAISS_BASELINE) $(TEST_VCMD_ONNX_FAISS_BENCH) $(TEST_VCMD_EMBEDDING_CACHE_BENCH)
@@ -306,9 +315,10 @@ TARGET := kvstore
 	@echo '  (忽略隐式链接规则 $@)'
 
 .PHONY: all setup deps bootstrap doctor clean distclean
-.PHONY: main ebpf tests test check test-embedding help
+.PHONY: main ebpf tests test optional-profile-tests check test-embedding help
 .PHONY: embedding setup-embedding setup-onnx check-embedding-assets
-.PHONY: vcmd_profile_bench faiss_baseline vcmd_onnx_faiss_bench vcmd_embedding_cache_bench
+.PHONY: hnsw_v2_performance_profile hnsw_v2_distance_profile hnsw_v2_reverse_prune_profile
+.PHONY: faiss_baseline vcmd_onnx_faiss_bench vcmd_embedding_cache_bench
 
 # 默认：完整构建
 all: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_TARGETS)
@@ -327,8 +337,15 @@ main: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET)
 # 仅测试
 tests: $(NTYCO_LIB) $(TEST_BINARIES)
 
-# 快捷目标：分析用 benchmark
-vcmd_profile_bench: $(TEST_VCMD_PROFILE_BENCH)
+# Optional profiling / attribution binaries are intentionally kept out of the
+# default test build. Build them explicitly when investigating v2 performance.
+optional-profile-tests: $(NTYCO_LIB) $(TEST_OPTIONAL_PROFILE_BINARIES)
+
+hnsw_v2_performance_profile: $(TEST_HNSW_V2_PROFILE)
+
+hnsw_v2_distance_profile: $(TEST_HNSW_V2_DISTANCE_PROFILE)
+
+hnsw_v2_reverse_prune_profile: $(TEST_HNSW_V2_REVERSE_PRUNE_PROFILE)
 
 faiss_baseline: $(TEST_FAISS_BASELINE)
 
@@ -375,8 +392,9 @@ help:
 	@echo "构建目标:"
 	@echo "  all         完整构建 (默认)"
 	@echo "  main        仅构建主服务 kvstore"
-	@echo "  tests       仅构建测试二进制"
+	@echo "  tests       构建默认测试二进制（correctness / product gates）"
 	@echo "  test        构建默认测试二进制"
+	@echo "  optional-profile-tests  构建显式 profiling / attribution 二进制"
 	@echo "  check       构建全部并运行离线单元测试"
 	@echo "  test-embedding  运行 ONNX embedding 语义召回检查（需服务已启动）"
 	@echo "  ebpf        仅构建 eBPF 对象"
@@ -565,9 +583,6 @@ $(TEST_AI_CHAT_SCHEMA): $(TEST_DIR)/ai_chat_schema_test.c $(LIBKVSTORE) $(NTYCO_
 $(TEST_BINARY_KEY): $(TEST_DIR)/test_binary_key.c | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ $<
 
-$(TEST_VCMD_PROFILE_BENCH): $(TEST_DIR)/vcmd_profile_bench.c $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
-	$(CC) $(CFLAGS) -o $@ $< $(KVSTORE_TEST_LDFLAGS) -ldl
-
 $(TEST_HNSW_V2_SKELETON): \
 	$(TEST_DIR)/vector_core_hnsw_v2_skeleton_test.c \
 	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
@@ -615,6 +630,34 @@ $(TEST_HNSW_V2_TOMBSTONE): \
 	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
 	$(CC) $(CFLAGS) -o $@ \
 		$(TEST_DIR)/vector_core_hnsw_v2_tombstone_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_PRODUCT_INTEGRATION): \
+	$(TEST_DIR)/vector_core_hnsw_v2_product_integration_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_product_integration_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_DEFAULT_BACKEND): \
+	$(TEST_DIR)/vector_core_hnsw_v2_default_backend_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_default_backend_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_SCALE_STABILITY): \
+	$(TEST_DIR)/vector_core_hnsw_v2_scale_stability_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_scale_stability_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_TOMBSTONE_POLICY): \
+	$(TEST_DIR)/vector_core_hnsw_v2_tombstone_policy_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_tombstone_policy_test.c \
 		$(KVSTORE_TEST_LDFLAGS)
 
 $(TEST_VECTOR_REBUILD_STATE_MACHINE): \
@@ -798,5 +841,5 @@ distclean: clean
 FORCE:
 
 .PHONY: all setup deps bootstrap doctor clean distclean help \
-        main tests test test-embedding ebpf embedding setup-embedding setup-onnx \
+        main tests test optional-profile-tests test-embedding ebpf embedding setup-embedding setup-onnx \
         check-embedding-assets _init_submodules FORCE

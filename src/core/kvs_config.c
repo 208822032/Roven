@@ -82,8 +82,9 @@ void kvs_config_init_default(kvs_config_t *cfg) {
     cfg->embedding_cache_ttl_ms = 3600000;
     snprintf(cfg->embedding_cache_policy, sizeof(cfg->embedding_cache_policy), "%s", "lru");
 
-    // 语义缓存主路径固定为 L2-normalized embedding + HNSW + inner product。
-    snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "hnsw");
+    // 语义缓存主路径固定为 L2-normalized embedding + core_hnsw_v2 + inner product。
+    snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", "core_hnsw_v2");
+    cfg->vector_hnsw_v2_experimental_enabled = 0;
     snprintf(cfg->vector_metric, sizeof(cfg->vector_metric), "%s", "ip");
     cfg->vector_hnsw_m = 32;
     cfg->vector_hnsw_ef_construction = 128;
@@ -362,10 +363,16 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
                 strcasecmp(val, "sq8_flat") == 0 ||
                 strcasecmp(val, "core_flat") == 0 ||
                 strcasecmp(val, "core_hnsw") == 0 ||
+                strcasecmp(val, "core_hnsw_v2") == 0 ||
                 strcasecmp(val, "faiss_hnsw") == 0 ||
                 strcasecmp(val, "faiss_flat") == 0) {
                 snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", val);
             }
+        } else if (strcasecmp(key, "vector_hnsw_v2_experimental_enabled") == 0) {
+            cfg->vector_hnsw_v2_experimental_enabled = parse_bool(
+                val,
+                cfg->vector_hnsw_v2_experimental_enabled
+            );
         } else if (strcasecmp(key, "vector_metric") == 0) {
             if (strcasecmp(val, "ip") == 0 ||
                 strcasecmp(val, "l2") == 0 ||
@@ -687,10 +694,18 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
                     strcasecmp(v, "sq8_flat") == 0 ||
                     strcasecmp(v, "core_flat") == 0 ||
                     strcasecmp(v, "core_hnsw") == 0 ||
+                    strcasecmp(v, "core_hnsw_v2") == 0 ||
                     strcasecmp(v, "faiss_hnsw") == 0 ||
                     strcasecmp(v, "faiss_flat") == 0) {
                     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", v);
                 }
+            }
+        } else if (strcmp(argv[i], "--vector_hnsw_v2_experimental_enabled") == 0) {
+            if (i + 1 < argc) {
+                cfg->vector_hnsw_v2_experimental_enabled = parse_bool(
+                    argv[++i],
+                    cfg->vector_hnsw_v2_experimental_enabled
+                );
             }
         } else if (strcmp(argv[i], "--vector_hnsw_m") == 0) {
             if (i + 1 < argc) {

@@ -39,6 +39,7 @@ typedef enum kvs_vector_index_type_e {
 	KVS_VECTOR_INDEX_HNSWLIB_HNSW = 6,
 	KVS_VECTOR_INDEX_CORE_FLAT = 7,
 	KVS_VECTOR_INDEX_CORE_HNSW = 8,
+	KVS_VECTOR_INDEX_CORE_HNSW_V2 = 9,
 } kvs_vector_index_type_t;
 
 /*
@@ -125,7 +126,7 @@ typedef struct kvs_vector_info_s {
 	/* core_flat fields */
 	size_t core_flat_deleted_count;
 
-	/* core_hnsw fields */
+	/* legacy core_hnsw fields */
 	size_t core_hnsw_size;
 	size_t core_hnsw_capacity;
 	size_t core_hnsw_m;
@@ -134,6 +135,29 @@ typedef struct kvs_vector_info_s {
 	size_t core_hnsw_ef_search;
 	int core_hnsw_max_level;
 	size_t core_hnsw_deleted_count;
+
+	/* core_hnsw_v2 fields */
+	/* Historical compatibility / telemetry only; no longer gates v2 selection. */
+	int core_hnsw_v2_experimental_enabled;
+	size_t core_hnsw_v2_size;
+	size_t core_hnsw_v2_capacity;
+	size_t core_hnsw_v2_m;
+	size_t core_hnsw_v2_m0;
+	size_t core_hnsw_v2_ef_construction;
+	size_t core_hnsw_v2_ef_search;
+	int core_hnsw_v2_max_level;
+	size_t core_hnsw_v2_deleted_count;
+	size_t core_hnsw_v2_active_count;
+	size_t core_hnsw_v2_memory_bytes;
+	int core_hnsw_v2_ready;
+
+	/* manager-owned rebuild status */
+	const char *rebuild_state;
+	size_t rebuild_delta_count;
+	int rebuild_error_code;
+	const char *rebuild_error_message;
+	int rebuild_shadow_present;
+	int rebuild_retired_present;
 
 	/* Stage 5C: unified backend observability fields */
 	const char *backend_name;

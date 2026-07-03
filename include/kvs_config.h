@@ -133,13 +133,19 @@ typedef struct kvs_config {
 	int embedding_cache_ttl_ms;
 	char embedding_cache_policy[16];
 
-	// vector index 配置。正式语义缓存主路径固定为 HNSW；
-	// flat 仅作为 debug / 单元测试 baseline，sq8_flat 为实验性压缩索引。
+	// vector index 配置。默认 ANN backend 是 core_hnsw_v2。
+	// core_flat is the exact baseline/fallback, and current core_hnsw is a
+	// legacy regression/reference/emergency fallback backend.
 	// vector_index_type:
-	//   hnsw: semantic-cache main path
-	//   flat: debug / unit-test baseline
+	//   core_hnsw_v2: default vector_core ANN backend
+	//   flat/core_flat: exact baseline / fallback
+	//   core_hnsw: legacy vector_core HNSW reference/fallback
+	//   hnsw/hnswlib_hnsw: legacy hnswlib compatibility adapter
 	//   sq8_flat: experimental compressed flat scan
 	char vector_index_type[16];
+	// Historical compatibility / telemetry only after Stage 9G2. It no longer
+	// gates core_hnsw_v2 selection.
+	int vector_hnsw_v2_experimental_enabled;
 
 	/*
 	 * vector_metric:

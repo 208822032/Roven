@@ -11,6 +11,7 @@
 #include "vector/kvs_vector_core.h"
 #include "vector/kvs_vector_flat.h"
 #include "vector/kvs_vector_hnsw.h"
+#include "vector/kvs_vector_hnsw_v2.h"
 #include "vector/kvs_vector_rebuild.h"
 
 /*
@@ -98,6 +99,8 @@ typedef struct kvs_vector_state_s {
 	kvs_flat_index_t core_flat_index;
 	/* 新版core_hnsw索引状态；只保存record_id、向量和HNSW图缓存。 */
 	kvs_hnsw_index_t core_hnsw_index;
+	/* core_hnsw_v2索引状态；Stage 9G2 后为默认ANN backend。 */
+	kvs_hnsw_v2_index_t core_hnsw_v2_index;
 
 	/* 当前被VSEARCH使用的旧版统一索引包装对象。 */
 	kvs_vector_index_t current_index;
