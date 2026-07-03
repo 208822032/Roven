@@ -60,3 +60,41 @@ HNSW-P5: rebuild / cold-start 产品化策略
 - 无归因的 1M sprint。
 
 下一步应该执行 HNSW-P0：重新审阅 100K recall 归因，判断风险主要来自 benchmark 方法、参数覆盖、图构建质量，还是 rebuild / product readiness。
+
+## 当前 P1 状态
+
+HNSW-P1 quick parity baseline 已完成并记录在：
+
+```text
+docs/hnsw_productization/hnsw_p1_parity_baseline_report.md
+```
+
+结论摘要：
+
+- 50K 低召回在 200 queries 下复现。
+- baseline 参数下，50K efSearch=1024 可将 recall@10 提升到 0.9775。
+- balanced 参数 `M=48 / M0=96 / efConstruction=512` 下，50K efSearch=1024 recall@10 达 0.9975。
+- balanced build 成本约 1344s，不能直接视为默认生产参数。
+- FAISS / hnswlib mature parity 仍为 partial，需要单独 long-run 或 test-only direct C++ harness。
+
+因此，当前还不能直接宣称 100K 生产可用；下一步应补完 mature library parity，或在明确标注 partial 的前提下进入 HNSW-P2 参数 profile 草案。
+
+## 当前 P1b 状态
+
+HNSW-P1b FAISS direct parity baseline 已完成 quick baseline，并记录在：
+
+```text
+docs/hnsw_productization/hnsw_p1b_faiss_parity_report.md
+```
+
+结论摘要：
+
+- 新增 test-only FAISS C++ direct harness，可直接设置 `IndexHNSWFlat::hnsw.efConstruction` 和 `efSearch`。
+- 10K/50K 使用同一 fixed seed dataset、query、IP normalized metric、topK=10 和 exact oracle。
+- 10K/50K oracle mismatch 均为 0。
+- 50K baseline `M=32 / efConstruction=256` 下，FAISS 同参 recall 没有高于 v2：
+  - efSearch=512: v2 0.8690, FAISS 0.8360
+  - efSearch=1024: v2 0.9775, FAISS 0.9635
+- baseline profile 未观察到 FAISS 显著领先 v2 的 graph-quality parity gap。
+- 但 balanced profile parity 未完成，因此 P1b decision 仍是 `partial`，下一步应先补 balanced-only long-run，再决定进入 HNSW-P2 或 HNSW-P3。
+- build/cold-start 风险仍然是 high。

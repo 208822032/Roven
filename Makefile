@@ -271,6 +271,10 @@ TEST_HNSW_V2_PRODUCT_INTEGRATION := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_produ
 TEST_HNSW_V2_DEFAULT_BACKEND := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_default_backend_test
 TEST_HNSW_V2_SCALE_STABILITY := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_scale_stability_test
 TEST_HNSW_V2_TOMBSTONE_POLICY := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_tombstone_policy_test
+TEST_HNSW_V2_PARITY_BASELINE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_parity_baseline_test
+TEST_HNSW_V2_PARITY_BASELINE_OBJ := $(BUILD_DIR)/tests/vector_core_hnsw_v2_parity_baseline_test.o
+TEST_HNSW_FAISS_PARITY := $(BUILD_TESTS_BIN)/vector_core_hnsw_faiss_parity_test
+TEST_HNSW_FAISS_PARITY_BRIDGE_OBJ := $(BUILD_DIR)/tests/vector_core_hnsw_faiss_parity_bridge.o
 TEST_VECTOR_REBUILD_STATE_MACHINE := $(BUILD_TESTS_BIN)/vector_rebuild_state_machine_test
 TEST_VECTOR_REBUILD_DELTA_CAPTURE := $(BUILD_TESTS_BIN)/vector_rebuild_delta_capture_test
 TEST_VECTOR_REBUILD_SHADOW_REPLAY := $(BUILD_TESTS_BIN)/vector_rebuild_shadow_replay_test
@@ -291,6 +295,7 @@ TEST_BINARIES = \
 	$(TEST_HNSW_V2_SEARCH) $(TEST_HNSW_V2_TOMBSTONE) \
 	$(TEST_HNSW_V2_PRODUCT_INTEGRATION) $(TEST_HNSW_V2_DEFAULT_BACKEND) \
 	$(TEST_HNSW_V2_SCALE_STABILITY) $(TEST_HNSW_V2_TOMBSTONE_POLICY) \
+	$(TEST_HNSW_V2_PARITY_BASELINE) \
 	$(TEST_VECTOR_REBUILD_STATE_MACHINE) $(TEST_VECTOR_REBUILD_DELTA_CAPTURE) \
 	$(TEST_VECTOR_REBUILD_SHADOW_REPLAY) $(TEST_VECTOR_REBUILD_SHADOW_SWAP)
 
@@ -301,6 +306,7 @@ TEST_OPTIONAL_PROFILE_BINARIES = \
 
 ifeq ($(ENABLE_FAISS),1)
 TEST_BINARIES += $(TEST_FAISS_BASELINE) $(TEST_VCMD_ONNX_FAISS_BENCH) $(TEST_VCMD_EMBEDDING_CACHE_BENCH)
+TEST_BINARIES += $(TEST_HNSW_FAISS_PARITY)
 endif
 
 TARGET := kvstore
@@ -659,6 +665,38 @@ $(TEST_HNSW_V2_TOMBSTONE_POLICY): \
 	$(CC) $(CFLAGS) -o $@ \
 		$(TEST_DIR)/vector_core_hnsw_v2_tombstone_policy_test.c \
 		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_V2_PARITY_BASELINE_OBJ): \
+	$(TEST_DIR)/vector_core_hnsw_v2_parity_baseline_test.c \
+	| $(BUILD_TESTS_BIN)
+	@mkdir -p $(BUILD_DIR)/tests
+	$(CC) $(CFLAGS) -c -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_parity_baseline_test.c
+
+$(TEST_HNSW_V2_PARITY_BASELINE): \
+	$(TEST_HNSW_V2_PARITY_BASELINE_OBJ) \
+	$(LIBKVSTORE) $(NTYCO_LIB) $(OBJ_VECTOR_HNSWLIB) | $(BUILD_TESTS_BIN)
+	$(if $(OBJ_VECTOR_HNSWLIB),$(CXX),$(CC)) -o $@ \
+		$(TEST_HNSW_V2_PARITY_BASELINE_OBJ) \
+		$(OBJ_VECTOR_HNSWLIB) \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_FAISS_PARITY): \
+	$(TEST_DIR)/vector_core_hnsw_faiss_parity_test.cpp \
+	$(TEST_HNSW_FAISS_PARITY_BRIDGE_OBJ) \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CXX) $(FAISS_CXXFLAGS) -O2 -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_faiss_parity_test.cpp \
+		$(TEST_HNSW_FAISS_PARITY_BRIDGE_OBJ) \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_HNSW_FAISS_PARITY_BRIDGE_OBJ): \
+	$(TEST_DIR)/vector_core_hnsw_faiss_parity_bridge.c \
+	$(TEST_DIR)/vector_core_hnsw_faiss_parity_bridge.h \
+	| $(BUILD_TESTS_BIN)
+	@mkdir -p $(BUILD_DIR)/tests
+	$(CC) $(CFLAGS) -c -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_faiss_parity_bridge.c
 
 $(TEST_VECTOR_REBUILD_STATE_MACHINE): \
 	$(TEST_DIR)/vector_rebuild_state_machine_test.c \
