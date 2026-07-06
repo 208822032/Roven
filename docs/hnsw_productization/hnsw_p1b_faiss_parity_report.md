@@ -172,21 +172,29 @@ efConstruction=512
 efSearch=1024
 ```
 
-本次未运行。
+P1b 本次未运行；后续 P1b-B 已补完 balanced-only long-run。
 
-原因：
+P1b 当时未运行原因：
 
 - P1 已证明 v2 50K balanced build_us 约 1,344s。
 - P1b 默认 quick 先补必须的 50K baseline FAISS direct parity。
 - 没有 balanced FAISS direct parity 时，不能把 P1b 结论升级成最终 P2/P3 判断。
 
-需要后续补跑：
+P1b-B 结果见：
 
-```bash
-HNSW_P1B_MODE=full tests/vector_core_hnsw_faiss_parity_test.sh
+```text
+docs/hnsw_productization/hnsw_p1b_balanced_faiss_parity_report.md
 ```
 
-或拆出 balanced-only long-run job，避免重复 10K/50K baseline。
+P1b-B 关键结论：
+
+- 50K balanced `M=48 / M0=96 / efConstruction=512 / efSearch=1024`。
+- oracle mismatch=0。
+- v2 recall@10=0.9975。
+- FAISS recall@10=0.9945。
+- FAISS - v2 = -0.0030，significant=no。
+- balanced profile 下未观察到 FAISS 显著高于 v2 的 graph-quality parity gap。
+- v2 build 明显慢于 FAISS，build/cold-start 风险仍为 high。
 
 ## 100K smoke-plus
 
@@ -363,6 +371,12 @@ git status --short：
 2. 如果 balanced 下 FAISS 和 v2 recall 仍接近：进入 HNSW-P2 参数硬化，并同步规划 HNSW-P5 rebuild/cold-start。
 3. 如果 balanced 下 FAISS 显著高于 v2：进入 HNSW-P3 图构建质量修复。
 
+P1b-B 已在后续补完 balanced-only long-run。最新路线判断见：
+
+```text
+docs/hnsw_productization/hnsw_p1b_balanced_faiss_parity_report.md
+```
+
 ## P1b decision
 
 ```text
@@ -372,4 +386,15 @@ P1b decision:
   graph_quality_gap = unknown
   build_cost_risk = high
   next_stage = redo-P1b
+```
+
+## P1b-B follow-up decision
+
+```text
+P1b-B decision:
+  faiss_balanced_parity = pass
+  parameter_insufficient = yes
+  graph_quality_gap = no
+  build_cost_risk = high
+  next_stage = HNSW-P2 + HNSW-P5
 ```

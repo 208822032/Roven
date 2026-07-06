@@ -14,12 +14,16 @@
 - 10K/512d gate 已通过：
   - ef=256 recall@10 = 0.9860
   - ef=512 recall@10 = 1.0000
-- 50K/100K gate 未达到生产召回预期。
+- baseline/default 50K/100K gate 曾暴露召回不足。
+- HNSW-P2-final 已用 balanced 参数完成 100K single gate：
+  - `M=48 / M0=96 / efConstruction=512 / efSearch=1024`
+  - 100K/512d, 100 queries, recall@10 = 0.9740
+  - oracle mismatch = 0，duplicate/overflow = 0
 - 同步 rebuild 和 cold start 仍然是产品风险。
 - RDB/AOF 仍然只保存 records，不保存 HNSW graph topology。
 - VSEARCH response format 保持不变。
 
-当前 50K/100K 数据只能作为风险证据，不能写成生产 SLA，也不能说明当前默认配置已经在这些规模上生产可用。
+当前 100K balanced gate 可以支持将 `core_hnsw_v2` 默认参数切到 balanced，但它仍不是完整生产 SLA。build/cold-start 风险仍然很高，必须单独进入 HNSW-P5。
 
 ## 路线定位
 
@@ -59,7 +63,7 @@ HNSW-P5: rebuild / cold-start 产品化策略
 - VSEARCH response 改造。
 - 无归因的 1M sprint。
 
-下一步应该执行 HNSW-P0：重新审阅 100K recall 归因，判断风险主要来自 benchmark 方法、参数覆盖、图构建质量，还是 rebuild / product readiness。
+下一步应该执行 HNSW-P5：rebuild / cold-start 产品化策略。不要把 100K balanced gate 通过包装成完整生产 SLA，也不要在没有新归因的情况下直接进入 graph refactor 或微优化。
 
 ## 当前 P1 状态
 
@@ -96,5 +100,46 @@ docs/hnsw_productization/hnsw_p1b_faiss_parity_report.md
   - efSearch=512: v2 0.8690, FAISS 0.8360
   - efSearch=1024: v2 0.9775, FAISS 0.9635
 - baseline profile 未观察到 FAISS 显著领先 v2 的 graph-quality parity gap。
-- 但 balanced profile parity 未完成，因此 P1b decision 仍是 `partial`，下一步应先补 balanced-only long-run，再决定进入 HNSW-P2 或 HNSW-P3。
 - build/cold-start 风险仍然是 high。
+
+HNSW-P1b-B balanced-only FAISS direct parity 已完成，并记录在：
+
+```text
+docs/hnsw_productization/hnsw_p1b_balanced_faiss_parity_report.md
+```
+
+结论摘要：
+
+- 50K balanced `M=48 / M0=96 / efConstruction=512 / efSearch=1024` 下，oracle mismatch=0。
+- v2 recall@10 = 0.9975，FAISS recall@10 = 0.9945。
+- FAISS - v2 = -0.0030，未达到显著 graph-quality gap 阈值。
+- v2 build 约 1198s，FAISS build 约 278s，v2 build 约为 FAISS 的 4.31x。
+- 当前判断应转向 HNSW-P2 参数硬化，并同步规划 HNSW-P5 rebuild/cold-start；不建议直接进入 HNSW-P3 graph refactor。
+
+## 当前 P2-final 状态
+
+HNSW-P2-final 100K balanced gate 与默认参数固化已完成，并记录在：
+
+```text
+docs/hnsw_productization/hnsw_p2_100k_balanced_default_report.md
+```
+
+结论摘要：
+
+- 100K/512d/100 queries，balanced 参数 `M=48 / M0=96 / efConstruction=512 / efSearch=1024`。
+- `oracle_mismatch=0`，direct exact 与 `core_flat` 一致。
+- `core_hnsw_v2 recall@10=0.9740`，达到 `>=0.95` gate，通过 100K balanced gate。
+- `duplicate_edge=0`，`degree_overflow=0`。
+- `core_hnsw_v2` 默认参数已固化为 balanced：
+  - `M=48`
+  - `M0=96`
+  - `efConstruction=512`
+  - `efSearch=1024`
+- build 约 3,011,810,795us，约 50.2 分钟，build/cold-start 风险仍为 high。
+
+当前判断：
+
+- balanced default 有 100K gate 数据支撑。
+- 不能把该 gate 写成完整生产 SLA。
+- 不建议进入 HNSW-P3 graph refactor。
+- 下一步应进入 HNSW-P5 rebuild / cold-start 产品化策略。

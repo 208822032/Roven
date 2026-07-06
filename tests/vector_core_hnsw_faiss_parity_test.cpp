@@ -692,6 +692,7 @@ int main(void) {
 	std::printf(
 		"hnsw_p1b_start mode=%s metric=ip_normalized dim=%u topk=%u seed=fixed "
 		"faiss_direct=1 faiss_efSearch_setter=1 quick=10K_sanity_plus_50K_baseline "
+		"balanced_only=50K_balanced "
 		"full=10K_sanity_plus_50K_baseline_balanced optional_100K=HNSW_P1B_100K=1\n",
 		mode,
 		P1B_DIM,
@@ -727,6 +728,14 @@ int main(void) {
 				1
 			);
 		}
+	} else if (mode_is(mode, "balanced-only")) {
+		failed |= run_case(
+			env_size_or("HNSW_P1B_50K_COUNT", 50000),
+			env_size_or("HNSW_P1B_50K_QUERIES", 200),
+			mode,
+			&balanced,
+			1
+		);
 	} else if (mode_is(mode, "full")) {
 		const Profile profiles_50k[] = {baseline_50k, balanced};
 
@@ -765,7 +774,9 @@ int main(void) {
 			}
 		}
 	} else {
-		std::fprintf(stderr, "unknown HNSW_P1B_MODE=%s (expected smoke, quick, full)\n", mode);
+		std::fprintf(stderr,
+			"unknown HNSW_P1B_MODE=%s (expected smoke, quick, balanced-only, full)\n",
+			mode);
 		failed = 1;
 	}
 

@@ -6,6 +6,31 @@
 
 `vector_hnsw_v2_experimental_enabled` remains visible as a compatibility/telemetry field, but it no longer gates v2 selection.
 
+After HNSW-P2-final, the `core_hnsw_v2` default ANN profile is the balanced profile:
+
+```text
+M = 48
+M0 = 96
+efConstruction = 512
+efSearch = 1024
+```
+
+The switch is based on the 100K balanced gate:
+
+```text
+count = 100000
+dim = 512
+queries = 100
+topK = 10
+metric = IP normalized
+recall@10 = 0.9740
+oracle_mismatch = 0
+duplicate_edge = 0
+degree_overflow = 0
+```
+
+This is a default-parameter hardening result, not a full production SLA. The measured build cost was about 3,011,810,795us, so rebuild / cold-start remains a high-risk productization item and should be handled by the HNSW-P5 rebuild/cold-start route.
+
 ## Explicit backend selection
 
 Use exact baseline / fallback:
@@ -111,3 +136,4 @@ tests/vector_rebuild_shadow_swap_test.sh
 - legacy `core_hnsw` remains available explicitly.
 - High tombstone ratio should trigger operational rebuild recommendation.
 - Large cold start / bulk import should not be represented as final production behavior until background/shadow rebuild is hardened.
+- The balanced default improves 100K recall, but increases build/search/memory cost versus the old lower-parameter default.
