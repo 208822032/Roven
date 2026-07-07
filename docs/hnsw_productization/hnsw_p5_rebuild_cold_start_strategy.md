@@ -55,7 +55,7 @@ RDB/AOF load/replay
 
 - RDB/AOF 只保存用户记录，不保存 index 内部拓扑。
 - HNSW graph 可以随实现升级重建，不绑定持久化格式。
-- `core_flat`、legacy `core_hnsw`、`core_hnsw_v2` 都保持 derived state 语义。
+- `core_flat` 和 `core_hnsw_v2` 都保持 derived state 语义；legacy `core_hnsw` 源码删除后，只剩配置兼容面解析到 `core_flat` fallback。
 
 风险是：当 `core_hnsw_v2` 使用 balanced 默认参数并达到 100K 规模时，cold-start rebuild 可能成为服务恢复的主要阻塞项。
 
@@ -324,7 +324,7 @@ P5-impl 应将其中一部分暴露给产品观测面，优先考虑 `VINFO` 或
 在 P5-impl 前不建议直接做：
 
 - graph persistence。
-- 删除 legacy `core_hnsw`。
+- 重新引入或继续依赖已删除 legacy `core_hnsw`。
 - graph construction refactor。
 - SIMD/layout 微优化。
 - reverse_prune cache。

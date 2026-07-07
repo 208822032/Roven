@@ -10,8 +10,8 @@
 #include "vector/kvs_vector_index_internal.h"
 #include "vector/kvs_vector_core.h"
 #include "vector/kvs_vector_flat.h"
-#include "vector/kvs_vector_hnsw.h"
 #include "vector/kvs_vector_hnsw_v2.h"
+#include "vector/kvs_vector_index_snapshot.h"
 #include "vector/kvs_vector_rebuild.h"
 
 /*
@@ -30,7 +30,7 @@
  *
  * 设计规则：
  *   1. record store是唯一真实数据源。
- *   2. flat/HNSW/SQ8/backend索引都是派生状态。
+ *   2. core_flat/core_hnsw_v2索引都是派生状态。
  *   3. 派生索引损坏或配置变化时，应基于record store重建。
  */
 
@@ -66,14 +66,32 @@ typedef struct kvs_vector_embedding_provider_s {
 	int initialized;
 } kvs_vector_embedding_provider_t;
 
+typedef struct kvs_vector_snapshot_status_s {
+	int snapshot_load_attempted;
+	int snapshot_loaded;
+	int snapshot_valid;
+	int loaded_from_snapshot;
+	uint64_t fallback_rebuild_count;
+	char last_snapshot_error[128];
+	char last_snapshot_manifest_path[512];
+	char last_snapshot_path[512];
+	int snapshot_write_attempted;
+	int snapshot_written;
+	char last_snapshot_write_error[128];
+	uint64_t last_snapshot_write_started_ms;
+	uint64_t last_snapshot_write_finished_ms;
+	uint64_t last_snapshot_bytes;
+	uint64_t last_snapshot_checksum;
+} kvs_vector_snapshot_status_t;
+
 /********** global vector manager state **********/
 
 /*
  * 向量模块全局manager状态。
  *
  * 说明：
- *   1. 该结构聚合record store、key map、旧版索引、backend句柄和embedding provider。
- *   2. 当前代码仍有旧版flat/HNSW/SQ8/adapter状态，后续会逐步迁移到vector_core。
+ *   1. 该结构聚合record store、key map、当前core索引和embedding provider。
+ *   2. core_flat/core_hnsw_v2 是当前自维护产品路径。
  *   3. 不应把该结构传入vector_core热路径；core只需要record_id和vector。
  */
 typedef struct kvs_vector_state_s {
@@ -84,35 +102,18 @@ typedef struct kvs_vector_state_s {
 	/* question/scope到record_index的映射，用于VSET更新、VGET和VDEL定位record。 */
 	kvs_vector_id_map_t id_map;
 
-	/* 当前配置的索引类型，例如flat、HNSW、Faiss HNSW或hnswlib HNSW。 */
+	/* 当前配置的索引类型，例如core_flat或core_hnsw_v2。 */
 	kvs_vector_index_type_t index_type;
 	/* 当前配置的距离或相似度类型，例如IP、L2或COSINE。 */
 	kvs_vector_metric_type_t metric_type;
 
-	/* 旧版精确flat索引状态；属于可重建派生状态。 */
-	kvs_vector_flat_index_t flat_index;
-	/* 旧版HNSW-lite索引状态；属于可重建派生状态。 */
-	kvs_vector_ann_index_t ann_index;
-	/* 旧版SQ8 flat索引状态；属于可重建派生状态，不是近期主线。 */
-	kvs_vector_sq8_flat_index_t sq8_flat_index;
 	/* 新版core_flat索引状态；只保存record_id和向量计算缓存。 */
 	kvs_flat_index_t core_flat_index;
-	/* 新版core_hnsw索引状态；只保存record_id、向量和HNSW图缓存。 */
-	kvs_hnsw_index_t core_hnsw_index;
 	/* core_hnsw_v2索引状态；Stage 9G2 后为默认ANN backend。 */
 	kvs_hnsw_v2_index_t core_hnsw_v2_index;
 
-	/* 当前被VSEARCH使用的旧版统一索引包装对象。 */
+	/* 当前被VSEARCH使用的manager-side统一ops包装对象。 */
 	kvs_vector_index_t current_index;
-
-#ifdef ENABLE_FAISS_BASELINE
-	/* Faiss baseline backend句柄，仅在ENABLE_FAISS_BASELINE启用时存在。 */
-	void *faiss_backend_handle;
-#endif
-#ifdef ENABLE_HNSWLIB
-	/* hnswlib backend句柄，仅在ENABLE_HNSWLIB启用时存在。 */
-	void *hnswlib_backend_handle;
-#endif
 
 	/* 最近一次索引重建的返回状态；0通常表示成功，非0表示失败。 */
 	int last_rebuild_status;
@@ -129,6 +130,9 @@ typedef struct kvs_vector_state_s {
 
 	/* Manager-owned background rebuild control-plane skeleton. */
 	kvs_vector_rebuild_context_t rebuild;
+
+	/* Manager-owned optional index snapshot load status. */
+	kvs_vector_snapshot_status_t snapshot_status;
 } kvs_vector_state_t;
 
 /* 向量模块全局状态实例，由vector manager实现文件定义。 */
@@ -196,17 +200,6 @@ void kvs_vector_search_result_from_record(
 );
 
 /*
- * 旧版文本分数接口。
- *
- * 当前主要为兼容旧代码保留，不属于新vector_core搜索路径。
- */
-float kvs_vector_record_score(
-	const kvs_vector_record_t *record,
-	const char *query,
-	size_t query_len
-);
-
-/*
  * 从record store重建question/scope到record槽位的映射。
  */
 int kvs_vector_id_map_rebuild_from_store(void);
@@ -265,6 +258,35 @@ int kvs_vector_reset_for_load(void);
  */
 int kvs_vector_rebuild_after_load(void);
 
+int kvs_vector_index_snapshot_build_expected_manifest_after_records(
+	kvs_vector_state_t *state,
+	const char *snapshot_path,
+	kvs_vector_index_snapshot_manifest_t *manifest,
+	char *reason,
+	size_t reason_size
+);
+
+int kvs_vector_index_snapshot_try_load_after_records(
+	kvs_vector_state_t *state,
+	char *reason,
+	size_t reason_size
+);
+
+int kvs_vector_index_snapshot_write_current(
+	kvs_vector_state_t *state,
+	char *reason,
+	size_t reason_size
+);
+
+int kvs_vector_index_snapshot_write_hnsw_v2_index(
+	kvs_vector_state_t *state,
+	const kvs_hnsw_v2_index_t *hnsw,
+	char *reason,
+	size_t reason_size
+);
+
+int kvs_vector_index_snapshot_status_copy(kvs_vector_snapshot_status_t *out);
+
 int kvs_vector_manager_resolve_hits(
 	const kvs_vector_hit_t *hits,
 	size_t hit_count,
@@ -319,14 +341,3 @@ int kvs_vector_manager_rebuild_capture_stop_for_test(void);
  * 命令层VINDEX使用该接口切换后续重建和搜索路径。
  */
 int kvs_vector_set_index_type_internal(kvs_vector_index_type_t index_type);
-
-/*
- * 设置旧版HNSW-lite参数。
- *
- * m控制邻居数量，ef_construction控制建图候选宽度，ef_search控制查询候选宽度。
- */
-int kvs_vector_ann_index_set_params_internal(
-	size_t m,
-	size_t ef_construction,
-	size_t ef_search
-);

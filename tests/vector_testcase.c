@@ -363,14 +363,12 @@ static void testcase_ignore_response(int fd, const char *msg, const char *name) 
  */
 static void vector_resp_testcase(int fd) {
     int is_ivf = 0;
-    int is_sq8 = 0;
 
     printf("========== vector testcase begin ==========\n");
 
     /*
      * Probe index type first.
      * IVF Flat index_ready is 0 before TRAIN; skip that assertion on IVF.
-     * SQ8 Flat does not need TRAIN; its VSEARCH should work immediately.
      */
     {
         char resp[MAX_RESP_LEN];
@@ -379,9 +377,6 @@ static void vector_resp_testcase(int fd) {
             if (recv_full_resp(fd, resp, sizeof(resp)) >= 0) {
                 if (strstr(resp, "index_type:ivf_flat") != NULL) {
                     is_ivf = 1;
-                }
-                if (strstr(resp, "index_type:sq8_flat") != NULL) {
-                    is_sq8 = 1;
                 }
             }
         }
@@ -419,7 +414,7 @@ static void vector_resp_testcase(int fd) {
         "VINFO-distance-backend"
     );
 
-    if (!is_ivf && !is_sq8) {
+    if (!is_ivf) {
         testcase_contains(
             fd,
             "*1\r\n$5\r\nVINFO\r\n",
@@ -1276,38 +1271,6 @@ static void vector_resp_testcase(int fd) {
         printf("========== IVF flat testcase done ==========\n");
     } else {
         printf("========== skipping IVF flat tests (server not ivf_flat) ==========\n");
-    }
-
-    /*
-     * SQ8 Flat tests.
-     * SQ8 does not need TRAIN; VSEARCH works immediately after VSET.
-     */
-    if (is_sq8) {
-        testcase_contains(
-            fd,
-            "*1\r\n$5\r\nVINFO\r\n",
-            "sq8_size:",
-            "VINFO-sq8-size-field"
-        );
-
-        testcase_contains(
-            fd,
-            "*1\r\n$5\r\nVINFO\r\n",
-            "sq8_memory_bytes:",
-            "VINFO-sq8-memory-bytes-field"
-        );
-
-        /* VSEARCH works without TRAIN for sq8_flat */
-        testcase_contains(
-            fd,
-            "*2\r\n$7\r\nVSEARCH\r\n$4\r\ntest\r\n",
-            "score:",
-            "VSEARCH-sq8-works-without-train"
-        );
-
-        printf("========== SQ8 flat testcase done ==========\n");
-    } else {
-        printf("========== skipping SQ8 flat tests (server not sq8_flat) ==========\n");
     }
 
     printf("========== vector testcase pass ==========\n");

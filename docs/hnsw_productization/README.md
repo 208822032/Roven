@@ -10,7 +10,8 @@
 
 - `core_hnsw_v2` 已经成为默认 ANN backend。
 - `core_flat` 保留为 exact baseline、正确性 oracle 和 fallback。
-- legacy `core_hnsw` 保留为显式 fallback 和 regression reference。
+- legacy `core_hnsw` 源码已在 CODE-HYGIENE-0 后删除；public enum / 配置字符串只保留兼容面，显式 `core_hnsw` 解析为 `core_flat` fallback。
+- FAISS / hnswlib external backend 和 direct parity harness 已在 CODE-HYGIENE-4B 后删除；历史 parity 报告保留为 historical evidence，不代表当前仍有可构建 external backend。
 - 10K/512d gate 已通过：
   - ef=256 recall@10 = 0.9860
   - ef=512 recall@10 = 1.0000
@@ -37,7 +38,7 @@ HNSW 产品化设计线
 
 - 50K/100K 需要达到什么 recall 目标？
 - 哪些 latency / memory tradeoff 可以作为可发布参数 profile？
-- 在等价参数下，当前图质量和 FAISS / hnswlib / USearch 的差距在哪里？
+- 在等价参数下，历史 parity 结果是否足以支撑当前参数选择；如需继续 mature-library 对照，应使用仓库外独立 harness，而不是恢复产品内 external backend。
 - 低召回来自参数不足、graph construction、entry point / level distribution，还是 benchmark 方法？
 - rebuild 和 cold-start 到什么程度才可以对外承诺？
 
@@ -45,7 +46,7 @@ HNSW 产品化设计线
 
 ```text
 HNSW-P0: 100K 召回归因审阅与产品化风险判定
-HNSW-P1: FAISS / hnswlib / USearch parity baseline 与参数敏感性补测
+HNSW-P1: historical parity baseline 与参数敏感性补测
 HNSW-P2: 参数硬化，输出 low_latency / balanced / high_recall profile
 HNSW-P3: 图构建质量修复，只处理被证明有问题的 neighbor_select / reverse_prune / level search / entry point
 HNSW-P4: 100K production recall gate
@@ -58,7 +59,7 @@ HNSW-P5: rebuild / cold-start 产品化策略
 
 - SIMD/layout 微优化。
 - reverse_prune cache。
-- 删除 legacy `core_hnsw`。
+- 围绕已删除 legacy `core_hnsw` 继续做 fallback/reference 路线。
 - RDB/AOF graph persistence。
 - VSEARCH response 改造。
 - 无归因的 1M sprint。
@@ -79,13 +80,13 @@ docs/hnsw_productization/hnsw_p1_parity_baseline_report.md
 - baseline 参数下，50K efSearch=1024 可将 recall@10 提升到 0.9775。
 - balanced 参数 `M=48 / M0=96 / efConstruction=512` 下，50K efSearch=1024 recall@10 达 0.9975。
 - balanced build 成本约 1344s，不能直接视为默认生产参数。
-- FAISS / hnswlib mature parity 仍为 partial，需要单独 long-run 或 test-only direct C++ harness。
+- FAISS direct parity 已作为历史归因完成；CODE-HYGIENE-4B 后相关源码和测试 harness 已删除。
 
-因此，当前还不能直接宣称 100K 生产可用；下一步应补完 mature library parity，或在明确标注 partial 的前提下进入 HNSW-P2 参数 profile 草案。
+因此，当前不再通过产品仓库内 external backend 继续做 mature-library parity；后续如果需要对照，应使用仓库外独立 harness。当前路线重点已转向 HNSW-P5 rebuild / cold-start。
 
 ## 当前 P1b 状态
 
-HNSW-P1b FAISS direct parity baseline 已完成 quick baseline，并记录在：
+HNSW-P1b FAISS direct parity baseline 已完成 quick baseline，并作为 historical evidence 记录在：
 
 ```text
 docs/hnsw_productization/hnsw_p1b_faiss_parity_report.md
@@ -115,6 +116,8 @@ docs/hnsw_productization/hnsw_p1b_balanced_faiss_parity_report.md
 - FAISS - v2 = -0.0030，未达到显著 graph-quality gap 阈值。
 - v2 build 约 1198s，FAISS build 约 278s，v2 build 约为 FAISS 的 4.31x。
 - 当前判断应转向 HNSW-P2 参数硬化，并同步规划 HNSW-P5 rebuild/cold-start；不建议直接进入 HNSW-P3 graph refactor。
+
+注意：上述 FAISS direct harness 源码已在 CODE-HYGIENE-4B 中删除，报告中的数值仅作为历史归因证据保留。
 
 ## 当前 P2-final 状态
 

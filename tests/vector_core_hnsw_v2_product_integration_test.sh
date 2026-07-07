@@ -9,7 +9,7 @@ KV_BIN="${KV_BIN:-./kvstore}"
 
 if [[ ! -x "$BIN" || ! -x "$KV_BIN" ]]; then
   printf '[INFO][build] building hnsw_v2 product integration targets\n'
-  make ENABLE_HNSWLIB="${ENABLE_HNSWLIB:-1}" ENABLE_FAISS="${ENABLE_FAISS:-1}" -j2 \
+  make -j2 \
     "$BIN" kvstore
 fi
 

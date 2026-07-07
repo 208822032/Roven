@@ -8,7 +8,7 @@ KV_BIN="${KV_BIN:-./kvstore}"
 
 if [[ ! -x "$KV_BIN" ]]; then
   printf '[INFO][build] building kvstore\n'
-  make ENABLE_HNSWLIB="${ENABLE_HNSWLIB:-1}" ENABLE_FAISS="${ENABLE_FAISS:-1}" -j2 kvstore
+  make -j2 kvstore
 fi
 
 python3 - "$ROOT_DIR" "$KV_BIN" <<'PY'

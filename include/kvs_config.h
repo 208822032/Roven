@@ -134,14 +134,15 @@ typedef struct kvs_config {
 	char embedding_cache_policy[16];
 
 	// vector index 配置。默认 ANN backend 是 core_hnsw_v2。
-	// core_flat is the exact baseline/fallback, and current core_hnsw is a
-	// legacy regression/reference/emergency fallback backend.
+	// core_flat is the exact baseline/fallback. legacy core_hnsw was removed
+	// from the product build; explicit core_hnsw requests fall back to core_flat.
 	// vector_index_type:
 	//   core_hnsw_v2: default vector_core ANN backend
 	//   flat/core_flat: exact baseline / fallback
-	//   core_hnsw: legacy vector_core HNSW reference/fallback
-	//   hnsw/hnswlib_hnsw: legacy hnswlib compatibility adapter
-	//   sq8_flat: experimental compressed flat scan
+	//   core_hnsw: removed legacy backend, accepted only for core_flat fallback
+	//   hnsw/hnswlib/hnswlib_hnsw: removed hnswlib names, accepted only for core_flat fallback
+	//   faiss/faiss_hnsw/faiss_flat: removed FAISS names, accepted only for core_flat fallback
+	//   sq8_flat: removed compatibility name, accepted only for core_flat fallback
 	char vector_index_type[16];
 	// Historical compatibility / telemetry only after Stage 9G2. It no longer
 	// gates core_hnsw_v2 selection.

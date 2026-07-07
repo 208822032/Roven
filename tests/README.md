@@ -22,12 +22,13 @@
 | `vector_benchmark.c` / `vector_import_bench.c` | 向量 benchmark |
 | `ttl_expired_path_bench.c` / `ttl_lookup_split_bench.c` | TTL 路径 benchmark |
 | `skiptable_targeted_bench.c` | Skiptable 专项 benchmark |
-| `test_binary_key.c` / `vector_search_bench.c` / `vector_store_bench.c` | 手动/补充测试 |
+| `test_binary_key.c` / `vector_store_bench.c` | 手动/补充测试 |
 
 ## Vector Gate 分组
 
 - core_flat 是 exact correctness baseline / fallback，保留 correctness、rebuild、RDB reload 回归。
-- current core_hnsw 是 legacy regression/reference backend，保留 correctness、rebuild、RDB reload、AOF replay 回归，不再作为新优化主线。
+- legacy core_hnsw implementation 已从默认产品构建删除；显式 `core_hnsw` 配置只保留为 `core_flat` fallback 兼容入口。
+- FAISS / hnswlib external backend 和 direct parity baseline 已删除；旧配置名只保留为 `core_flat` fallback 兼容入口。
 - core_hnsw_v2 是默认 ANN backend，保留 tombstone、skeleton、graph construction、search recall、product integration、default backend gate。
 - `vector_rebuild_*` 是 manager-owned rebuild harness，保留为 v2 default backend 的内部安全门禁。
 - v2 performance / distance / reverse-prune profile tests 是 optional profile，不属于默认 `make tests` 构建集合。

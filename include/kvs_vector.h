@@ -28,16 +28,19 @@ typedef enum kvs_vector_status_e {
  * 放在 public 区域，原因：
  * 1. VINFO 需要向命令层暴露当前索引类型；
  * 2. kvs_operation.c 不应该定义 KVS_VECTOR_INTERNAL；
- * 3. 外部只需要知道 flat / hnsw，不需要知道内部索引结构。
+ * 3. 旧 enum 值需要保持编号兼容，但不会再进入已删除实现路径。
  */
 typedef enum kvs_vector_index_type_e {
+	/* Removed compatibility enum values; requests are mapped to core_flat. */
 	KVS_VECTOR_INDEX_TYPE_FLAT = 0,
 	KVS_VECTOR_INDEX_TYPE_HNSW = 1,
 	KVS_VECTOR_INDEX_TYPE_SQ8_FLAT = 3,
+	/* Removed external backend compatibility enum values. */
 	KVS_VECTOR_INDEX_FAISS_HNSW = 4,
 	KVS_VECTOR_INDEX_FAISS_FLAT = 5,
 	KVS_VECTOR_INDEX_HNSWLIB_HNSW = 6,
 	KVS_VECTOR_INDEX_CORE_FLAT = 7,
+	/* Compatibility enum only; legacy core_hnsw source was removed. */
 	KVS_VECTOR_INDEX_CORE_HNSW = 8,
 	KVS_VECTOR_INDEX_CORE_HNSW_V2 = 9,
 } kvs_vector_index_type_t;
@@ -98,9 +101,9 @@ typedef struct kvs_vector_info_s {
 	int needs_rebuild;
 
 	/*
-	 * 0 = flat
-	 * 1 = hnsw
-	 * 3 = sq8_flat
+	 * 0/1/3 are retained compatibility values for removed legacy backends.
+	 * Current product values are KVS_VECTOR_INDEX_CORE_FLAT and
+	 * KVS_VECTOR_INDEX_CORE_HNSW_V2.
 	 */
 	int index_type;
 	int metric_type;
@@ -114,7 +117,7 @@ typedef struct kvs_vector_info_s {
 	int ann_max_level;
 	int ann_ready;
 
-	/* SQ8 Flat fields */
+	/* Removed SQ8 Flat compatibility VINFO fields. */
 	size_t sq8_size;
 	size_t sq8_dimension;
 	size_t sq8_code_bytes;
@@ -126,7 +129,7 @@ typedef struct kvs_vector_info_s {
 	/* core_flat fields */
 	size_t core_flat_deleted_count;
 
-	/* legacy core_hnsw fields */
+	/* Removed core_hnsw compatibility VINFO fields. */
 	size_t core_hnsw_size;
 	size_t core_hnsw_capacity;
 	size_t core_hnsw_m;
@@ -158,6 +161,22 @@ typedef struct kvs_vector_info_s {
 	const char *rebuild_error_message;
 	int rebuild_shadow_present;
 	int rebuild_retired_present;
+
+	/* manager-owned optional HNSW snapshot cache status */
+	int snapshot_supported;
+	int snapshot_load_attempted;
+	int snapshot_loaded;
+	int snapshot_valid;
+	int loaded_from_snapshot;
+	uint64_t snapshot_fallback_rebuild_count;
+	const char *snapshot_last_error;
+	int snapshot_write_attempted;
+	int snapshot_written;
+	const char *snapshot_last_write_error;
+	uint64_t snapshot_last_write_started_ms;
+	uint64_t snapshot_last_write_finished_ms;
+	uint64_t snapshot_last_bytes;
+	uint64_t snapshot_last_checksum;
 
 	/* Stage 5C: unified backend observability fields */
 	const char *backend_name;
@@ -318,13 +337,13 @@ typedef struct kvs_vector_info_s {
 	uint64_t executor_prepared_task_executed;
 	uint64_t executor_prepared_task_failed;
 
-	/* faiss backend stats */
+	/* Removed FAISS backend compatibility VINFO fields; always disabled/0. */
 	int faiss_backend_enabled;
 	size_t faiss_ntotal;
 	uint64_t faiss_add_count;
 	uint64_t faiss_search_count;
 
-	/* hnswlib backend stats */
+	/* Removed hnswlib backend compatibility VINFO fields; always disabled/0. */
 	int hnswlib_backend_enabled;
 	size_t hnswlib_ntotal;
 	size_t hnswlib_capacity;
@@ -422,92 +441,6 @@ int kvs_vector_set_prepare_with_embedding(
 
 int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared);
 
-typedef struct kvs_vector_vset_commit_stats_s {
-	uint64_t vset_commit_count;
-	uint64_t vset_commit_total_us;
-	uint64_t vset_commit_max_us;
-	uint64_t vset_record_lookup_count;
-	uint64_t vset_record_lookup_total_us;
-	uint64_t vset_record_lookup_max_us;
-	uint64_t vset_record_insert_or_update_count;
-	uint64_t vset_record_insert_or_update_total_us;
-	uint64_t vset_record_insert_or_update_max_us;
-	uint64_t vset_vector_copy_count;
-	uint64_t vset_vector_copy_total_us;
-	uint64_t vset_vector_copy_max_us;
-	uint64_t vset_flat_index_update_count;
-	uint64_t vset_flat_index_update_total_us;
-	uint64_t vset_flat_index_update_max_us;
-	uint64_t vset_backend_add_count;
-	uint64_t vset_backend_add_total_us;
-	uint64_t vset_backend_add_max_us;
-	uint64_t vset_id_map_update_count;
-	uint64_t vset_id_map_update_total_us;
-	uint64_t vset_id_map_update_max_us;
-	uint64_t vset_scope_answer_question_update_count;
-	uint64_t vset_scope_answer_question_update_total_us;
-	uint64_t vset_scope_answer_question_update_max_us;
-	uint64_t vset_lock_wait_count;
-	uint64_t vset_lock_wait_total_us;
-	uint64_t vset_lock_wait_max_us;
-	uint64_t vset_lock_hold_count;
-	uint64_t vset_lock_hold_total_us;
-	uint64_t vset_lock_hold_max_us;
-	uint64_t vset_aof_append_count;
-	uint64_t vset_aof_append_total_us;
-	uint64_t vset_aof_append_max_us;
-	uint64_t vset_replication_count;
-	uint64_t vset_replication_total_us;
-	uint64_t vset_replication_max_us;
-	uint64_t vset_dirty_mark_count;
-	uint64_t vset_dirty_mark_total_us;
-	uint64_t vset_dirty_mark_max_us;
-	uint64_t vset_response_build_count;
-	uint64_t vset_response_build_total_us;
-	uint64_t vset_response_build_max_us;
-	uint64_t vset_response_push_count;
-	uint64_t vset_response_push_total_us;
-	uint64_t vset_response_push_max_us;
-	uint64_t vsearch_search_count;
-	uint64_t vsearch_search_total_us;
-	uint64_t vsearch_search_max_us;
-	uint64_t vsearch_backend_search_count;
-	uint64_t vsearch_backend_search_total_us;
-	uint64_t vsearch_backend_search_max_us;
-	uint64_t vsearch_manager_resolve_count;
-	uint64_t vsearch_manager_resolve_total_us;
-	uint64_t vsearch_manager_resolve_max_us;
-	uint64_t vsearch_raw_hit_count;
-	uint64_t vsearch_resolved_hit_count;
-	uint64_t vsearch_filtered_hit_count;
-	uint64_t vsearch_response_build_count;
-	uint64_t vsearch_response_build_total_us;
-	uint64_t vsearch_response_build_max_us;
-	uint64_t vsearch_response_push_count;
-	uint64_t vsearch_response_push_total_us;
-	uint64_t vsearch_response_push_max_us;
-	uint64_t flat_search_core_count;
-	uint64_t flat_search_core_total_us;
-	uint64_t flat_search_core_max_us;
-	uint64_t flat_search_export_count;
-	uint64_t flat_search_export_total_us;
-	uint64_t flat_search_export_max_us;
-	uint64_t hnsw_search_core_count;
-	uint64_t hnsw_search_core_total_us;
-	uint64_t hnsw_search_core_max_us;
-	uint64_t hnsw_search_export_count;
-	uint64_t hnsw_search_export_total_us;
-	uint64_t hnsw_search_export_max_us;
-} kvs_vector_vset_commit_stats_t;
-
-void kvs_vector_vset_commit_stats_get(kvs_vector_vset_commit_stats_t *out);
-void kvs_vector_vset_record_lock_wait(uint64_t elapsed_us);
-void kvs_vector_vset_record_lock_hold(uint64_t elapsed_us);
-void kvs_vector_vset_record_aof_append(uint64_t elapsed_us);
-void kvs_vector_vset_record_replication(uint64_t elapsed_us);
-void kvs_vector_vset_record_dirty_mark(uint64_t elapsed_us);
-void kvs_vector_vset_record_response_build(uint64_t elapsed_us);
-void kvs_vector_vset_record_response_push(uint64_t elapsed_us);
 void kvs_vector_vsearch_record_search(uint64_t elapsed_us);
 void kvs_vector_vsearch_record_backend_search(uint64_t elapsed_us);
 void kvs_vector_vsearch_record_manager_resolve(
@@ -516,11 +449,6 @@ void kvs_vector_vsearch_record_manager_resolve(
 	size_t resolved_hit_count
 );
 void kvs_vector_vsearch_record_response_build(uint64_t elapsed_us);
-void kvs_vector_vsearch_record_response_push(uint64_t elapsed_us);
-void kvs_vector_flat_record_search_core(uint64_t elapsed_us);
-void kvs_vector_flat_record_search_export(uint64_t elapsed_us);
-void kvs_vector_hnsw_record_search_core(uint64_t elapsed_us);
-void kvs_vector_hnsw_record_search_export(uint64_t elapsed_us);
 
 void kvs_vector_search_prepared_reset(kvs_vector_search_prepared_t *prepared);
 

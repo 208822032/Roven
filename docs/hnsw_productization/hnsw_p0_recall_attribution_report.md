@@ -282,7 +282,7 @@ HNSW 框架容易仿，生产级图质量难仿。
 
 1. 先拆 manager / vector_core 边界，确保 ANN core 只处理 `record_id + vector -> record_id + score`。
 2. 用 `core_flat` 建 exact oracle，避免把 ANN 召回问题和 manager resolve/filter 混在一起。
-3. 保留 legacy `core_hnsw` 作为显式 fallback 和 regression reference。
+3. 当时保留 legacy `core_hnsw` 作为显式 fallback 和 regression reference；该结论已被 CODE-HYGIENE-0 覆盖，现在源码已删除，显式 `core_hnsw` 配置解析为 `core_flat` fallback。
 4. 重做 `core_hnsw_v2`，修复旧实现里新节点 forward edge 依赖 reverse acceptance 的图构建语义问题。
 5. 用 10K gate 验证默认 ANN backend 小规模可用。
 6. 用 50K/100K scale gate 暴露召回和同步 rebuild 风险。
@@ -295,7 +295,7 @@ HNSW 框架容易仿，生产级图质量难仿。
 
 - SIMD/layout 微优化。
 - reverse_prune cache 继续扩展。
-- 删除 legacy `core_hnsw`。
+- 重新引入或继续依赖已删除 legacy `core_hnsw`。
 - RDB/AOF graph persistence。
 - VSEARCH response 改造。
 - background rebuild thread。

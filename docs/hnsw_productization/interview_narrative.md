@@ -120,8 +120,8 @@ v2 还修正了重要的 graph-construction 语义，例如新节点 forward edg
 可以重点强调：
 
 - 有 exact baseline。
-- 默认 backend 切换时保留了显式 fallback。
-- legacy `core_hnsw` 没有过早删除。
+- 默认 backend 切换时保留了 `core_flat` 显式 fallback。
+- legacy `core_hnsw` 在 v2 默认路径和兼容测试稳定后删除；旧配置字符串保留为 `core_flat` fallback，避免老配置直接启动失败。
 - VSEARCH response 和 RDB/AOF compatibility 被保留。
 - 在宣称生产可用前加了 scale gate。
 - 50K/100K 风险被明确记录。

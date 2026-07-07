@@ -8,7 +8,7 @@ BIN="./build/tests/bin/vector_core_hnsw_v2_tombstone_test"
 
 if [[ ! -x "$BIN" ]]; then
   printf '[INFO][build] building hnsw_v2 tombstone test\n'
-  make ENABLE_HNSWLIB="${ENABLE_HNSWLIB:-1}" ENABLE_FAISS="${ENABLE_FAISS:-1}" "$BIN"
+  make "$BIN"
 fi
 
 "$BIN"

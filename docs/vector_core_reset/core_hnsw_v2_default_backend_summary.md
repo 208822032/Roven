@@ -45,11 +45,13 @@ or:
 vector_index_type=core_flat
 ```
 
-Use legacy current core_hnsw:
+Compatibility request for removed legacy core_hnsw:
 
 ```text
 vector_index_type=core_hnsw
 ```
+
+Current behavior: accepted for old configuration compatibility and resolved to `core_flat`. It does not create a legacy core_hnsw index.
 
 Use default v2 explicitly:
 
@@ -84,7 +86,7 @@ Expected:
 - default config string is `core_hnsw_v2`
 - `kvs_vector_info()` reports `KVS_VECTOR_INDEX_CORE_HNSW_V2`
 - `flat` maps to `core_flat`
-- `core_hnsw` maps to legacy current `core_hnsw`
+- `core_hnsw` maps to `core_flat` fallback
 
 ## Required gate list
 
@@ -94,15 +96,6 @@ Baseline:
 tests/vector_core_flat_correctness_test.sh
 tests/vector_core_flat_rebuild_test.sh
 tests/vector_core_flat_rdb_reload_test.sh
-```
-
-Legacy current core_hnsw:
-
-```bash
-tests/vector_core_hnsw_correctness_test.sh
-tests/vector_core_hnsw_rebuild_test.sh
-tests/vector_core_hnsw_rdb_reload_test.sh
-tests/vector_core_hnsw_aof_replay_test.sh
 ```
 
 core_hnsw_v2:
@@ -133,7 +126,7 @@ tests/vector_rebuild_shadow_swap_test.sh
 - RDB/AOF format is unchanged.
 - v2 graph is runtime derived state and is rebuilt from active records.
 - `core_flat` is still the exact oracle.
-- legacy `core_hnsw` remains available explicitly.
+- legacy `core_hnsw` source is removed; explicit `core_hnsw` config remains only as `core_flat` fallback compatibility.
 - High tombstone ratio should trigger operational rebuild recommendation.
 - Large cold start / bulk import should not be represented as final production behavior until background/shadow rebuild is hardened.
 - The balanced default improves 100K recall, but increases build/search/memory cost versus the old lower-parameter default.

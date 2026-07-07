@@ -8,7 +8,7 @@ KV_BIN="${KV_BIN:-./kvstore}"
 
 if [[ ! -x "$KV_BIN" ]]; then
   printf '[INFO][build] building kvstore\n'
-  make ENABLE_HNSWLIB="${ENABLE_HNSWLIB:-1}" ENABLE_FAISS="${ENABLE_FAISS:-1}" -j2 kvstore
+  make -j2 kvstore
 fi
 
 python3 - "$ROOT_DIR" "$KV_BIN" <<'PY'
@@ -26,7 +26,8 @@ if not kv_bin.is_absolute():
     kv_bin = root / kv_bin
 kv_bin = kv_bin.resolve()
 
-BACKENDS = ("core_flat", "core_hnsw", "hnswlib_hnsw", "faiss_flat", "faiss_hnsw")
+BACKENDS = ("core_flat", "core_hnsw_v2")
+
 BACKEND_STATS_KEYS = (
     "backend_name",
     "backend_size",
@@ -62,6 +63,22 @@ VSEARCH_PROFILE_KEYS = (
     "vsearch_raw_hit_count",
     "vsearch_resolved_hit_count",
     "vsearch_filtered_hit_count",
+)
+SNAPSHOT_STATUS_KEYS = (
+    "snapshot_supported",
+    "snapshot_load_attempted",
+    "snapshot_loaded",
+    "snapshot_valid",
+    "loaded_from_snapshot",
+    "snapshot_fallback_rebuild_count",
+    "snapshot_last_error",
+    "snapshot_write_attempted",
+    "snapshot_written",
+    "snapshot_last_write_error",
+    "snapshot_last_write_started_ms",
+    "snapshot_last_write_finished_ms",
+    "snapshot_last_bytes",
+    "snapshot_last_checksum",
 )
 
 def pick_port():
@@ -196,7 +213,7 @@ def stop(proc, log):
     assert proc.returncode in (0, -signal.SIGTERM), f"kvstore exit={proc.returncode}"
 
 def assert_backend_stats(info, backend):
-    for key in BACKEND_STATS_KEYS + VSEARCH_PROFILE_KEYS:
+    for key in BACKEND_STATS_KEYS + VSEARCH_PROFILE_KEYS + SNAPSHOT_STATUS_KEYS:
         assert key in info, f"{backend} missing VINFO key {key}: {info}"
 
     assert info["backend_name"] == backend, info
@@ -211,7 +228,7 @@ def assert_backend_stats(info, backend):
 
     source = info["backend_memory_bytes_source"]
     assert source in ("measured", "estimated", "unsupported"), info
-    if backend in ("core_flat", "core_hnsw"):
+    if backend in ("core_flat", "core_hnsw_v2"):
         assert source == "measured", info
         assert info_int(info, "backend_memory_bytes") > 0, info
     else:
@@ -219,19 +236,8 @@ def assert_backend_stats(info, backend):
         if source == "estimated":
             assert info_int(info, "backend_memory_bytes") > 0, info
 
-    if backend == "core_hnsw":
-        for key in [
-            "core_hnsw_m",
-            "core_hnsw_m0",
-            "core_hnsw_ef_construction",
-            "core_hnsw_ef_search",
-            "core_hnsw_max_level",
-            "core_hnsw_deleted_count",
-            "core_hnsw_memory_bytes",
-        ]:
-            assert key in info, f"{backend} missing {key}: {info}"
-
     if backend == "core_flat":
+        assert info_int(info, "snapshot_supported") == 0, info
         for key in [
             "core_flat_size",
             "core_flat_capacity",
@@ -239,6 +245,8 @@ def assert_backend_stats(info, backend):
             "core_flat_deleted_count",
         ]:
             assert key in info, f"{backend} missing {key}: {info}"
+    elif backend == "core_hnsw_v2":
+        assert info_int(info, "snapshot_supported") == 1, info
 
 def run_backend(tmp, backend):
     port = pick_port()
@@ -250,7 +258,8 @@ def run_backend(tmp, backend):
         c = RespClient(port)
         try:
             info0 = info_map(c.cmd("VINFO"))
-            if info0.get("index_type") != backend:
+            actual_backend = backend
+            if info0.get("index_type") != actual_backend:
                 raise AssertionError(f"{backend} unavailable or mapped to {info0.get('index_type')}: {info0}")
 
             for i in range(16):
@@ -263,7 +272,7 @@ def run_backend(tmp, backend):
             assert not contains(response, "slot"), response
 
             info = info_map(c.cmd("VINFO"))
-            assert_backend_stats(info, backend)
+            assert_backend_stats(info, actual_backend)
             assert info_int(info, "vsearch_total_count") > 0, info
             assert info_int(info, "vsearch_backend_search_count") > 0, info
             assert info_int(info, "vsearch_manager_resolve_count") > 0, info

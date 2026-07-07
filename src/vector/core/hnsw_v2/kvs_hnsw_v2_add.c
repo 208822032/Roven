@@ -1,7 +1,7 @@
 #include "vector/kvs_vector_hnsw_v2.h"
+#include "vector/kvs_vector_hnsw_v2_heap.h"
+#include "vector/kvs_vector_hnsw_v2_score_cache.h"
 
-#include "kvs_hnsw_v2_heap.h"
-#include "kvs_hnsw_v2_score_cache.h"
 #include "kvs_memory.h"
 
 #include <stdlib.h>

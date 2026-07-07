@@ -428,7 +428,6 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	kvs_embedding_worker_pool_stats_t stats;
 	kvs_command_executor_stats_t exec_stats;
 	kvs_owner_lock_stats_t owner_stats;
-	kvs_vector_vset_commit_stats_t vector_stats;
 	kvs_vector_info_t vector_info;
 	uint64_t prepare_avg_us = 0;
 	uint64_t prepare_wait_avg_us = 0;
@@ -458,37 +457,19 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	uint64_t vset_finalize_response_avg_us = 0;
 	uint64_t vset_push_response_avg_us = 0;
 	uint64_t vsearch_execute_sync_avg_us = 0;
-	uint64_t vset_commit_avg_us = 0;
-	uint64_t vset_record_lookup_avg_us = 0;
-	uint64_t vset_record_insert_or_update_avg_us = 0;
-	uint64_t vset_vector_copy_avg_us = 0;
-	uint64_t vset_flat_index_update_avg_us = 0;
-	uint64_t vset_backend_add_avg_us = 0;
-	uint64_t vset_id_map_update_avg_us = 0;
-	uint64_t vset_scope_answer_question_update_avg_us = 0;
-	uint64_t vset_lock_wait_avg_us = 0;
-	uint64_t vset_lock_hold_avg_us = 0;
-	uint64_t vset_aof_append_avg_us = 0;
-	uint64_t vset_replication_avg_us = 0;
-	uint64_t vset_dirty_mark_avg_us = 0;
-	uint64_t vset_response_build_avg_us = 0;
-	uint64_t vset_response_push_avg_us = 0;
 	uint64_t vsearch_search_avg_us = 0;
 	uint64_t vsearch_backend_search_avg_us = 0;
 	uint64_t vsearch_manager_resolve_avg_us = 0;
 	uint64_t vsearch_response_build_avg_us = 0;
-	uint64_t vsearch_response_push_avg_us = 0;
 	uint64_t vsearch_non_index_avg_us = 0;
 
 	memset(&stats, 0, sizeof(stats));
 	memset(&exec_stats, 0, sizeof(exec_stats));
 	memset(&owner_stats, 0, sizeof(owner_stats));
-	memset(&vector_stats, 0, sizeof(vector_stats));
 	memset(&vector_info, 0, sizeof(vector_info));
 	kvs_embedding_worker_pool_get_stats(&stats);
 	kvs_command_executor_get_stats(&exec_stats);
 	kvs_owner_lock_get_stats(&owner_stats);
-	kvs_vector_vset_commit_stats_get(&vector_stats);
 	kvs_vector_info(&vector_info);
 	if (stats.prepare_count > 0) {
 		prepare_avg_us = stats.prepare_total_us / stats.prepare_count;
@@ -588,100 +569,28 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 		vsearch_execute_sync_avg_us =
 			exec_stats.vsearch_execute_sync_total_us / exec_stats.vsearch_execute_sync_count;
 	}
-	if (vector_stats.vset_commit_count > 0) {
-		vset_commit_avg_us =
-			vector_stats.vset_commit_total_us / vector_stats.vset_commit_count;
-	}
-	if (vector_stats.vset_record_lookup_count > 0) {
-		vset_record_lookup_avg_us =
-			vector_stats.vset_record_lookup_total_us / vector_stats.vset_record_lookup_count;
-	}
-	if (vector_stats.vset_record_insert_or_update_count > 0) {
-		vset_record_insert_or_update_avg_us =
-			vector_stats.vset_record_insert_or_update_total_us /
-			vector_stats.vset_record_insert_or_update_count;
-	}
-	if (vector_stats.vset_vector_copy_count > 0) {
-		vset_vector_copy_avg_us =
-			vector_stats.vset_vector_copy_total_us / vector_stats.vset_vector_copy_count;
-	}
-	if (vector_stats.vset_flat_index_update_count > 0) {
-		vset_flat_index_update_avg_us =
-			vector_stats.vset_flat_index_update_total_us /
-			vector_stats.vset_flat_index_update_count;
-	}
-	if (vector_stats.vset_backend_add_count > 0) {
-		vset_backend_add_avg_us =
-			vector_stats.vset_backend_add_total_us / vector_stats.vset_backend_add_count;
-	}
-	if (vector_stats.vset_id_map_update_count > 0) {
-		vset_id_map_update_avg_us =
-			vector_stats.vset_id_map_update_total_us /
-			vector_stats.vset_id_map_update_count;
-	}
-	if (vector_stats.vset_scope_answer_question_update_count > 0) {
-		vset_scope_answer_question_update_avg_us =
-			vector_stats.vset_scope_answer_question_update_total_us /
-			vector_stats.vset_scope_answer_question_update_count;
-	}
-	if (vector_stats.vset_lock_wait_count > 0) {
-		vset_lock_wait_avg_us =
-			vector_stats.vset_lock_wait_total_us / vector_stats.vset_lock_wait_count;
-	}
-	if (vector_stats.vset_lock_hold_count > 0) {
-		vset_lock_hold_avg_us =
-			vector_stats.vset_lock_hold_total_us / vector_stats.vset_lock_hold_count;
-	}
-	if (vector_stats.vset_aof_append_count > 0) {
-		vset_aof_append_avg_us =
-			vector_stats.vset_aof_append_total_us / vector_stats.vset_aof_append_count;
-	}
-	if (vector_stats.vset_replication_count > 0) {
-		vset_replication_avg_us =
-			vector_stats.vset_replication_total_us / vector_stats.vset_replication_count;
-	}
-	if (vector_stats.vset_dirty_mark_count > 0) {
-		vset_dirty_mark_avg_us =
-			vector_stats.vset_dirty_mark_total_us / vector_stats.vset_dirty_mark_count;
-	}
-	if (vector_stats.vset_response_build_count > 0) {
-		vset_response_build_avg_us =
-			vector_stats.vset_response_build_total_us /
-			vector_stats.vset_response_build_count;
-	}
-	if (vector_stats.vset_response_push_count > 0) {
-		vset_response_push_avg_us =
-			vector_stats.vset_response_push_total_us /
-			vector_stats.vset_response_push_count;
-	}
-	if (vector_stats.vsearch_search_count > 0) {
+	if (vector_info.vsearch_total_count > 0) {
 		vsearch_search_avg_us =
-			vector_stats.vsearch_search_total_us / vector_stats.vsearch_search_count;
+			vector_info.vsearch_total_us / vector_info.vsearch_total_count;
 	}
-	if (vector_stats.vsearch_backend_search_count > 0) {
+	if (vector_info.vsearch_backend_search_count > 0) {
 		vsearch_backend_search_avg_us =
-			vector_stats.vsearch_backend_search_total_us /
-			vector_stats.vsearch_backend_search_count;
+			vector_info.vsearch_backend_search_total_us /
+			vector_info.vsearch_backend_search_count;
 	}
-	if (vector_stats.vsearch_manager_resolve_count > 0) {
+	if (vector_info.vsearch_manager_resolve_count > 0) {
 		vsearch_manager_resolve_avg_us =
-			vector_stats.vsearch_manager_resolve_total_us /
-			vector_stats.vsearch_manager_resolve_count;
+			vector_info.vsearch_manager_resolve_total_us /
+			vector_info.vsearch_manager_resolve_count;
 	}
-	if (vector_stats.vsearch_response_build_count > 0) {
+	if (vector_info.vsearch_response_assembly_count > 0) {
 		vsearch_response_build_avg_us =
-			vector_stats.vsearch_response_build_total_us /
-			vector_stats.vsearch_response_build_count;
+			vector_info.vsearch_response_assembly_total_us /
+			vector_info.vsearch_response_assembly_count;
 	}
-	if (vector_stats.vsearch_response_push_count > 0) {
-		vsearch_response_push_avg_us =
-			vector_stats.vsearch_response_push_total_us /
-			vector_stats.vsearch_response_push_count;
-	}
-	if (vector_stats.vsearch_response_build_count > 0 &&
-	    vector_stats.vsearch_search_count > 0) {
-		vsearch_non_index_avg_us = vsearch_response_build_avg_us +
-			vsearch_response_push_avg_us;
+	if (vector_info.vsearch_response_assembly_count > 0 &&
+	    vector_info.vsearch_total_count > 0) {
+		vsearch_non_index_avg_us = vsearch_response_build_avg_us;
 	}
 	KVS_LOG_INFO(
 		"core",
@@ -895,107 +804,27 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 	);
 	KVS_LOG_INFO(
 		"core",
-		"vset commit breakdown stats: vset_commit_count=%llu vset_commit_avg_us=%llu vset_commit_total_us=%llu vset_commit_max_us=%llu vset_record_lookup_count=%llu vset_record_lookup_avg_us=%llu vset_record_lookup_total_us=%llu vset_record_lookup_max_us=%llu vset_record_insert_or_update_count=%llu vset_record_insert_or_update_avg_us=%llu vset_record_insert_or_update_total_us=%llu vset_record_insert_or_update_max_us=%llu vset_vector_copy_count=%llu vset_vector_copy_avg_us=%llu vset_vector_copy_total_us=%llu vset_vector_copy_max_us=%llu",
-		(unsigned long long)vector_stats.vset_commit_count,
-		(unsigned long long)vset_commit_avg_us,
-		(unsigned long long)vector_stats.vset_commit_total_us,
-		(unsigned long long)vector_stats.vset_commit_max_us,
-		(unsigned long long)vector_stats.vset_record_lookup_count,
-		(unsigned long long)vset_record_lookup_avg_us,
-		(unsigned long long)vector_stats.vset_record_lookup_total_us,
-		(unsigned long long)vector_stats.vset_record_lookup_max_us,
-		(unsigned long long)vector_stats.vset_record_insert_or_update_count,
-		(unsigned long long)vset_record_insert_or_update_avg_us,
-		(unsigned long long)vector_stats.vset_record_insert_or_update_total_us,
-		(unsigned long long)vector_stats.vset_record_insert_or_update_max_us,
-		(unsigned long long)vector_stats.vset_vector_copy_count,
-		(unsigned long long)vset_vector_copy_avg_us,
-		(unsigned long long)vector_stats.vset_vector_copy_total_us,
-		(unsigned long long)vector_stats.vset_vector_copy_max_us
-	);
-	KVS_LOG_INFO(
-		"core",
-		"vset index stats: vset_flat_index_update_count=%llu vset_flat_index_update_avg_us=%llu vset_flat_index_update_total_us=%llu vset_flat_index_update_max_us=%llu vset_backend_add_count=%llu vset_backend_add_avg_us=%llu vset_backend_add_total_us=%llu vset_backend_add_max_us=%llu vset_id_map_update_count=%llu vset_id_map_update_avg_us=%llu vset_id_map_update_total_us=%llu vset_id_map_update_max_us=%llu vset_scope_answer_question_update_count=%llu vset_scope_answer_question_update_avg_us=%llu vset_scope_answer_question_update_total_us=%llu vset_scope_answer_question_update_max_us=%llu",
-		(unsigned long long)vector_stats.vset_flat_index_update_count,
-		(unsigned long long)vset_flat_index_update_avg_us,
-		(unsigned long long)vector_stats.vset_flat_index_update_total_us,
-		(unsigned long long)vector_stats.vset_flat_index_update_max_us,
-		(unsigned long long)vector_stats.vset_backend_add_count,
-		(unsigned long long)vset_backend_add_avg_us,
-		(unsigned long long)vector_stats.vset_backend_add_total_us,
-		(unsigned long long)vector_stats.vset_backend_add_max_us,
-		(unsigned long long)vector_stats.vset_id_map_update_count,
-		(unsigned long long)vset_id_map_update_avg_us,
-		(unsigned long long)vector_stats.vset_id_map_update_total_us,
-		(unsigned long long)vector_stats.vset_id_map_update_max_us,
-		(unsigned long long)vector_stats.vset_scope_answer_question_update_count,
-		(unsigned long long)vset_scope_answer_question_update_avg_us,
-		(unsigned long long)vector_stats.vset_scope_answer_question_update_total_us,
-		(unsigned long long)vector_stats.vset_scope_answer_question_update_max_us
-	);
-	KVS_LOG_INFO(
-		"core",
-		"vset side-effect breakdown stats: vset_lock_wait_count=%llu vset_lock_wait_avg_us=%llu vset_lock_wait_total_us=%llu vset_lock_wait_max_us=%llu vset_lock_hold_count=%llu vset_lock_hold_avg_us=%llu vset_lock_hold_total_us=%llu vset_lock_hold_max_us=%llu vset_aof_append_count=%llu vset_aof_append_avg_us=%llu vset_aof_append_total_us=%llu vset_aof_append_max_us=%llu vset_replication_count=%llu vset_replication_avg_us=%llu vset_replication_total_us=%llu vset_replication_max_us=%llu vset_dirty_mark_count=%llu vset_dirty_mark_avg_us=%llu vset_dirty_mark_total_us=%llu vset_dirty_mark_max_us=%llu vset_response_build_count=%llu vset_response_build_avg_us=%llu vset_response_build_total_us=%llu vset_response_build_max_us=%llu vset_response_push_count=%llu vset_response_push_avg_us=%llu vset_response_push_total_us=%llu vset_response_push_max_us=%llu vsearch_search_count=%llu vsearch_search_avg_us=%llu vsearch_search_total_us=%llu vsearch_search_max_us=%llu",
-		(unsigned long long)vector_stats.vset_lock_wait_count,
-		(unsigned long long)vset_lock_wait_avg_us,
-		(unsigned long long)vector_stats.vset_lock_wait_total_us,
-		(unsigned long long)vector_stats.vset_lock_wait_max_us,
-		(unsigned long long)vector_stats.vset_lock_hold_count,
-		(unsigned long long)vset_lock_hold_avg_us,
-		(unsigned long long)vector_stats.vset_lock_hold_total_us,
-		(unsigned long long)vector_stats.vset_lock_hold_max_us,
-		(unsigned long long)vector_stats.vset_aof_append_count,
-		(unsigned long long)vset_aof_append_avg_us,
-		(unsigned long long)vector_stats.vset_aof_append_total_us,
-		(unsigned long long)vector_stats.vset_aof_append_max_us,
-		(unsigned long long)vector_stats.vset_replication_count,
-		(unsigned long long)vset_replication_avg_us,
-		(unsigned long long)vector_stats.vset_replication_total_us,
-		(unsigned long long)vector_stats.vset_replication_max_us,
-		(unsigned long long)vector_stats.vset_dirty_mark_count,
-		(unsigned long long)vset_dirty_mark_avg_us,
-		(unsigned long long)vector_stats.vset_dirty_mark_total_us,
-		(unsigned long long)vector_stats.vset_dirty_mark_max_us,
-		(unsigned long long)vector_stats.vset_response_build_count,
-		(unsigned long long)vset_response_build_avg_us,
-		(unsigned long long)vector_stats.vset_response_build_total_us,
-		(unsigned long long)vector_stats.vset_response_build_max_us,
-		(unsigned long long)vector_stats.vset_response_push_count,
-		(unsigned long long)vset_response_push_avg_us,
-		(unsigned long long)vector_stats.vset_response_push_total_us,
-		(unsigned long long)vector_stats.vset_response_push_max_us,
-		(unsigned long long)vector_stats.vsearch_search_count,
+		"vsearch breakdown stats: vsearch_search_count=%llu vsearch_search_avg_us=%llu vsearch_search_total_us=%llu vsearch_search_max_us=%llu vsearch_backend_search_count=%llu vsearch_backend_search_avg_us=%llu vsearch_backend_search_total_us=%llu vsearch_backend_search_max_us=%llu vsearch_manager_resolve_count=%llu vsearch_manager_resolve_avg_us=%llu vsearch_manager_resolve_total_us=%llu vsearch_manager_resolve_max_us=%llu vsearch_raw_hit_count=%llu vsearch_resolved_hit_count=%llu vsearch_filtered_hit_count=%llu vsearch_non_index_avg_us=%llu vsearch_response_build_count=%llu vsearch_response_build_avg_us=%llu vsearch_response_build_total_us=%llu vsearch_response_build_max_us=%llu",
+		(unsigned long long)vector_info.vsearch_total_count,
 		(unsigned long long)vsearch_search_avg_us,
-		(unsigned long long)vector_stats.vsearch_search_total_us,
-		(unsigned long long)vector_stats.vsearch_search_max_us
-	);
-	KVS_LOG_INFO(
-		"core",
-		"vsearch breakdown stats: vsearch_search_count=%llu vsearch_search_avg_us=%llu vsearch_search_total_us=%llu vsearch_search_max_us=%llu vsearch_backend_search_count=%llu vsearch_backend_search_avg_us=%llu vsearch_backend_search_total_us=%llu vsearch_backend_search_max_us=%llu vsearch_manager_resolve_count=%llu vsearch_manager_resolve_avg_us=%llu vsearch_manager_resolve_total_us=%llu vsearch_manager_resolve_max_us=%llu vsearch_raw_hit_count=%llu vsearch_resolved_hit_count=%llu vsearch_filtered_hit_count=%llu vsearch_non_index_avg_us=%llu vsearch_response_build_count=%llu vsearch_response_build_avg_us=%llu vsearch_response_build_total_us=%llu vsearch_response_build_max_us=%llu vsearch_response_push_count=%llu vsearch_response_push_avg_us=%llu vsearch_response_push_total_us=%llu vsearch_response_push_max_us=%llu",
-		(unsigned long long)vector_stats.vsearch_search_count,
-		(unsigned long long)vsearch_search_avg_us,
-		(unsigned long long)vector_stats.vsearch_search_total_us,
-		(unsigned long long)vector_stats.vsearch_search_max_us,
-		(unsigned long long)vector_stats.vsearch_backend_search_count,
+		(unsigned long long)vector_info.vsearch_total_us,
+		(unsigned long long)vector_info.vsearch_total_max_us,
+		(unsigned long long)vector_info.vsearch_backend_search_count,
 		(unsigned long long)vsearch_backend_search_avg_us,
-		(unsigned long long)vector_stats.vsearch_backend_search_total_us,
-		(unsigned long long)vector_stats.vsearch_backend_search_max_us,
-		(unsigned long long)vector_stats.vsearch_manager_resolve_count,
+		(unsigned long long)vector_info.vsearch_backend_search_total_us,
+		(unsigned long long)vector_info.vsearch_backend_search_max_us,
+		(unsigned long long)vector_info.vsearch_manager_resolve_count,
 		(unsigned long long)vsearch_manager_resolve_avg_us,
-		(unsigned long long)vector_stats.vsearch_manager_resolve_total_us,
-		(unsigned long long)vector_stats.vsearch_manager_resolve_max_us,
-		(unsigned long long)vector_stats.vsearch_raw_hit_count,
-		(unsigned long long)vector_stats.vsearch_resolved_hit_count,
-		(unsigned long long)vector_stats.vsearch_filtered_hit_count,
+		(unsigned long long)vector_info.vsearch_manager_resolve_total_us,
+		(unsigned long long)vector_info.vsearch_manager_resolve_max_us,
+		(unsigned long long)vector_info.vsearch_raw_hit_count,
+		(unsigned long long)vector_info.vsearch_resolved_hit_count,
+		(unsigned long long)vector_info.vsearch_filtered_hit_count,
 		(unsigned long long)vsearch_non_index_avg_us,
-		(unsigned long long)vector_stats.vsearch_response_build_count,
+		(unsigned long long)vector_info.vsearch_response_assembly_count,
 		(unsigned long long)vsearch_response_build_avg_us,
-		(unsigned long long)vector_stats.vsearch_response_build_total_us,
-		(unsigned long long)vector_stats.vsearch_response_build_max_us,
-		(unsigned long long)vector_stats.vsearch_response_push_count,
-		(unsigned long long)vsearch_response_push_avg_us,
-		(unsigned long long)vector_stats.vsearch_response_push_total_us,
-		(unsigned long long)vector_stats.vsearch_response_push_max_us
+		(unsigned long long)vector_info.vsearch_response_assembly_total_us,
+		(unsigned long long)vector_info.vsearch_response_assembly_max_us
 	);
 	KVS_LOG_INFO(
 		"core",
@@ -1004,9 +833,10 @@ static void kvs_command_executor_log_embedding_worker_stats(void) {
 			(vector_info.index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
 			 (vector_info.index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
 			  (vector_info.index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" :
-			   (vector_info.index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" :
-			    (vector_info.index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw" :
-			     (vector_info.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat")))))),
+				   (vector_info.index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" :
+				    (vector_info.index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw_removed" :
+				     (vector_info.index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2 ? "core_hnsw_v2" :
+				      (vector_info.index_type == KVS_VECTOR_INDEX_TYPE_HNSW ? "hnsw" : "flat"))))))),
 		vector_info.index_size,
 		vector_info.hnswlib_capacity,
 		vector_info.hnswlib_capacity,
@@ -2951,8 +2781,6 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 					&g_executor.stats.vset_execute_sync_max_us,
 					end_us >= start_us ? end_us - start_us : 0
 				);
-				kvs_vector_vset_record_lock_wait(task->lock_wait_us);
-				kvs_vector_vset_record_lock_hold(task->lock_hold_us);
 			} else if (is_vsearch_prepared) {
 				executor_record_timing(
 					&g_executor.stats.vsearch_execute_sync_count,
@@ -2971,26 +2799,12 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 				end_us >= start_us ? end_us - start_us : 0
 			);
 			if (is_vset_prepared) {
-				uint64_t aof_us = 0;
-				uint64_t repl_us = 0;
-				uint64_t dirty_us = 0;
 				executor_record_timing(
 					&g_executor.stats.vset_post_commit_count,
 					&g_executor.stats.vset_post_commit_total_us,
 					&g_executor.stats.vset_post_commit_max_us,
 					end_us >= start_us ? end_us - start_us : 0
 				);
-				kvs_command_task_get_vset_post_commit_timings(
-					task,
-					&aof_us,
-					&repl_us,
-					&dirty_us
-				);
-				kvs_vector_vset_record_aof_append(aof_us);
-				kvs_vector_vset_record_replication(repl_us);
-				if (dirty_us > 0) {
-					kvs_vector_vset_record_dirty_mark(dirty_us);
-				}
 			}
 		}
 		if (ret == 0 || task->command_committed) {
@@ -3024,9 +2838,6 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 				&g_executor.stats.vset_finalize_response_max_us,
 				end_us >= start_us ? end_us - start_us : 0
 			);
-			kvs_vector_vset_record_response_build(
-				end_us >= start_us ? end_us - start_us : 0
-			);
 		}
 	}
 	task->response_task = NULL;
@@ -3041,9 +2852,6 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 			&g_executor.stats.vset_push_response_count,
 			&g_executor.stats.vset_push_response_total_us,
 			&g_executor.stats.vset_push_response_max_us,
-			end_us >= start_us ? end_us - start_us : 0
-		);
-		kvs_vector_vset_record_response_push(
 			end_us >= start_us ? end_us - start_us : 0
 		);
 	}

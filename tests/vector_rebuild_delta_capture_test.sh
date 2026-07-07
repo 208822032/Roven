@@ -8,7 +8,7 @@ BIN="./build/tests/bin/vector_rebuild_delta_capture_test"
 
 if [[ ! -x "$BIN" ]]; then
   printf '[INFO][build] building rebuild delta capture test\n'
-  make ENABLE_HNSWLIB="${ENABLE_HNSWLIB:-1}" ENABLE_FAISS="${ENABLE_FAISS:-1}" "$BIN"
+  make "$BIN"
 fi
 
 "$BIN"

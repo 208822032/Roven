@@ -4,10 +4,6 @@
 #include "vector/kvs_vector_flat.h"
 #include "vector/kvs_vector_hnsw_v2.h"
 
-#ifdef ENABLE_HNSWLIB
-#include "kvs_vector_hnswlib_backend.h"
-#endif
-
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -163,18 +159,6 @@ static int p1_hits_descending(const kvs_vector_hit_t *hits, size_t count) {
 	return 1;
 }
 
-static int p1_external_descending(const size_t *ids, const float *scores, size_t count) {
-	size_t i;
-
-	(void)ids;
-	for (i = 1; i < count; i++) {
-		if (scores[i - 1] < scores[i]) {
-			return 0;
-		}
-	}
-	return 1;
-}
-
 static double p1_recall_hits(
 	const p1_exact_item_t *exact,
 	size_t exact_count,
@@ -192,31 +176,6 @@ static double p1_recall_hits(
 	for (i = 0; i < exact_count; i++) {
 		for (j = 0; j < hit_count; j++) {
 			if (hits[j].record_id == exact[i].record_id) {
-				matched++;
-				break;
-			}
-		}
-	}
-	return (double)matched / (double)exact_count;
-}
-
-static double p1_recall_external(
-	const p1_exact_item_t *exact,
-	size_t exact_count,
-	const size_t *ids,
-	size_t hit_count
-) {
-	size_t i;
-	size_t j;
-	size_t matched = 0;
-
-	if (exact_count == 0) {
-		return 1.0;
-	}
-
-	for (i = 0; i < exact_count; i++) {
-		for (j = 0; j < hit_count; j++) {
-			if ((uint64_t)ids[j] == exact[i].record_id) {
 				matched++;
 				break;
 			}
@@ -606,173 +565,12 @@ done:
 	return failed;
 }
 
-#ifdef ENABLE_HNSWLIB
-static int p1_run_hnswlib_profile(const p1_dataset_t *ds, const p1_profile_t *profile) {
-	kvs_hnswlib_index_t *index = NULL;
-	size_t *ids = NULL;
-	float *scores = NULL;
-	uint64_t *elapsed = NULL;
-	uint64_t build_start_us;
-	uint64_t build_us;
-	size_t i;
-	size_t ef_idx;
-	int failed = 0;
-
-	ids = (size_t *)malloc(P1_TOPK * sizeof(*ids));
-	scores = (float *)malloc(P1_TOPK * sizeof(*scores));
-	elapsed = (uint64_t *)malloc(ds->queries * sizeof(*elapsed));
-	if (!ids || !scores || !elapsed) {
-		failed = 1;
-		goto done;
-	}
-
-	printf(
-		"hnsw_p1_build_start backend=hnswlib count=%zu profile=%s "
-		"M=%zu M0=%zu efConstruction=%zu\n",
-		ds->count,
-		profile->name,
-		profile->M,
-		profile->M0,
-		profile->ef_construction
-	);
-	fflush(stdout);
-
-	index = kvs_hnswlib_index_create(
-		P1_DIM,
-		ds->count,
-		profile->M,
-		profile->ef_construction
-	);
-	if (!index) {
-		fprintf(stderr, "hnsw_p1_hnswlib_create_failed count=%zu profile=%s\n",
-			ds->count, profile->name);
-		failed = 1;
-		goto done;
-	}
-
-	build_start_us = p1_now_us();
-	for (i = 0; i < ds->count; i++) {
-		if (kvs_hnswlib_index_add(
-			    index,
-			    (size_t)(P1_BASE_RECORD_ID + (uint64_t)i),
-			    ds->base + i * P1_DIM,
-			    P1_DIM
-		    ) != 0) {
-			fprintf(stderr, "hnsw_p1_hnswlib_add_failed count=%zu profile=%s i=%zu\n",
-				ds->count, profile->name, i);
-			failed = 1;
-			goto done;
-		}
-	}
-	build_us = p1_now_us() - build_start_us;
-
-	for (ef_idx = 0; ef_idx < profile->ef_count; ef_idx++) {
-		size_t ef = profile->efs[ef_idx];
-		double recall_sum = 0.0;
-		double recall;
-		size_t q;
-
-		kvs_hnswlib_index_set_ef(index, ef);
-		for (q = 0; q < ds->queries; q++) {
-			int ret;
-			uint64_t start_us = p1_now_us();
-
-			ret = kvs_hnswlib_index_search(
-				index,
-				ds->query + q * P1_DIM,
-				P1_DIM,
-				P1_TOPK,
-				ids,
-				scores
-			);
-			elapsed[q] = p1_now_us() - start_us;
-			if (ret < 0 || !p1_external_descending(ids, scores, (size_t)ret)) {
-				fprintf(stderr,
-					"hnsw_p1_hnswlib_search_failed count=%zu profile=%s ef=%zu q=%zu ret=%d\n",
-					ds->count, profile->name, ef, q, ret);
-				failed = 1;
-				goto done;
-			}
-			recall_sum += p1_recall_external(
-				ds->exact + q * P1_TOPK,
-				ds->exact_counts[q],
-				ids,
-				(size_t)ret
-			);
-		}
-		recall = recall_sum / (double)ds->queries;
-		printf(
-			"hnsw_p1_result backend=hnswlib count=%zu dim=%u topk=%u "
-			"queries=%zu profile=%s M=%zu M0=%zu efConstruction=%zu "
-			"efSearch=%zu build_us=%llu search_avg_us=%.2f search_p50_us=%llu "
-			"search_p95_us=%llu recall@10=%.4f memory_bytes=0 "
-			"memory_source=unsupported visited_avg=0 visited_p95=0 "
-			"distance_avg=0 distance_p95=0 duplicate_edge=unsupported "
-			"degree_overflow=unsupported\n",
-			ds->count,
-			P1_DIM,
-			P1_TOPK,
-			ds->queries,
-			profile->name,
-			profile->M,
-			profile->M0,
-			profile->ef_construction,
-			ef,
-			(unsigned long long)build_us,
-			p1_avg_u64(elapsed, ds->queries),
-			(unsigned long long)p1_percentile_u64(elapsed, ds->queries, 50.0),
-			(unsigned long long)p1_percentile_u64(elapsed, ds->queries, 95.0),
-			recall
-		);
-	}
-
-done:
-	if (index) {
-		kvs_hnswlib_index_destroy(index);
-	}
-	free(ids);
-	free(scores);
-	free(elapsed);
-	return failed;
-}
-#endif
-
-static void p1_print_faiss_status(void) {
-#ifdef ENABLE_FAISS_BASELINE
-	printf(
-		"hnsw_p1_faiss_status status=partial reason=faiss_c_abi_has_no_efSearch_setter "
-		"next_required_work=add_test_only_faiss_hnsw_direct_cpp_harness_or_c_abi_efSearch_setter\n"
-	);
-#else
-	printf(
-		"hnsw_p1_faiss_status status=missing reason=ENABLE_FAISS_BASELINE_not_compiled\n"
-	);
-#endif
-}
-
-static void p1_print_hnswlib_status(int run_hnswlib) {
-#ifdef ENABLE_HNSWLIB
-	if (run_hnswlib) {
-		printf("hnsw_p1_hnswlib_status status=enabled reason=HNSW_P1_EXTERNAL=1\n");
-	} else {
-		printf(
-			"hnsw_p1_hnswlib_status status=available_not_run "
-			"reason=HNSW_P1_EXTERNAL_not_1 next_required_work=run_explicit_external_parity\n"
-		);
-	}
-#else
-	(void)run_hnswlib;
-	printf("hnsw_p1_hnswlib_status status=missing reason=ENABLE_HNSWLIB_not_compiled\n");
-#endif
-}
-
 static int p1_run_case(
 	size_t count,
 	size_t queries,
 	const char *mode,
 	const p1_profile_t *profiles,
-	size_t profile_count,
-	int run_hnswlib
+	size_t profile_count
 ) {
 	p1_dataset_t ds;
 	size_t i;
@@ -784,18 +582,13 @@ static int p1_run_case(
 
 	printf(
 		"hnsw_p1_case_start mode=%s count=%zu dim=%u topk=%u queries=%zu "
-		"profile_count=%zu hnswlib=%s\n",
+		"profile_count=%zu\n",
 		mode,
 		count,
 		P1_DIM,
 		P1_TOPK,
 		queries,
-		profile_count,
-#ifdef ENABLE_HNSWLIB
-		run_hnswlib ? "enabled" : "disabled"
-#else
-		"missing"
-#endif
+		profile_count
 	);
 
 	for (i = 0; i < profile_count; i++) {
@@ -803,16 +596,6 @@ static int p1_run_case(
 		if (failed) {
 			break;
 		}
-#ifdef ENABLE_HNSWLIB
-		if (run_hnswlib) {
-			failed |= p1_run_hnswlib_profile(&ds, &profiles[i]);
-			if (failed) {
-				break;
-			}
-		}
-#else
-		(void)run_hnswlib;
-#endif
 	}
 
 	p1_dataset_destroy(&ds);
@@ -864,15 +647,10 @@ int main(void) {
 		2
 	};
 	const char *mode = getenv("HNSW_P1_MODE");
-	const char *external = getenv("HNSW_P1_EXTERNAL");
-	int run_hnswlib = 0;
 	int failed = 0;
 
 	if (!mode || !*mode) {
 		mode = "quick";
-	}
-	if (external && strcmp(external, "1") == 0) {
-		run_hnswlib = 1;
 	}
 
 	memset(&g_cfg, 0, sizeof(g_cfg));
@@ -888,8 +666,6 @@ int main(void) {
 		P1_DIM,
 		P1_TOPK
 	);
-	p1_print_faiss_status();
-	p1_print_hnswlib_status(run_hnswlib);
 
 	if (p1_mode_is(mode, "smoke")) {
 		p1_profile_t smoke_profile = baseline;
@@ -902,8 +678,7 @@ int main(void) {
 			p1_env_size_or("HNSW_P1_SMOKE_QUERIES", 20),
 			mode,
 			&smoke_profile,
-			1,
-			0
+			1
 		);
 	} else if (p1_mode_is(mode, "quick")) {
 		const p1_profile_t profiles_10k[] = {baseline};
@@ -914,8 +689,7 @@ int main(void) {
 			p1_env_size_or("HNSW_P1_10K_QUERIES", 100),
 			mode,
 			profiles_10k,
-			sizeof(profiles_10k) / sizeof(profiles_10k[0]),
-			0
+			sizeof(profiles_10k) / sizeof(profiles_10k[0])
 		);
 		if (!failed) {
 			failed |= p1_run_case(
@@ -923,8 +697,7 @@ int main(void) {
 				p1_env_size_or("HNSW_P1_50K_QUERIES", 200),
 				mode,
 				profiles_50k,
-				sizeof(profiles_50k) / sizeof(profiles_50k[0]),
-				run_hnswlib
+				sizeof(profiles_50k) / sizeof(profiles_50k[0])
 			);
 		}
 	} else if (p1_mode_is(mode, "full")) {
@@ -937,8 +710,7 @@ int main(void) {
 			p1_env_size_or("HNSW_P1_10K_QUERIES", 100),
 			mode,
 			profiles_10k,
-			sizeof(profiles_10k) / sizeof(profiles_10k[0]),
-			0
+			sizeof(profiles_10k) / sizeof(profiles_10k[0])
 		);
 		if (!failed) {
 			failed |= p1_run_case(
@@ -946,8 +718,7 @@ int main(void) {
 				p1_env_size_or("HNSW_P1_50K_QUERIES", 200),
 				mode,
 				profiles_50k,
-				sizeof(profiles_50k) / sizeof(profiles_50k[0]),
-				run_hnswlib
+				sizeof(profiles_50k) / sizeof(profiles_50k[0])
 			);
 		}
 		if (!failed) {
@@ -956,8 +727,7 @@ int main(void) {
 				p1_env_size_or("HNSW_P1_100K_QUERIES", 50),
 				mode,
 				profiles_100k,
-				sizeof(profiles_100k) / sizeof(profiles_100k[0]),
-				run_hnswlib
+				sizeof(profiles_100k) / sizeof(profiles_100k[0])
 			);
 		}
 	} else {

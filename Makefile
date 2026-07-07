@@ -66,14 +66,6 @@ ONNXRUNTIME_LIBDIR := $(ONNXRUNTIME_ROOT)/lib
 ONNX_MODEL_DIR ?= models/bge-small-zh-v1.5
 ONNX_MODEL_PATH ?= $(ONNX_MODEL_DIR)/model.onnx
 ONNX_EMBEDDING_DIM ?= 512
-ENABLE_FAISS ?= 0
-FAISS_ROOT ?= third_party/faiss
-FAISS_INCLUDEDIR := $(FAISS_ROOT)
-FAISS_LIB := $(FAISS_ROOT)/build/faiss/libfaiss.a
-
-ENABLE_HNSWLIB ?= 1
-HNSWLIB_ROOT ?= third_party/hnswlib
-
 ifeq ($(ENABLE_ONNX_EMBEDDING),1)
   EMBED_RUNTIME_SRC := $(SRC_EMBED)/embedding_runtime_onnx.c
   ONNX_CFLAGS := -I$(ONNXRUNTIME_ROOT)/include
@@ -123,7 +115,11 @@ HNSW_V2_SRCS = \
 	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_graph.c \
 	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_neighbor_select.c \
 	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_add.c \
-	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_search.c
+	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_search.c \
+	$(SRC_VECTOR)/core/hnsw_v2_snapshot/kvs_hnsw_v2_snapshot_io.c \
+	$(SRC_VECTOR)/core/hnsw_v2_snapshot/kvs_hnsw_v2_snapshot_validate.c \
+	$(SRC_VECTOR)/core/hnsw_v2_snapshot/kvs_hnsw_v2_snapshot_serialize.c \
+	$(SRC_VECTOR)/core/hnsw_v2_snapshot/kvs_hnsw_v2_snapshot_deserialize.c
 
 BASE_SRCS = \
 	$(SRC_CORE)/kvstore.c        $(SRC_CORE)/kvs_config.c        \
@@ -149,6 +145,8 @@ BASE_SRCS = \
 	$(SRC_UTILS)/kvs_log.c       $(SRC_UTILS)/kvs_log_writer.c   \
 	$(SRC_UTILS)/netbuf.c        $(SRC_UTILS)/tx_batcher.c        \
 	$(SRC_VECTOR)/kvs_vector.c   $(SRC_VECTOR)/kvs_vector_index.c \
+	$(SRC_VECTOR)/kvs_vector_backend_resolve.c                    \
+	$(SRC_VECTOR)/kvs_vector_index_snapshot.c                     \
 	$(SRC_VECTOR)/kvs_vector_rebuild.c                            \
 	$(SRC_VECTOR)/kvs_vector_rebuild_shadow.c                     \
 	$(SRC_VECTOR)/kvs_vector_embedding.c                          \
@@ -160,14 +158,6 @@ BASE_SRCS = \
 	$(SRC_VECTOR)/core/flat/kvs_flat_storage.c                    \
 	$(SRC_VECTOR)/core/flat/kvs_flat_search.c                     \
 	$(SRC_VECTOR)/core/flat/kvs_flat_info.c                       \
-	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_index.c                      \
-	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_graph.c                      \
-	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_context.c                    \
-	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_info.c                       \
-	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_random.c                     \
-	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_add.c                        \
-	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_search.c                     \
-	$(SRC_VECTOR)/core/hnsw/kvs_hnsw_delete.c                     \
 	$(HNSW_V2_SRCS)                                               \
 	$(EMBED_RUNTIME_SRC)
 
@@ -184,38 +174,9 @@ CXXFLAGS      = -I ./include -I ./src -g -std=c++17
 CFLAGS        = -I ./third_party/NtyCo/core/ -I ./include -I ./src \
                 -I $(JEMALLOC_INCLUDE) \
                 -DSYNC_MODE=$(SYNC_MODE) \
-                -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS) $(FAISS_CFLAGS) $(HNSWLIB_CFLAGS)
+                -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS)
 LDFLAGS       = -L ./third_party/NtyCo/ -lntyco -lpthread -luring -ldl -lm \
-                $(EXTRA_LIBS) $(JEMALLOC_LIB) $(ONNX_LDFLAGS) $(FAISS_LDFLAGS)
-ifeq ($(ENABLE_FAISS),1)
-  FAISS_CFLAGS := -DENABLE_FAISS_BASELINE -I$(FAISS_INCLUDEDIR)
-  FAISS_CXXFLAGS = $(CXXFLAGS) -I$(FAISS_INCLUDEDIR)
-  FAISS_LDFLAGS = $(FAISS_LIB) -fopenmp -lblas -llapack
-  SRC_VECTOR_FAISS := $(SRC_VECTOR)/kvs_vector_faiss_ops.c $(SRC_VECTOR)/kvs_vector_faiss_backend.cpp
-  OBJ_VECTOR_FAISS := $(SRC_VECTOR_FAISS:.c=.o)
-  OBJ_VECTOR_FAISS := $(OBJ_VECTOR_FAISS:.cpp=.o)
-else
-  FAISS_CFLAGS :=
-  FAISS_LDFLAGS :=
-  SRC_VECTOR_FAISS :=
-  OBJ_VECTOR_FAISS :=
-endif
-
-ifeq ($(ENABLE_HNSWLIB),1)
-  HNSWLIB_CFLAGS := -DENABLE_HNSWLIB -I$(HNSWLIB_ROOT)
-  SRC_VECTOR_HNSWLIB := $(SRC_VECTOR)/kvs_vector_hnswlib_ops.c $(SRC_VECTOR)/kvs_vector_hnswlib_backend.cpp
-  OBJ_VECTOR_HNSWLIB := $(SRC_VECTOR_HNSWLIB:.c=.o)
-  OBJ_VECTOR_HNSWLIB := $(OBJ_VECTOR_HNSWLIB:.cpp=.o)
-else
-  HNSWLIB_CFLAGS :=
-  SRC_VECTOR_HNSWLIB :=
-  OBJ_VECTOR_HNSWLIB :=
-endif
-VECTOR_OPTIONAL_OBJS := \
-	$(SRC_VECTOR)/kvs_vector_faiss_ops.o \
-	$(SRC_VECTOR)/kvs_vector_faiss_backend.o \
-	$(SRC_VECTOR)/kvs_vector_hnswlib_ops.o \
-	$(SRC_VECTOR)/kvs_vector_hnswlib_backend.o
+                $(EXTRA_LIBS) $(JEMALLOC_LIB) $(ONNX_LDFLAGS)
 KVSTORE_TEST_LDFLAGS = -L$(BUILD_LIB) -lkvstore $(LDFLAGS)
 
 # ── eBPF 配置 ────────────────────────────────────────────────────────────
@@ -267,6 +228,7 @@ TEST_HNSW_V2_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_performance_profi
 TEST_HNSW_V2_DISTANCE_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_distance_profile_test
 TEST_HNSW_V2_REVERSE_PRUNE_PROFILE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_reverse_prune_profile_test
 TEST_HNSW_V2_TOMBSTONE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_tombstone_test
+TEST_HNSW_V2_SNAPSHOT_ROUNDTRIP := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_snapshot_roundtrip_test
 TEST_HNSW_V2_PRODUCT_INTEGRATION := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_product_integration_test
 TEST_HNSW_V2_DEFAULT_BACKEND := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_default_backend_test
 TEST_HNSW_V2_SCALE_STABILITY := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_scale_stability_test
@@ -274,15 +236,15 @@ TEST_HNSW_V2_100K_BALANCED_GATE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_100k_b
 TEST_HNSW_V2_TOMBSTONE_POLICY := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_tombstone_policy_test
 TEST_HNSW_V2_PARITY_BASELINE := $(BUILD_TESTS_BIN)/vector_core_hnsw_v2_parity_baseline_test
 TEST_HNSW_V2_PARITY_BASELINE_OBJ := $(BUILD_DIR)/tests/vector_core_hnsw_v2_parity_baseline_test.o
-TEST_HNSW_FAISS_PARITY := $(BUILD_TESTS_BIN)/vector_core_hnsw_faiss_parity_test
-TEST_HNSW_FAISS_PARITY_BRIDGE_OBJ := $(BUILD_DIR)/tests/vector_core_hnsw_faiss_parity_bridge.o
+TEST_VECTOR_INDEX_SNAPSHOT_MANIFEST := $(BUILD_TESTS_BIN)/vector_index_snapshot_manifest_test
+TEST_VECTOR_INDEX_SNAPSHOT_LOAD := $(BUILD_TESTS_BIN)/vector_index_snapshot_load_after_records_test
+TEST_VECTOR_INDEX_SNAPSHOT_WRITE := $(BUILD_TESTS_BIN)/vector_index_snapshot_write_after_rebuild_test
+TEST_VECTOR_INDEX_SNAPSHOT_VINFO := $(BUILD_TESTS_BIN)/vector_index_snapshot_vinfo_status_test
+TEST_VECTOR_INDEX_SNAPSHOT_SHADOW_PUBLISH := $(BUILD_TESTS_BIN)/vector_index_snapshot_shadow_publish_test
 TEST_VECTOR_REBUILD_STATE_MACHINE := $(BUILD_TESTS_BIN)/vector_rebuild_state_machine_test
 TEST_VECTOR_REBUILD_DELTA_CAPTURE := $(BUILD_TESTS_BIN)/vector_rebuild_delta_capture_test
 TEST_VECTOR_REBUILD_SHADOW_REPLAY := $(BUILD_TESTS_BIN)/vector_rebuild_shadow_replay_test
 TEST_VECTOR_REBUILD_SHADOW_SWAP := $(BUILD_TESTS_BIN)/vector_rebuild_shadow_swap_test
-TEST_FAISS_BASELINE     := $(BUILD_TESTS_BIN)/faiss_baseline
-TEST_VCMD_ONNX_FAISS_BENCH := $(BUILD_TESTS_BIN)/vcmd_onnx_faiss_bench
-TEST_VCMD_EMBEDDING_CACHE_BENCH := $(BUILD_TESTS_BIN)/vcmd_embedding_cache_bench
 
 TEST_BINARIES = \
 	$(TEST_CASE) $(TEST_WRITE_QPS) $(TEST_TTL_QPS) \
@@ -294,10 +256,16 @@ TEST_BINARIES = \
 	$(TEST_BINARY_KEY) \
 	$(TEST_HNSW_V2_SKELETON) $(TEST_HNSW_V2_GRAPH) \
 	$(TEST_HNSW_V2_SEARCH) $(TEST_HNSW_V2_TOMBSTONE) \
+	$(TEST_HNSW_V2_SNAPSHOT_ROUNDTRIP) \
 	$(TEST_HNSW_V2_PRODUCT_INTEGRATION) $(TEST_HNSW_V2_DEFAULT_BACKEND) \
 	$(TEST_HNSW_V2_SCALE_STABILITY) $(TEST_HNSW_V2_100K_BALANCED_GATE) \
 	$(TEST_HNSW_V2_TOMBSTONE_POLICY) \
 	$(TEST_HNSW_V2_PARITY_BASELINE) \
+	$(TEST_VECTOR_INDEX_SNAPSHOT_MANIFEST) \
+	$(TEST_VECTOR_INDEX_SNAPSHOT_LOAD) \
+	$(TEST_VECTOR_INDEX_SNAPSHOT_WRITE) \
+	$(TEST_VECTOR_INDEX_SNAPSHOT_VINFO) \
+	$(TEST_VECTOR_INDEX_SNAPSHOT_SHADOW_PUBLISH) \
 	$(TEST_VECTOR_REBUILD_STATE_MACHINE) $(TEST_VECTOR_REBUILD_DELTA_CAPTURE) \
 	$(TEST_VECTOR_REBUILD_SHADOW_REPLAY) $(TEST_VECTOR_REBUILD_SHADOW_SWAP)
 
@@ -305,11 +273,6 @@ TEST_OPTIONAL_PROFILE_BINARIES = \
 	$(TEST_HNSW_V2_PROFILE) \
 	$(TEST_HNSW_V2_DISTANCE_PROFILE) \
 	$(TEST_HNSW_V2_REVERSE_PRUNE_PROFILE)
-
-ifeq ($(ENABLE_FAISS),1)
-TEST_BINARIES += $(TEST_FAISS_BASELINE) $(TEST_VCMD_ONNX_FAISS_BENCH) $(TEST_VCMD_EMBEDDING_CACHE_BENCH)
-TEST_BINARIES += $(TEST_HNSW_FAISS_PARITY)
-endif
 
 TARGET := kvstore
 
@@ -326,7 +289,6 @@ TARGET := kvstore
 .PHONY: main ebpf tests test optional-profile-tests check test-embedding help
 .PHONY: embedding setup-embedding setup-onnx check-embedding-assets
 .PHONY: hnsw_v2_performance_profile hnsw_v2_distance_profile hnsw_v2_reverse_prune_profile
-.PHONY: faiss_baseline vcmd_onnx_faiss_bench vcmd_embedding_cache_bench
 
 # 默认：完整构建
 all: $(ONNX_PREFLIGHT) $(NTYCO_LIB) $(TARGET) $(TEST_BINARIES) $(EBPF_TARGETS)
@@ -354,12 +316,6 @@ hnsw_v2_performance_profile: $(TEST_HNSW_V2_PROFILE)
 hnsw_v2_distance_profile: $(TEST_HNSW_V2_DISTANCE_PROFILE)
 
 hnsw_v2_reverse_prune_profile: $(TEST_HNSW_V2_REVERSE_PRUNE_PROFILE)
-
-faiss_baseline: $(TEST_FAISS_BASELINE)
-
-vcmd_onnx_faiss_bench: $(TEST_VCMD_ONNX_FAISS_BENCH)
-
-vcmd_embedding_cache_bench: $(TEST_VCMD_EMBEDDING_CACHE_BENCH)
 
 test: tests
 	@echo ""
@@ -508,8 +464,6 @@ $(NTYCO_LIB): $(NTYCO_OBJS)
 # build/lib/libkvstore.a is an internal static library used by tests and benchmarks.
 # It excludes the kvstore main object and is not a stable public SDK artifact.
 LIBKVSTORE_OBJS := $(filter-out $(SRC_CORE)/kvstore.o, $(OBJS))
-# Optional C++ vector backend objects are linked only into kvstore, not this
-# C-facing test library, to avoid forcing C++ linkage on all C test binaries.
 LIBKVSTORE      := $(BUILD_LIB)/libkvstore.a
 
 $(LIBKVSTORE): $(LIBKVSTORE_OBJS)
@@ -520,14 +474,8 @@ $(LIBKVSTORE): $(LIBKVSTORE_OBJS)
 # ║                       主二进制 kvstore                                ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
-$(TARGET): $(OBJS) $(NTYCO_LIB) $(OBJ_VECTOR_FAISS) $(OBJ_VECTOR_HNSWLIB)
-	$(if $(OBJ_VECTOR_FAISS)$(OBJ_VECTOR_HNSWLIB),$(CXX),$(CC)) -o $@ $(OBJS) $(OBJ_VECTOR_FAISS) $(OBJ_VECTOR_HNSWLIB) $(LDFLAGS) -lpthread
-
-$(SRC_VECTOR)/kvs_vector_faiss_backend.o: $(SRC_VECTOR)/kvs_vector_faiss_backend.cpp
-	$(CXX) -c $(FAISS_CXXFLAGS) -o $@ $<
-
-$(SRC_VECTOR)/kvs_vector_hnswlib_backend.o: $(SRC_VECTOR)/kvs_vector_hnswlib_backend.cpp
-	$(CXX) -c -std=c++11 -I ./include -I ./src -I$(HNSWLIB_ROOT) -o $@ $<
+$(TARGET): $(OBJS) $(NTYCO_LIB)
+	$(CC) -o $@ $(OBJS) $(LDFLAGS) -lpthread
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                       测试二进制                                      ║
@@ -640,6 +588,13 @@ $(TEST_HNSW_V2_TOMBSTONE): \
 		$(TEST_DIR)/vector_core_hnsw_v2_tombstone_test.c \
 		$(KVSTORE_TEST_LDFLAGS)
 
+$(TEST_HNSW_V2_SNAPSHOT_ROUNDTRIP): \
+	$(TEST_DIR)/vector_core_hnsw_v2_snapshot_roundtrip_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_core_hnsw_v2_snapshot_roundtrip_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
 $(TEST_HNSW_V2_PRODUCT_INTEGRATION): \
 	$(TEST_DIR)/vector_core_hnsw_v2_product_integration_test.c \
 	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
@@ -684,28 +639,45 @@ $(TEST_HNSW_V2_PARITY_BASELINE_OBJ): \
 
 $(TEST_HNSW_V2_PARITY_BASELINE): \
 	$(TEST_HNSW_V2_PARITY_BASELINE_OBJ) \
-	$(LIBKVSTORE) $(NTYCO_LIB) $(OBJ_VECTOR_HNSWLIB) | $(BUILD_TESTS_BIN)
-	$(if $(OBJ_VECTOR_HNSWLIB),$(CXX),$(CC)) -o $@ \
-		$(TEST_HNSW_V2_PARITY_BASELINE_OBJ) \
-		$(OBJ_VECTOR_HNSWLIB) \
-		$(KVSTORE_TEST_LDFLAGS)
-
-$(TEST_HNSW_FAISS_PARITY): \
-	$(TEST_DIR)/vector_core_hnsw_faiss_parity_test.cpp \
-	$(TEST_HNSW_FAISS_PARITY_BRIDGE_OBJ) \
 	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
-	$(CXX) $(FAISS_CXXFLAGS) -O2 -o $@ \
-		$(TEST_DIR)/vector_core_hnsw_faiss_parity_test.cpp \
-		$(TEST_HNSW_FAISS_PARITY_BRIDGE_OBJ) \
+	$(CC) -o $@ \
+		$(TEST_HNSW_V2_PARITY_BASELINE_OBJ) \
 		$(KVSTORE_TEST_LDFLAGS)
 
-$(TEST_HNSW_FAISS_PARITY_BRIDGE_OBJ): \
-	$(TEST_DIR)/vector_core_hnsw_faiss_parity_bridge.c \
-	$(TEST_DIR)/vector_core_hnsw_faiss_parity_bridge.h \
-	| $(BUILD_TESTS_BIN)
-	@mkdir -p $(BUILD_DIR)/tests
-	$(CC) $(CFLAGS) -c -o $@ \
-		$(TEST_DIR)/vector_core_hnsw_faiss_parity_bridge.c
+$(TEST_VECTOR_INDEX_SNAPSHOT_MANIFEST): \
+	$(TEST_DIR)/vector_index_snapshot_manifest_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_index_snapshot_manifest_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_VECTOR_INDEX_SNAPSHOT_LOAD): \
+	$(TEST_DIR)/vector_index_snapshot_load_after_records_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_index_snapshot_load_after_records_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_VECTOR_INDEX_SNAPSHOT_WRITE): \
+	$(TEST_DIR)/vector_index_snapshot_write_after_rebuild_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_index_snapshot_write_after_rebuild_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_VECTOR_INDEX_SNAPSHOT_VINFO): \
+	$(TEST_DIR)/vector_index_snapshot_vinfo_status_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_index_snapshot_vinfo_status_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
+
+$(TEST_VECTOR_INDEX_SNAPSHOT_SHADOW_PUBLISH): \
+	$(TEST_DIR)/vector_index_snapshot_shadow_publish_test.c \
+	$(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
+	$(CC) $(CFLAGS) -o $@ \
+		$(TEST_DIR)/vector_index_snapshot_shadow_publish_test.c \
+		$(KVSTORE_TEST_LDFLAGS)
 
 $(TEST_VECTOR_REBUILD_STATE_MACHINE): \
 	$(TEST_DIR)/vector_rebuild_state_machine_test.c \
@@ -734,15 +706,6 @@ $(TEST_VECTOR_REBUILD_SHADOW_SWAP): \
 	$(CC) $(CFLAGS) -o $@ \
 		$(TEST_DIR)/vector_rebuild_shadow_swap_test.c \
 		$(KVSTORE_TEST_LDFLAGS)
-
-$(TEST_FAISS_BASELINE): $(TEST_DIR)/faiss_baseline.cpp | $(BUILD_TESTS_BIN)
-	$(CXX) $(FAISS_CXXFLAGS) -O3 -o $@ $< $(FAISS_LDFLAGS) -lpthread -lm
-
-$(TEST_VCMD_ONNX_FAISS_BENCH): $(TEST_DIR)/vcmd_onnx_faiss_bench.cpp $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
-	$(CXX) $(FAISS_CXXFLAGS) -O2 -o $@ $< -L$(BUILD_LIB) -lkvstore $(FAISS_LDFLAGS) $(LDFLAGS) -ldl -lpthread -lm
-
-$(TEST_VCMD_EMBEDDING_CACHE_BENCH): $(TEST_DIR)/vcmd_onnx_faiss_bench.cpp $(LIBKVSTORE) $(NTYCO_LIB) | $(BUILD_TESTS_BIN)
-	$(CXX) $(FAISS_CXXFLAGS) -O2 -o $@ $< -L$(BUILD_LIB) -lkvstore $(FAISS_LDFLAGS) $(LDFLAGS) -ldl -lpthread -lm
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                     eBPF 构建 (ENABLE_EBPF=1)                         ║
@@ -809,14 +772,21 @@ src/vector/kvs_vector_distance_avx2.o: src/vector/kvs_vector_distance_avx2.c
 	$(CC) $(CFLAGS) $(AVX2_CFLAGS) -c $< -o $@
 
 $(HNSW_V2_SRCS:.c=.o): include/vector/kvs_vector_hnsw_v2.h \
-	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_heap.h \
-	$(SRC_VECTOR)/core/hnsw_v2/kvs_hnsw_v2_score_cache.h
+	include/vector/kvs_vector_hnsw_v2_snapshot.h \
+	include/vector/kvs_vector_hnsw_v2_heap.h \
+	include/vector/kvs_vector_hnsw_v2_score_cache.h \
+	src/vector/core/hnsw_v2_snapshot/kvs_hnsw_v2_snapshot_format.h
 
 $(SRC_VECTOR)/kvs_vector.o \
+$(SRC_VECTOR)/kvs_vector_backend_resolve.o \
 $(SRC_VECTOR)/kvs_vector_embedding.o \
 $(SRC_VECTOR)/kvs_vector_index.o \
+$(SRC_VECTOR)/kvs_vector_index_snapshot.o \
 $(SRC_VECTOR)/kvs_vector_rebuild.o \
 $(SRC_VECTOR)/kvs_vector_rebuild_shadow.o: \
+	include/vector/kvs_vector_backend_resolve.h \
+	include/vector/kvs_vector_hnsw_v2_snapshot.h \
+	include/vector/kvs_vector_index_snapshot.h \
 	include/vector/kvs_vector_manager.h \
 	include/vector/kvs_vector_rebuild.h \
 	include/vector/kvs_vector_rebuild_shadow.h
@@ -867,7 +837,7 @@ $(SRC_EMBED)/embedding_runtime_onnx.o: check-onnx-runtime
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 clean:
-	rm -f $(OBJS) $(VECTOR_OPTIONAL_OBJS) $(TARGET) $(SRC_DIST)/*.o
+	rm -f $(OBJS) $(TARGET) $(SRC_DIST)/*.o
 	rm -f $(SRC_EMBED)/embedding_runtime.o $(SRC_EMBED)/embedding_runtime_onnx.o
 	rm -f $(NTYCO_LIB) $(NTYCO_OBJS)
 	rm -f $(EBPF_KERN_OBJ) $(EBPF_SYNCD_BIN) $(VMLINUX_H) $(VMLINUX_KVER)

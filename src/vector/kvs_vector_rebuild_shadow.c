@@ -387,11 +387,51 @@ int kvs_vector_rebuild_shadow_v2_shadow_exists_for_test(void) {
 }
 
 int kvs_vector_rebuild_swap_ready_shadow_for_test(void) {
+	kvs_hnsw_v2_index_t *promoted;
+	char reason[128];
+	int ret;
+
 	if (!g_vector_state.initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
 	}
 
-	return kvs_vector_rebuild_promote_shadow(&g_vector_state.rebuild);
+	ret = kvs_vector_rebuild_promote_shadow(&g_vector_state.rebuild);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	if (g_vector_state.index_type != KVS_VECTOR_INDEX_CORE_HNSW_V2) {
+		return KVS_VECTOR_OK;
+	}
+
+	promoted = kvs_vector_rebuild_active_v2_index();
+	if (!promoted) {
+		return KVS_VECTOR_OK;
+	}
+
+	reason[0] = '\0';
+	if (kvs_vector_index_snapshot_write_hnsw_v2_index(
+		    &g_vector_state,
+		    promoted,
+		    reason,
+		    sizeof(reason)
+	    ) == KVS_VECTOR_OK) {
+		KVS_LOG_INFO(
+			KVS_VECTOR_LOG_MODULE,
+			"vector index snapshot written source=shadow_publish path=%s bytes=%llu checksum=%llu",
+			g_vector_state.snapshot_status.last_snapshot_path,
+			(unsigned long long)g_vector_state.snapshot_status.last_snapshot_bytes,
+			(unsigned long long)g_vector_state.snapshot_status.last_snapshot_checksum
+		);
+		return KVS_VECTOR_OK;
+	}
+
+	KVS_LOG_WARN(
+		KVS_VECTOR_LOG_MODULE,
+		"vector index snapshot write skipped source=shadow_publish reason=%s",
+		reason[0] ? reason : "unknown"
+	);
+	return KVS_VECTOR_OK;
 }
 
 int kvs_vector_rebuild_retire_cleanup_for_test(void) {

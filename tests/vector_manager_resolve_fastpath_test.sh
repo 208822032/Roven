@@ -8,7 +8,7 @@ KV_BIN="${KV_BIN:-./kvstore}"
 
 if [[ ! -x "$KV_BIN" ]]; then
   printf '[INFO][build] building kvstore\n'
-  make ENABLE_HNSWLIB="${ENABLE_HNSWLIB:-1}" ENABLE_FAISS="${ENABLE_FAISS:-1}" -j2 kvstore
+  make -j2 kvstore
 fi
 
 python3 - "$ROOT_DIR" "$KV_BIN" <<'PY'
@@ -26,7 +26,7 @@ if not kv_bin.is_absolute():
     kv_bin = root / kv_bin
 kv_bin = kv_bin.resolve()
 
-BACKENDS = ("core_flat", "core_hnsw", "hnswlib_hnsw", "faiss_flat", "faiss_hnsw")
+BACKENDS = ("core_flat", "core_hnsw_v2")
 
 def pick_port():
     s = socket.socket()
@@ -292,7 +292,7 @@ def run_rdb_case(tmp):
         stop(proc, log)
 
 def run_aof_case(tmp):
-    backend = "core_hnsw"
+    backend = "core_hnsw_v2"
     port = pick_port()
     rdb = tmp / "fastpath-aof.rdb"
     aof = tmp / "fastpath.aof"

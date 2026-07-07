@@ -6,6 +6,8 @@
 
 本阶段只做 100K balanced gate、`core_hnsw_v2` 默认参数固化和配套文档/测试接入。未修改 VSEARCH response、RDB/AOF、`kvs_vector_index_ops_t`，未删除 `core_flat` 或 legacy `core_hnsw`，未接 hnswlib / USearch，未做 FAISS parity、SIMD/layout/reverse_prune cache 微优化、graph construction refactor、background thread 或新增用户命令。
 
+历史说明：本报告记录 HNSW-P2-final 当时状态。后续 CODE-HYGIENE-0 已删除 legacy `core_hnsw` 源码；当前显式 `core_hnsw` 配置只作为兼容字符串并解析为 `core_flat` fallback。
+
 未发现需要停止执行的冲突。`AGENTS.md` 历史模板要求 stage report 放在 `docs/vector_core_reset/`，本任务明确属于 `docs/hnsw_productization/` 的 `HNSW-P*` 产品化路线，因此报告写入本目录，同时继续遵守 manager/vector_core 边界。
 
 ## 修改/新增文件
@@ -120,7 +122,7 @@ degree_overflow = 0
 说明：
 
 - 只修改 `core_hnsw_v2` 默认参数。
-- legacy `core_hnsw`、`core_flat`、FAISS adapter、hnswlib adapter 不受此默认宏影响。
+- 已删除的 legacy `core_hnsw`、`core_flat`、FAISS adapter、hnswlib adapter 不受此默认宏影响。
 - `src/vector/kvs_vector.c` 的 v2 configure path 仍使用 v2-specific default，并将 shared config 中低于 v2 default 的值提升到 v2 default。
 
 ## 为什么不进入 P3 graph refactor

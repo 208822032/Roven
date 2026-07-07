@@ -21,7 +21,7 @@
 
 新增：
 
-- `src/vector/core/hnsw_v2/kvs_hnsw_v2_score_cache.h`
+- `include/vector/kvs_vector_hnsw_v2_score_cache.h`（CODE-HYGIENE-2 后迁移；仍是 v2 internal helper）
 - `docs/vector_core_reset/stage9e3c_core_hnsw_v2_reverse_prune_score_reuse.md`
 
 ## 3. Scope result
@@ -83,7 +83,7 @@ Direct known score reuse:
 
 Local pair score cache:
 
-- 新增 v2-only internal helper `kvs_hnsw_v2_score_cache.h`。
+- 新增 v2-only internal helper，现位于 `include/vector/kvs_vector_hnsw_v2_score_cache.h`。
 - cache 生命周期局限于单次 add / reverse_prune 调用链。
 - 不保存在 index graph，不跨 index 生命周期，不进入 RDB/AOF，不暴露给 manager。
 - key 对称化为 `pair(min(slot_a, slot_b), max(slot_a, slot_b))`。

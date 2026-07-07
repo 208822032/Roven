@@ -1,6 +1,5 @@
 #include "vector/kvs_vector_hnsw_v2.h"
-
-#include "kvs_hnsw_v2_score_cache.h"
+#include "vector/kvs_vector_hnsw_v2_score_cache.h"
 
 #include <stdlib.h>
 #include <string.h>

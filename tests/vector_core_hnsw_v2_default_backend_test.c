@@ -74,17 +74,37 @@ static int expect_flat_maps_core_flat(void) {
 	return failed;
 }
 
-static int expect_legacy_core_hnsw_explicit(void) {
+static int expect_legacy_core_hnsw_fallback(void) {
 	kvs_vector_info_t info;
 	int failed = 0;
 
 	reset_config("core_hnsw");
-	failed |= expect_int(kvs_vector_init() == KVS_VECTOR_OK, "legacy core_hnsw init");
+	failed |= expect_int(kvs_vector_init() == KVS_VECTOR_OK, "removed core_hnsw fallback init");
 	memset(&info, 0, sizeof(info));
-	failed |= expect_int(kvs_vector_info(&info) == KVS_VECTOR_OK, "legacy core_hnsw info");
+	failed |= expect_int(kvs_vector_info(&info) == KVS_VECTOR_OK, "removed core_hnsw fallback info");
 	failed |= expect_int(
-		info.index_type == KVS_VECTOR_INDEX_CORE_HNSW,
-		"explicit core_hnsw selects legacy backend"
+		info.index_type == KVS_VECTOR_INDEX_CORE_FLAT,
+		"explicit core_hnsw falls back to core_flat"
+	);
+	kvs_vector_destroy();
+	return failed;
+}
+
+static int expect_removed_external_backend_fallback(const char *name) {
+	kvs_vector_info_t info;
+	int failed = 0;
+	char label[128];
+
+	reset_config(name);
+	snprintf(label, sizeof(label), "%s fallback init", name);
+	failed |= expect_int(kvs_vector_init() == KVS_VECTOR_OK, label);
+	memset(&info, 0, sizeof(info));
+	snprintf(label, sizeof(label), "%s fallback info", name);
+	failed |= expect_int(kvs_vector_info(&info) == KVS_VECTOR_OK, label);
+	snprintf(label, sizeof(label), "%s falls back to core_flat", name);
+	failed |= expect_int(
+		info.index_type == KVS_VECTOR_INDEX_CORE_FLAT,
+		label
 	);
 	kvs_vector_destroy();
 	return failed;
@@ -98,7 +118,13 @@ int main(void) {
 
 	failed |= expect_default_core_hnsw_v2();
 	failed |= expect_flat_maps_core_flat();
-	failed |= expect_legacy_core_hnsw_explicit();
+	failed |= expect_legacy_core_hnsw_fallback();
+	failed |= expect_removed_external_backend_fallback("hnsw");
+	failed |= expect_removed_external_backend_fallback("hnswlib");
+	failed |= expect_removed_external_backend_fallback("hnswlib_hnsw");
+	failed |= expect_removed_external_backend_fallback("faiss");
+	failed |= expect_removed_external_backend_fallback("faiss_flat");
+	failed |= expect_removed_external_backend_fallback("faiss_hnsw");
 
 	mem_destroy();
 

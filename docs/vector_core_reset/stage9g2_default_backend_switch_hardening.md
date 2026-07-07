@@ -6,6 +6,8 @@
 
 本阶段只做 default backend switch hardening：未做 SIMD / reverse_prune / layout / cache 优化，未引入 background thread，未删除 `core_flat` 或 legacy current `core_hnsw`，未修改 RDB/AOF 格式，未修改 `kvs_vector_index_ops_t` 签名，未修改 VSEARCH response，未让 `src/vector/core/hnsw_v2` 访问 manager-owned state。
 
+Historical note: this Stage 9G2 report predates CODE-HYGIENE-0. Its statements that explicit `core_hnsw` selects legacy current `core_hnsw` are superseded: legacy source has been removed, and explicit `core_hnsw` now resolves to `core_flat` fallback.
+
 ## Modified / added files
 
 Stage 9G2 本阶段修改 / 新增：

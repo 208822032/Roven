@@ -231,7 +231,7 @@ P5-impl 应复用 9F skeleton，最小设计为：
 - memory budget / throttling。
 - reader refcount / epoch。
 - graph persistence。
-- legacy `core_hnsw` 删除。
+- legacy `core_hnsw` 删除已由后续 CODE-HYGIENE-0 完成；当前只保留兼容配置字符串并 fallback 到 `core_flat`。
 - 1M sprint。
 - SIMD/layout/reverse_prune cache 微优化。
 

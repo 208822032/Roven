@@ -2,7 +2,7 @@
 
 ## One-line project summary
 
-KVLite vector search was refactored from manager-coupled ANN code into a clean manager/vector_core architecture, then a self-contained `core_hnsw_v2` ANN backend was built, optimized, integrated, and made the default backend while preserving exact `core_flat` and legacy `core_hnsw` fallbacks.
+KVLite vector search was refactored from manager-coupled ANN code into a clean manager/vector_core architecture, then a self-contained `core_hnsw_v2` ANN backend was built, optimized, integrated, and made the default backend while preserving exact `core_flat` fallback. The legacy `core_hnsw` source has since been removed; its config string remains only as a compatibility alias to `core_flat`.
 
 ## Why replace old core_hnsw
 
@@ -13,7 +13,7 @@ The old current `core_hnsw` was useful as a first in-repo HNSW implementation, b
 - Rebuild performance work became incremental and hard to reason about.
 - The old code had accumulated stage-specific profiling and optimization debt.
 
-The project kept old `core_hnsw` as a legacy explicit backend and regression reference instead of deleting it.
+After v2 became the default and compatibility tests covered old configuration behavior, the project removed old `core_hnsw` source and kept only the public enum / config string as compatibility residue.
 
 ## Why core_flat first
 
@@ -136,9 +136,9 @@ Q: Why keep `core_flat` after adding ANN?
 
 A: It is the exact oracle and fallback. It lets us measure recall and isolate ANN bugs from manager bugs.
 
-Q: Why not delete old `core_hnsw`?
+Q: Why keep the old `core_hnsw` config string after deleting the source?
 
-A: It is still useful as a legacy regression reference and emergency explicit backend. Deleting it would create needless product risk during the default backend transition.
+A: It avoids breaking old config files. The string is accepted, logged as removed, and resolved to `core_flat` fallback; it does not create a legacy HNSW index.
 
 Q: Why did 50K/100K recall fall in Stage 9G3?
 

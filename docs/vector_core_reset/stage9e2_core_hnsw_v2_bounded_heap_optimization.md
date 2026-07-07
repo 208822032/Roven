@@ -21,7 +21,7 @@
 
 新增：
 
-- `src/vector/core/hnsw_v2/kvs_hnsw_v2_heap.h`
+- `include/vector/kvs_vector_hnsw_v2_heap.h`（CODE-HYGIENE-2 后迁移；仍是 v2 internal helper）
 - `docs/vector_core_reset/stage9e2_core_hnsw_v2_bounded_heap_optimization.md`
 
 ## 3. Production code changed
@@ -43,7 +43,7 @@ v2 index-only production code changed. v2 仍未接入产品 VINDEX/VSEARCH 路�
 新增 v2-only internal helper:
 
 ```text
-src/vector/core/hnsw_v2/kvs_hnsw_v2_heap.h
+include/vector/kvs_vector_hnsw_v2_heap.h
 ```
 
 实现内容：

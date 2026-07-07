@@ -589,11 +589,6 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 
 #if ENABLE_AOF
 	if (!aof_is_loading()) {
-		uint64_t start_us = 0;
-		uint64_t end_us = 0;
-		if (strcmp(task->cmd->name, "VSET") == 0) {
-			start_us = kvs_command_task_now_us();
-		}
 		if (strcmp(task->cmd->name, "EXPIRE") == 0) {
 			if (task->has_expire_at) {
 				char expire_buf[32];
@@ -607,10 +602,6 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 		} else {
 			aof_append(task->argc, task->argv, task->argv_lens);
 		}
-		if (strcmp(task->cmd->name, "VSET") == 0) {
-			end_us = kvs_command_task_now_us();
-			task->vset_aof_append_us += end_us >= start_us ? end_us - start_us : 0;
-		}
 	}
 #endif
 
@@ -619,11 +610,6 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 	}
 
 	if (global_dist_config.role == ROLE_MASTER && g_cfg.sync_mode == KVS_SYNC_TCP) {
-		uint64_t start_us = 0;
-		uint64_t end_us = 0;
-		if (strcmp(task->cmd->name, "VSET") == 0) {
-			start_us = kvs_command_task_now_us();
-		}
 		if (strcmp(task->cmd->name, "EXPIRE") == 0 ||
 		    strcmp(task->cmd->name, "PEXPIREAT") == 0) {
 			if (ret > 0) {
@@ -648,27 +634,6 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 				(task->argc > 2) ? task->argv_lens[2] : 0
 			);
 		}
-		if (strcmp(task->cmd->name, "VSET") == 0) {
-			end_us = kvs_command_task_now_us();
-			task->vset_replication_us += end_us >= start_us ? end_us - start_us : 0;
-		}
-	}
-}
-
-void kvs_command_task_get_vset_post_commit_timings(
-	const kvs_command_task_t *task,
-	uint64_t *aof_append_us,
-	uint64_t *replication_us,
-	uint64_t *dirty_mark_us
-) {
-	if (aof_append_us) {
-		*aof_append_us = task ? task->vset_aof_append_us : 0;
-	}
-	if (replication_us) {
-		*replication_us = task ? task->vset_replication_us : 0;
-	}
-	if (dirty_mark_us) {
-		*dirty_mark_us = task ? task->vset_dirty_mark_us : 0;
 	}
 }
 

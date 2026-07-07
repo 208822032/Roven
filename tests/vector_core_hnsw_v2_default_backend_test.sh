@@ -9,7 +9,7 @@ KV_BIN="${KV_BIN:-./kvstore}"
 
 if [[ ! -x "$BIN" || ! -x "$KV_BIN" ]]; then
   printf '[INFO][build] building hnsw_v2 default backend targets\n'
-  make ENABLE_HNSWLIB="${ENABLE_HNSWLIB:-1}" ENABLE_FAISS="${ENABLE_FAISS:-1}" -j2 \
+  make -j2 \
     "$BIN" kvstore
 fi
 
@@ -290,7 +290,10 @@ with tempfile.TemporaryDirectory(prefix="kvlite_hnsw_v2_default_") as td:
         stop(proc, log)
 
     smoke_explicit_backend("flat", "core_flat", tmp, "explicit_flat")
-    smoke_explicit_backend("core_hnsw", "core_hnsw", tmp, "explicit_core_hnsw")
+    smoke_explicit_backend("core_hnsw", "core_flat", tmp, "explicit_core_hnsw")
+    smoke_explicit_backend("hnswlib_hnsw", "core_flat", tmp, "explicit_hnswlib_hnsw")
+    smoke_explicit_backend("faiss_flat", "core_flat", tmp, "explicit_faiss_flat")
+    smoke_explicit_backend("faiss_hnsw", "core_flat", tmp, "explicit_faiss_hnsw")
 
 print("vector_core_hnsw_v2_default_backend_test.sh PASS")
 PY

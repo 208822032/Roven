@@ -1739,7 +1739,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     }
 
 	    {
-		        int array_count = 95;  /* base + v2 flag/rebuild status + backend stats + worker pool + backend + VSEARCH profile stats */
+	        int array_count = 107;  /* base + snapshot + v2 flag/rebuild status + backend stats + worker pool + backend + VSEARCH profile stats */
 	        if (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT) {
 	            array_count += 7;
 	        }
@@ -1805,7 +1805,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
           (info->index_type == KVS_VECTOR_INDEX_FAISS_FLAT ? "faiss_flat" :
            (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "sq8_flat" :
             (info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" :
-             (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw" :
+             (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw_removed" :
               (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2 ? "core_hnsw_v2" : "flat"))))))));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
@@ -2588,14 +2588,6 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
-    if (n < 0 || n >= (int)sizeof(item)) {
-        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
-    }
-    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
-    if (n < 0 || n >= (int)sizeof(item)) {
-        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
-    }
-    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
     n = snprintf(item, sizeof(item), "rebuild_state:%s",
         info->rebuild_state ? info->rebuild_state : "unknown");
@@ -2630,6 +2622,125 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
     off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
 
     n = snprintf(item, sizeof(item), "rebuild_retired_present:%d", info->rebuild_retired_present);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "snapshot_supported:%d", info->snapshot_supported);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "snapshot_load_attempted:%d", info->snapshot_load_attempted);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "snapshot_loaded:%d", info->snapshot_loaded);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "snapshot_valid:%d", info->snapshot_valid);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "loaded_from_snapshot:%d", info->loaded_from_snapshot);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(
+        item,
+        sizeof(item),
+        "snapshot_fallback_rebuild_count:%llu",
+        (unsigned long long)info->snapshot_fallback_rebuild_count
+    );
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(
+        item,
+        sizeof(item),
+        "snapshot_last_error:%.90s",
+        info->snapshot_last_error ? info->snapshot_last_error : ""
+    );
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "snapshot_write_attempted:%d", info->snapshot_write_attempted);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(item, sizeof(item), "snapshot_written:%d", info->snapshot_written);
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(
+        item,
+        sizeof(item),
+        "snapshot_last_write_error:%.90s",
+        info->snapshot_last_write_error ? info->snapshot_last_write_error : ""
+    );
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(
+        item,
+        sizeof(item),
+        "snapshot_last_write_started_ms:%llu",
+        (unsigned long long)info->snapshot_last_write_started_ms
+    );
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(
+        item,
+        sizeof(item),
+        "snapshot_last_write_finished_ms:%llu",
+        (unsigned long long)info->snapshot_last_write_finished_ms
+    );
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(
+        item,
+        sizeof(item),
+        "snapshot_last_bytes:%llu",
+        (unsigned long long)info->snapshot_last_bytes
+    );
+    if (n < 0 || n >= (int)sizeof(item)) {
+        return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
+    }
+    off += resp_generate_bulk_string_n(response + off, item, (size_t)n);
+
+    n = snprintf(
+        item,
+        sizeof(item),
+        "snapshot_last_checksum:%llu",
+        (unsigned long long)info->snapshot_last_checksum
+    );
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);
     }
@@ -2720,7 +2831,7 @@ static int handle_vector_info_response(const kvs_vector_info_t *info, char *resp
          (info->index_type == KVS_VECTOR_INDEX_HNSWLIB_HNSW ? "hnswlib_hnsw" :
          (info->index_type == KVS_VECTOR_INDEX_TYPE_SQ8_FLAT ? "native_sq8_flat" :
            (info->index_type == KVS_VECTOR_INDEX_CORE_FLAT ? "core_flat" :
-            (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw" :
+            (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW ? "core_hnsw_removed" :
              (info->index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2 ? "core_hnsw_v2" : "native_flat")))))));
     if (n < 0 || n >= (int)sizeof(item)) {
         return resp_generate_simple_string_n(response, '-', "ERR response too large", sizeof("ERR response too large") - 1);

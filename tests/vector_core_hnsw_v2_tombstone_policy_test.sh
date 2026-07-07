@@ -6,7 +6,7 @@ cd "$ROOT"
 
 BIN="./build/tests/bin/vector_core_hnsw_v2_tombstone_policy_test"
 if [ ! -x "$BIN" ]; then
-	make ENABLE_HNSWLIB=1 ENABLE_FAISS=1 "$BIN" -j"$(nproc)"
+	make "$BIN" -j"$(nproc)"
 fi
 
 TMP="$(mktemp)"

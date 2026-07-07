@@ -13,7 +13,7 @@
 本阶段修改：
 
 - `include/vector/kvs_vector_hnsw_v2.h` — 增加 `kvs_hnsw_v2_diag_t` 诊断结构体，在 `kvs_hnsw_v2_index_t` 中增加 `diag` 字段
-- `src/vector/core/hnsw_v2/kvs_hnsw_v2_add.c` — 增加诊断 helper 函数和 instrumentation 点（gated by `diag.enabled`）；增加 `#include <stdlib.h>`
+- `src/vector/core/hnsw_v2/kvs_hnsw_v2_add.c` — 增加诊断 helper 函数和 instrumentation 点（gated by `diag.enabled`）；增加标准库 include
 - `tests/vector_core_hnsw_v2_performance_profile_test.c` — 增加 `run_diag_profile()` 和 `run_ef_construction_profile()` 函数
 
 本阶段新增：

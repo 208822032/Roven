@@ -357,14 +357,16 @@ int kvs_config_load_file(kvs_config_t *cfg, const char *path) {
             }
         } else if (strcasecmp(key, "vector_index_type") == 0) {
             if (strcasecmp(val, "flat") == 0 ||
-                strcasecmp(val, "hnsw") == 0 ||
-                strcasecmp(val, "hnswlib_hnsw") == 0 ||
+	                strcasecmp(val, "hnsw") == 0 ||
+	                strcasecmp(val, "hnswlib") == 0 ||
+	                strcasecmp(val, "hnswlib_hnsw") == 0 ||
                 strcasecmp(val, "ivf_flat") == 0 ||
                 strcasecmp(val, "sq8_flat") == 0 ||
                 strcasecmp(val, "core_flat") == 0 ||
                 strcasecmp(val, "core_hnsw") == 0 ||
-                strcasecmp(val, "core_hnsw_v2") == 0 ||
-                strcasecmp(val, "faiss_hnsw") == 0 ||
+	                strcasecmp(val, "core_hnsw_v2") == 0 ||
+	                strcasecmp(val, "faiss") == 0 ||
+	                strcasecmp(val, "faiss_hnsw") == 0 ||
                 strcasecmp(val, "faiss_flat") == 0) {
                 snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", val);
             }
@@ -688,14 +690,16 @@ void kvs_config_apply_cmdline(kvs_config_t *cfg, int argc, char *argv[], const c
             if (i + 1 < argc) {
                 const char *v = argv[++i];
                 if (strcasecmp(v, "flat") == 0 ||
-                    strcasecmp(v, "hnsw") == 0 ||
-                    strcasecmp(v, "hnswlib_hnsw") == 0 ||
+	                    strcasecmp(v, "hnsw") == 0 ||
+	                    strcasecmp(v, "hnswlib") == 0 ||
+	                    strcasecmp(v, "hnswlib_hnsw") == 0 ||
                     strcasecmp(v, "ivf_flat") == 0 ||
                     strcasecmp(v, "sq8_flat") == 0 ||
                     strcasecmp(v, "core_flat") == 0 ||
                     strcasecmp(v, "core_hnsw") == 0 ||
-                    strcasecmp(v, "core_hnsw_v2") == 0 ||
-                    strcasecmp(v, "faiss_hnsw") == 0 ||
+	                    strcasecmp(v, "core_hnsw_v2") == 0 ||
+	                    strcasecmp(v, "faiss") == 0 ||
+	                    strcasecmp(v, "faiss_hnsw") == 0 ||
                     strcasecmp(v, "faiss_flat") == 0) {
                     snprintf(cfg->vector_index_type, sizeof(cfg->vector_index_type), "%s", v);
                 }

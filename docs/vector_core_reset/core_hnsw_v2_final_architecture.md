@@ -8,10 +8,10 @@ Current vector backend roles:
 |---|---|
 | `core_hnsw_v2` | default ANN backend |
 | `core_flat` / `flat` | exact baseline, correctness oracle, fallback |
-| `core_hnsw` | legacy explicit backend, regression reference, emergency fallback |
+| `core_hnsw` | removed legacy backend; config string / enum remain only for compatibility and resolve to `core_flat` fallback |
 | `hnsw` / `hnswlib_hnsw` | legacy hnswlib compatibility adapter when compiled |
 
-`core_hnsw_v2` is now selected by default when `vector_index_type` is unset. `flat` and `core_hnsw` remain explicitly selectable. Legacy current `core_hnsw` is not deleted.
+`core_hnsw_v2` is now selected by default when `vector_index_type` is unset. `flat` remains explicitly selectable as `core_flat`. `core_hnsw` is accepted only for old configuration compatibility and resolves to `core_flat`; the legacy source directory has been deleted by CODE-HYGIENE-0.
 
 ## Manager / vector_core boundary
 
@@ -166,7 +166,7 @@ Do not continue feature expansion under Stage 9G:
 - no reverse_prune cache/layout work
 - no SIMD rewrite
 - no background thread
-- no legacy `core_hnsw` deletion
+- no resurrection of deleted legacy `core_hnsw`
 - no 1M sprint
 - no VSEARCH response change
 - no RDB/AOF graph persistence

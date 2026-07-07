@@ -6,6 +6,8 @@
 
 本阶段只做 scale/stability gate、tombstone policy、default backend final regression 和最终文档收口。未做 SIMD / reverse_prune / layout / cache 微优化，未删除 legacy current `core_hnsw`，未改 VSEARCH response，未改 RDB/AOF 格式，未改 `kvs_vector_index_ops_t` 签名，未引入 background thread，未让 v2 core 访问 manager-owned state。
 
+Historical note: this Stage 9G3 report predates CODE-HYGIENE-0. Its statements that `core_hnsw` remains a selectable legacy backend are superseded: legacy `src/vector/core/hnsw/` has been removed, and explicit `core_hnsw` now resolves to `core_flat` fallback.
+
 ## Modified / added files
 
 新增：
