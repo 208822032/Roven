@@ -81,6 +81,7 @@ HNSW-buildperf:
 - [hnsw_s5_vinfo_snapshot_status_report.md](hnsw_s5_vinfo_snapshot_status_report.md)
 - [hnsw_s6_shadow_publish_snapshot_report.md](hnsw_s6_shadow_publish_snapshot_report.md)
 - [hnsw_s_final_consolidation_report.md](hnsw_s_final_consolidation_report.md)
+- [hnsw_s_bench_snapshot_cold_start_report.md](hnsw_s_bench_snapshot_cold_start_report.md)
 
 ## 当前实现状态
 
@@ -99,6 +100,8 @@ records load / replay
 `VINFO` 只暴露 machine-checkable snapshot status，不暴露完整 snapshot 文件路径，不改变 `VSEARCH` response。snapshot 仍是 derived cache；records / RDB / AOF 仍是 source of truth。
 
 HNSW-S6 已把 snapshot writer 接到当前已有的 shadow rebuild publish skeleton：当 test/internal shadow promote 成功后，如果当前 backend 是 `core_hnsw_v2`，会 best-effort 写出新的 `vector_index.snapshot` 和 `vector_index.manifest`，并更新 S5 已暴露的 write status。当前 shadow publish 仍是 harness / skeleton，不是完整 background rebuild worker，也没有让 `VSEARCH` 读取 rebuild context active pointer。
+
+S-bench-0 / S-bench-1 已补充 cold-start benefit benchmark：10K quick 用于验证 harness 和 no-fallback load-only 机制；100K / 512d balanced load-only repeat=5 实测 `snapshot_load_us_avg = 5,923,515.60`，相对复用的 HNSW-P2 records-only rebuild baseline `3,011,810,795us` 加速约 `508.45x`。100K old-path baseline 没有在本阶段重跑，`create-fixture` 的构图耗时只记录为生成 snapshot fixture 的成本。
 
 ## HNSW-S-final 结论
 

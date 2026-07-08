@@ -14,6 +14,7 @@
 - [hnsw_s5_vinfo_snapshot_status_report.md](hnsw_s5_vinfo_snapshot_status_report.md)：S5 VINFO 暴露 snapshot load / fallback / write status、non-v2 语义和测试结果。
 - [hnsw_s6_shadow_publish_snapshot_report.md](hnsw_s6_shadow_publish_snapshot_report.md)：S6 shadow publish skeleton 成功后 best-effort 写 snapshot、失败不回滚 publish、测试覆盖和决策。
 - [hnsw_s_final_consolidation_report.md](hnsw_s_final_consolidation_report.md)：S-final 路线收口、能力矩阵、边界审计、风险清单、后续路线分流和回归验证结果。
+- [hnsw_s_bench_snapshot_cold_start_report.md](hnsw_s_bench_snapshot_cold_start_report.md)：S-bench-0 / S-bench-1 snapshot cold-start benefit benchmark、load-only fail-fast 设计、10K quick 机制验证、100K load-only repeat=5 实测和进入 HNSW-R 判断。
 
 ## 关联历史文档
 
