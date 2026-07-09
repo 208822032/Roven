@@ -518,6 +518,28 @@ int kvs_vector_del(
 
 int kvs_vector_index_rebuild(void);
 
+typedef struct kvs_vector_rebuild_async_status_s {
+	int worker_running;
+	int cancel_requested;
+	uint64_t job_id;
+	int last_status;
+	int64_t started_at_ms;
+	int64_t finished_at_ms;
+	const char *rebuild_state;
+	size_t progress_done;
+	size_t progress_total;
+	size_t delta_count;
+	int error_code;
+	char error_message[128];
+} kvs_vector_rebuild_async_status_t;
+
+int kvs_vector_index_rebuild_async_start(void);
+int kvs_vector_index_rebuild_async_cancel(void);
+int kvs_vector_index_rebuild_async_retry(void);
+int kvs_vector_index_rebuild_async_status(
+	kvs_vector_rebuild_async_status_t *status
+);
+
 int kvs_vector_info(kvs_vector_info_t *info);
 
 void kvs_vector_search_result_reset(kvs_vector_search_result_t *result);

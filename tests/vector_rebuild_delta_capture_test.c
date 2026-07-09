@@ -29,6 +29,20 @@ static int expect_float_eq(float actual, float expected, const char *label) {
 	return expect_int(diff < 0.00001f, label);
 }
 
+static int expect_error_contains(
+	const kvs_vector_rebuild_context_t *ctx,
+	const char *needle,
+	const char *label
+) {
+	return expect_int(
+		ctx &&
+			ctx->error_code != 0 &&
+			needle &&
+			strstr(ctx->error_message, needle) != NULL,
+		label
+	);
+}
+
 static void fill_vector(float *vector, int dim, float seed) {
 	int i;
 
@@ -195,6 +209,7 @@ int main(void) {
 	kvs_vector_rebuild_context_t *ctx;
 	kvs_vector_search_result_t result;
 	uint64_t record_id = 0;
+	uint64_t rebuild_generation_start;
 	uint64_t generation0;
 	uint64_t generation1;
 	uint64_t generation2;
@@ -239,11 +254,95 @@ int main(void) {
 
 	failed |= expect_int(
 		kvs_vector_manager_rebuild_capture_begin_for_test() == KVS_VECTOR_OK,
+		"upsert append failure begins capture"
+	);
+	ctx->current_generation = UINT64_MAX;
+	failed |= expect_int(
+		commit_prepared_vector(
+			"append-fail-upsert",
+			"answer-fail",
+			"scopeA",
+			vec_manual,
+			DIM
+		) == KVS_VECTOR_OK,
+		"upsert append failure does not roll back VSET"
+	);
+	failed |= expect_int(
+		ctx->state == KVS_VECTOR_REBUILD_FAILED,
+		"upsert append failure marks rebuild failed"
+	);
+	failed |= expect_error_contains(
+		ctx,
+		"append upsert delta failed",
+		"upsert append failure records reason"
+	);
+	failed |= expect_int(
+		search_one(
+			"append-fail-upsert",
+			"scopeA",
+			vec_manual,
+			DIM,
+			&result
+		) == KVS_VECTOR_OK,
+		"upsert append failure leaves committed record searchable"
+	);
+	ctx->current_generation = g_vector_state.generation;
+	failed |= expect_int(
+		kvs_vector_rebuild_reset_idle(ctx) == KVS_VECTOR_OK,
+		"upsert append failure cleanup"
+	);
+
+	failed |= expect_int(
+		kvs_vector_manager_rebuild_capture_begin_for_test() == KVS_VECTOR_OK,
+		"delete append failure begins capture"
+	);
+	ctx->current_generation = UINT64_MAX;
+	failed |= expect_int(
+		kvs_vector_del(
+			"append-fail-upsert",
+			strlen("append-fail-upsert"),
+			"scopeA",
+			strlen("scopeA")
+		) == KVS_VECTOR_OK,
+		"delete append failure does not roll back VDEL"
+	);
+	failed |= expect_int(
+		ctx->state == KVS_VECTOR_REBUILD_FAILED,
+		"delete append failure marks rebuild failed"
+	);
+	failed |= expect_error_contains(
+		ctx,
+		"append delete delta failed",
+		"delete append failure records reason"
+	);
+	failed |= expect_int(
+		kvs_vector_get(
+			"append-fail-upsert",
+			strlen("append-fail-upsert"),
+			"scopeA",
+			strlen("scopeA"),
+			&result
+		) == KVS_VECTOR_ERR_NOT_FOUND,
+		"delete append failure leaves delete committed"
+	);
+	ctx->current_generation = g_vector_state.generation;
+	failed |= expect_int(
+		kvs_vector_rebuild_reset_idle(ctx) == KVS_VECTOR_OK,
+		"delete append failure cleanup"
+	);
+
+	failed |= expect_int(
+		kvs_vector_manager_rebuild_capture_begin_for_test() == KVS_VECTOR_OK,
 		"test hook begins capture"
 	);
 	failed |= expect_int(
 		ctx->state == KVS_VECTOR_REBUILD_BUILDING,
 		"capture state building"
+	);
+	rebuild_generation_start = ctx->rebuild_generation;
+	failed |= expect_int(
+		rebuild_generation_start == ctx->current_generation,
+		"capture begin records rebuild_generation_start"
 	);
 
 	failed |= expect_int(
@@ -265,6 +364,14 @@ int main(void) {
 	);
 	failed |= expect_float_eq(ctx->delta_log[0].vector[7], vec_a[7], "upsert vector copy value");
 	generation0 = ctx->delta_log[0].generation;
+	failed |= expect_int(
+		generation0 > rebuild_generation_start,
+		"first delta generation follows rebuild_generation_start"
+	);
+	failed |= expect_int(
+		ctx->rebuild_generation == rebuild_generation_start,
+		"delta append preserves rebuild_generation_start"
+	);
 	vec_a[7] = 123.0f;
 	failed |= expect_int(
 		ctx->delta_log[0].vector[7] != vec_a[7],

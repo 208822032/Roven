@@ -121,6 +121,15 @@ static int find_hit(
 	return 0;
 }
 
+static int expect_rebuild_error_contains(const char *needle, const char *label) {
+	return expect_int(
+		needle &&
+			g_vector_state.rebuild.error_code != 0 &&
+			strstr(g_vector_state.rebuild.error_message, needle) != NULL,
+		label
+	);
+}
+
 static uint64_t record_id_for_question(
 	const char *question,
 	const char *scope
@@ -389,6 +398,152 @@ static int run_failure_cleanup_harness(void) {
 	return failed;
 }
 
+static int run_final_validation_failure_harness(void) {
+	enum { DIM = 64 };
+	float base_vec[DIM];
+	float fake_vec[DIM];
+	const uint64_t fake_record_id = 4242424242ULL;
+	int failed = 0;
+
+	failed |= expect_int(
+		kvs_vector_reset_for_load() == KVS_VECTOR_OK,
+		"validation failure reset"
+	);
+	one_hot(base_vec, DIM, 11);
+	one_hot(fake_vec, DIM, 12);
+	failed |= expect_int(
+		commit_vector("validation-base", "answer", "scopeA", base_vec, DIM) ==
+			KVS_VECTOR_OK,
+		"validation failure insert base"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_init_for_test() == KVS_VECTOR_OK,
+		"validation failure shadow init"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_build_from_active_records_for_test() ==
+			KVS_VECTOR_OK,
+		"validation failure baseline build"
+	);
+	failed |= expect_int(
+		kvs_vector_manager_capture_upsert_delta(
+			fake_record_id,
+			fake_vec,
+			DIM
+		) == KVS_VECTOR_OK,
+		"validation failure fake delta append"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_replay_deltas_for_test() != KVS_VECTOR_OK,
+		"validation failure replay rejected"
+	);
+	failed |= expect_int(
+		g_vector_state.rebuild.state == KVS_VECTOR_REBUILD_FAILED,
+		"validation failure enters failed"
+	);
+	failed |= expect_rebuild_error_contains(
+		"shadow active id not in manager",
+		"validation failure reason observable"
+	);
+	failed |= expect_int(
+		!kvs_vector_rebuild_shadow_v2_shadow_exists_for_test(),
+		"validation failure destroys shadow"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_swap_ready_shadow_for_test() != KVS_VECTOR_OK,
+		"validation failure cannot publish"
+	);
+	failed |= expect_product_top1_question(
+		base_vec,
+		DIM,
+		"validation-base",
+		"validation failure product active unchanged"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_destroy_for_test() == KVS_VECTOR_OK,
+		"validation failure cleanup"
+	);
+	failed |= expect_int(
+		g_vector_state.rebuild.state == KVS_VECTOR_REBUILD_IDLE,
+		"validation failure cleanup idle"
+	);
+	return failed;
+}
+
+static int run_pre_scan_capture_boundary_harness(void) {
+	enum { DIM = 64 };
+	float vec_base[DIM];
+	float vec_delta[DIM];
+	uint64_t delta_id;
+	uint64_t rebuild_generation_start;
+	size_t replayed_count = 0;
+	int failed = 0;
+
+	failed |= expect_int(
+		kvs_vector_reset_for_load() == KVS_VECTOR_OK,
+		"pre-scan boundary reset"
+	);
+	one_hot(vec_base, DIM, 7);
+	one_hot(vec_delta, DIM, 8);
+	failed |= expect_int(
+		commit_vector("boundary-base", "answer", "scopeA", vec_base, DIM) ==
+			KVS_VECTOR_OK,
+		"pre-scan boundary insert base"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_init_for_test() == KVS_VECTOR_OK,
+		"pre-scan boundary shadow init"
+	);
+	rebuild_generation_start = g_vector_state.rebuild.rebuild_generation;
+	failed |= expect_int(
+		kvs_vector_rebuild_is_capture_active(&g_vector_state.rebuild),
+		"pre-scan boundary capture active before full scan"
+	);
+	failed |= expect_int(
+		commit_vector("boundary-delta", "answer", "scopeA", vec_delta, DIM) ==
+			KVS_VECTOR_OK,
+		"pre-scan boundary VSET succeeds"
+	);
+	delta_id = record_id_for_question("boundary-delta", "scopeA");
+	failed |= expect_int(delta_id != 0, "pre-scan boundary delta id exists");
+	failed |= expect_int(
+		g_vector_state.rebuild.delta_count == 1,
+		"pre-scan boundary delta captured before full scan"
+	);
+	failed |= expect_int(
+		g_vector_state.rebuild.delta_log[0].generation >
+			rebuild_generation_start,
+		"pre-scan boundary delta generation follows start"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_build_from_active_records_for_test() ==
+			KVS_VECTOR_OK,
+		"pre-scan boundary baseline build"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_replay_deltas_for_test() == KVS_VECTOR_OK,
+		"pre-scan boundary replay"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_replayed_delta_count_for_test(
+			&replayed_count
+		) == KVS_VECTOR_OK,
+		"pre-scan boundary replayed count query"
+	);
+	failed |= expect_int(replayed_count == 1, "pre-scan boundary one delta replayed");
+	failed |= expect_shadow_top1(
+		vec_delta,
+		DIM,
+		delta_id,
+		"pre-scan boundary shadow finds delta record"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_destroy_for_test() == KVS_VECTOR_OK,
+		"pre-scan boundary cleanup"
+	);
+	return failed;
+}
+
 int main(void) {
 	enum { DIM = 64 };
 	float vec_a0[DIM];
@@ -585,6 +740,8 @@ int main(void) {
 
 	failed |= run_all_deleted_harness();
 	failed |= run_failure_cleanup_harness();
+	failed |= run_final_validation_failure_harness();
+	failed |= run_pre_scan_capture_boundary_harness();
 
 	failed |= expect_int(
 		kvs_vector_reset_for_load() == KVS_VECTOR_OK,

@@ -2,6 +2,7 @@
 #include "kvs_config.h"
 #include "kvs_memory.h"
 #include "kvs_memory_internal.h"
+#include "kvs_types.h"
 #include "kvs_vector.h"
 #include "vector/kvs_vector_manager.h"
 #include "vector/kvs_vector_rebuild_shadow.h"
@@ -227,6 +228,8 @@ static int reach_ready_with_shadow_only_delta(
 	int dim,
 	uint64_t shadow_only_id
 ) {
+	uint64_t generation;
+	size_t record_index;
 	int ret;
 
 	ret = commit_vector("swap-base", "base", "scopeA", base_vec, dim);
@@ -245,6 +248,33 @@ static int reach_ready_with_shadow_only_delta(
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
+	record_index = g_vector_state.store.next_slot;
+	generation = g_vector_state.generation + 1;
+	ret = kvs_vector_restore_record_with_embedding(
+		record_index,
+		shadow_only_id,
+		KVS_VECTOR_RECORD_ACTIVE,
+		0,
+		"swap-shadow-only",
+		strlen("swap-shadow-only"),
+		"shadow",
+		strlen("shadow"),
+		"scopeA",
+		strlen("scopeA"),
+		"swap-shadow-only",
+		strlen("swap-shadow-only"),
+		shadow_vec,
+		dim,
+		1,
+		1,
+		KV_TTL_NO_EXPIRE,
+		generation,
+		kvs_vector_embedding_current_model_version()
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	g_vector_state.generation = generation;
 	ret = kvs_vector_manager_capture_upsert_delta(
 		shadow_only_id,
 		shadow_vec,

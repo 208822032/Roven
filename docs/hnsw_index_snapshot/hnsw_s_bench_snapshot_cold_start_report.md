@@ -120,7 +120,7 @@ dataset:
   queries = 10
 
 fixture:
-  fixture_create_build_us = 125,046,729
+  fixture_create_build_us = 126,327,129
   snapshot_file_size_bytes = 84,580,136
   manifest_file_size_bytes = 402
   records_fixture_size_bytes = 20,640,096
@@ -131,12 +131,12 @@ fixture:
   degree_overflow = 0
 
 snapshot load-only:
-  records_restore_us = 61,250
-  snapshot_load_us = 383,291
-  snapshot_core_load_us = 322,041
-  snapshot_validate_us = 133,569
-  snapshot_deserialize_us = 188,472
-  bind_us = 0
+  records_restore_us = 52,909
+  snapshot_load_us = 374,815
+  snapshot_core_load_us = 321,906
+  snapshot_validate_us = 134,344
+  snapshot_deserialize_us = 187,561
+  bind_us = 1
   post_load_search_ok = 1
   VINFO_loaded_from_snapshot = 1
   fallback_rebuild_count = 0
@@ -150,16 +150,16 @@ snapshot load-only:
 
 ```text
 records_only_rebuild_us = 3,011,810,795
-snapshot_load_us_avg = 383,291
+snapshot_load_us_avg = 374,815
 
 speedup = records_only_rebuild_us / snapshot_load_us_avg
-        = 7,857.77x
+        = 8,035.46x
 
-cold_start_saved_time_us = 3,011,427,504
+cold_start_saved_time_us = 3,011,435,980
 cold_start_saved_time_percent = 99.99%
 ```
 
-说明：10K quick 用于验证 benchmark harness、snapshot load-only 机制和 fail-fast no-fallback 语义。这里的 `7,857.77x` 使用 100K records-only rebuild baseline 与 10K quick snapshot load 实测计算，只能作为机制验证和数量级参考，不是 100K apples-to-apples 实测 speedup。最终是否进入 HNSW-R 应以后续 100K load-only 实测为主。
+说明：10K quick 用于验证 benchmark harness、snapshot load-only 机制和 fail-fast no-fallback 语义。这里的 `8,035.46x` 使用 100K records-only rebuild baseline 与 10K quick snapshot load 实测计算，只能作为机制验证和数量级参考，不是 100K apples-to-apples 实测 speedup。最终是否进入 HNSW-R 应以后续 100K load-only 实测为主。
 
 ## 100K load-only 补测结果
 
@@ -278,7 +278,7 @@ quick 和 100K load-only 结果：
 
 - benchmark harness 已新增，并能生成 fixture、执行 load-only、输出 avg / p50 / p95 结构。
 - load-only 模式已经具备 fail-fast 行为，不会在 snapshot missing / invalid / corrupt 时触发 100K rebuild。
-- quick 实测中，10K / 512d balanced snapshot load 为 383ms 量级；该数据只用于机制验证。
+- quick 实测中，10K / 512d balanced snapshot load 为 375ms 量级；该数据只用于机制验证。
 - 100K / 512d balanced load-only repeat=5 实测中，snapshot load 平均约 5.92s，p95 约 6.80s，远小于复用的 100K balanced records-only rebuild 50.2 分钟 baseline。
 - 当前数据证明 valid snapshot cache 对 100K cold-start 有明确收益，也支持进入 HNSW-R。
 
@@ -358,12 +358,7 @@ PASS
 ## git status --short
 
 ```text
- M Makefile
- M docs/hnsw_index_snapshot/README.md
- M docs/hnsw_index_snapshot/index.md
-?? docs/hnsw_index_snapshot/hnsw_s_bench_snapshot_cold_start_report.md
-?? tests/vector_index_snapshot_cold_start_bench.c
-?? tests/vector_index_snapshot_cold_start_bench.sh
+ M docs/hnsw_index_snapshot/hnsw_s_bench_snapshot_cold_start_report.md
 ```
 
 ## HNSW-S-bench-0 decision

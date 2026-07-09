@@ -6,6 +6,13 @@
 #include "kvs_vector.h"
 #include "vector/kvs_vector_core.h"
 
+int kvs_vector_rebuild_shadow_v2_init(void);
+int kvs_vector_rebuild_shadow_v2_destroy(void);
+int kvs_vector_rebuild_shadow_v2_build_from_active_records(void);
+int kvs_vector_rebuild_shadow_v2_replay_deltas(void);
+int kvs_vector_rebuild_publish_ready_shadow(void);
+int kvs_vector_rebuild_retire_cleanup_safe(void);
+
 int kvs_vector_rebuild_shadow_v2_init_for_test(void);
 int kvs_vector_rebuild_shadow_v2_destroy_for_test(void);
 int kvs_vector_rebuild_shadow_v2_build_from_active_records_for_test(void);

@@ -2,7 +2,9 @@
 #include "kvs_config.h"
 #include "kvs_memory.h"
 #include "kvs_memory_internal.h"
+#include "kvs_types.h"
 #include "kvs_vector.h"
+#include "vector/kvs_vector_manager.h"
 #include "vector/kvs_vector_rebuild_shadow.h"
 
 #include <stdio.h>
@@ -234,6 +236,63 @@ static int prepare_ready_shadow(
 	return kvs_vector_rebuild_shadow_v2_replay_deltas_for_test();
 }
 
+static int prepare_ready_shadow_with_manager_only_delta(
+	const float *base_vec,
+	const float *delta_vec,
+	uint64_t *out_delta_id
+) {
+	const uint64_t delta_id = 9900001;
+	size_t record_index;
+	int ret;
+
+	ret = commit_vector("r3-base", "base", "scopeR3", base_vec);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	ret = kvs_vector_rebuild_shadow_v2_init_for_test();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	ret = kvs_vector_rebuild_shadow_v2_build_from_active_records_for_test();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
+	record_index = g_vector_state.store.next_slot;
+	ret = kvs_vector_restore_record_with_embedding(
+		record_index,
+		delta_id,
+		KVS_VECTOR_RECORD_ACTIVE,
+		0,
+		"r3-shadow-only",
+		strlen("r3-shadow-only"),
+		"shadow-only",
+		strlen("shadow-only"),
+		"scopeR3",
+		strlen("scopeR3"),
+		"r3-shadow-only",
+		strlen("r3-shadow-only"),
+		delta_vec,
+		DIM,
+		1,
+		1,
+		KV_TTL_NO_EXPIRE,
+		g_vector_state.generation + 1,
+		kvs_vector_embedding_current_model_version()
+	);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	ret = kvs_vector_manager_capture_upsert_delta(delta_id, delta_vec, DIM);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	if (out_delta_id) {
+		*out_delta_id = delta_id;
+	}
+	return kvs_vector_rebuild_shadow_v2_replay_deltas_for_test();
+}
+
 static int reset_v2_index_only(void) {
 	return kvs_hnsw_v2_index_reset(&g_vector_state.core_hnsw_v2_index);
 }
@@ -341,6 +400,70 @@ static int run_successful_shadow_publish_writes_loadable_snapshot(void) {
 	failed |= expect_int(
 		product_search_has(delta_vec, "scopeS", "s6-delta") == KVS_VECTOR_OK,
 		"loaded snapshot search"
+	);
+
+	kvs_vector_destroy();
+	cleanup_snapshot_files();
+	return failed;
+}
+
+static int run_shadow_publish_replaces_product_active(void) {
+	float base_vec[DIM];
+	float delta_vec[DIM];
+	uint64_t delta_id = 0;
+	int failed = 0;
+
+	cleanup_snapshot_files();
+	one_hot(base_vec, 13);
+	one_hot(delta_vec, 31);
+	reset_config("core_hnsw_v2");
+	failed |= expect_int(kvs_vector_init() == KVS_VECTOR_OK, "r3 init");
+	failed |= expect_int(
+		prepare_ready_shadow_with_manager_only_delta(
+			base_vec,
+			delta_vec,
+			&delta_id
+		) == KVS_VECTOR_OK,
+		"r3 ready"
+	);
+	failed |= expect_int(
+		product_search_has(delta_vec, "scopeR3", "r3-shadow-only") !=
+			KVS_VECTOR_OK,
+		"r3 old product active does not see shadow-only delta"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_swap_ready_shadow_for_test() == KVS_VECTOR_OK,
+		"r3 publish"
+	);
+	failed |= expect_int(
+		g_vector_state.current_index.impl == &g_vector_state.core_hnsw_v2_index,
+		"r3 product wrapper still points at product active"
+	);
+	failed |= expect_int(
+		g_vector_state.rebuild.active_index == &g_vector_state.current_index,
+		"r3 rebuild active is product wrapper"
+	);
+	failed |= expect_int(
+		!kvs_vector_rebuild_shadow_v2_shadow_exists_for_test(),
+		"r3 shadow owner cleared"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_shadow_v2_retired_exists_for_test(),
+		"r3 retired old product active exists"
+	);
+	failed |= rebuild_active_hit(delta_vec, delta_id, "r3 active helper sees product active");
+	failed |= expect_int(
+		product_search_has(delta_vec, "scopeR3", "r3-shadow-only") ==
+			KVS_VECTOR_OK,
+		"r3 product active sees published shadow"
+	);
+	failed |= expect_int(
+		kvs_vector_rebuild_retire_cleanup_for_test() == KVS_VECTOR_OK,
+		"r3 retired cleanup"
+	);
+	failed |= expect_int(
+		!kvs_vector_rebuild_shadow_v2_retired_exists_for_test(),
+		"r3 retired cleared"
 	);
 
 	kvs_vector_destroy();
@@ -488,6 +611,7 @@ int main(void) {
 	mem_init();
 
 	failed |= run_successful_shadow_publish_writes_loadable_snapshot();
+	failed |= run_shadow_publish_replaces_product_active();
 	failed |= run_publish_failure_does_not_write_snapshot();
 	failed |= run_snapshot_write_failure_does_not_rollback_publish();
 	failed |= run_non_v2_backend_does_not_write_snapshot();

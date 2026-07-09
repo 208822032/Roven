@@ -632,7 +632,7 @@ const command_info command_table[] = {
     {"VGET",    handle_vget_command,    -1, 0, -1, KVS_CMD_LOCK_READ},
     {"VSEARCH", handle_vsearch_command, -1, 0, -1, KVS_CMD_LOCK_READ},
     {"VDEL",    handle_vdel_command,    -1, 1, -1, KVS_CMD_LOCK_WRITE},
-    {"VINDEX",  handle_vindex_command,  -1, 0, -1, KVS_CMD_LOCK_WRITE},
+    {"VINDEX",  handle_vindex_command,  -1, 0, -1, KVS_CMD_LOCK_NONE},
     {"VINFO",   handle_vinfo_command,   -1, 0, -1, KVS_CMD_LOCK_READ},
 
     {NULL, NULL, 0, 0, -1, KVS_CMD_LOCK_NONE} // 结束标记
@@ -799,6 +799,7 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
         * VSEARCH query [scope] [topk] [threshold]
         * VDEL question [scope]
         * VINDEX REBUILD
+        * VINDEX REBUILD ASYNC|STATUS|CANCEL|RETRY
         * VINFO
         */
 
@@ -926,7 +927,7 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
         }
 
         if (cmd == KVS_CMD_VINDEX) {
-            if (count != 2) {
+            if (count != 2 && count != 3) {
                 return -1;
             }
 
@@ -936,6 +937,10 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
 
             ctx->subcommand = tokens[1];
             ctx->subcommand_len = token_lens[1];
+            if (count == 3) {
+                ctx->value = tokens[2];
+                ctx->value_len = token_lens[2];
+            }
 
             return 0;
         }
@@ -1070,6 +1075,7 @@ int check_arity(const command_info *cmd, int argc){
      * VSEARCH query [scope] [topk] [threshold]     => 2 到 5
      * VDEL question [scope]                        => 2 或 3
      * VINDEX REBUILD                               => 2
+     * VINDEX REBUILD ASYNC|STATUS|CANCEL|RETRY     => 3
      * VINFO                                        => 1
      */
     if (strcmp(cmd->name, "VSET") == 0) {
@@ -1091,7 +1097,7 @@ int check_arity(const command_info *cmd, int argc){
     }
 
     if (strcmp(cmd->name, "VINDEX") == 0) {
-        return argc == 2;
+        return argc == 2 || argc == 3;
     }
 
     if (strcmp(cmd->name, "VINFO") == 0) {
@@ -3324,8 +3330,58 @@ int handle_vindex_command(command_context_t *ctx, char *response) {
     }
 
     if (kvs_vcmd_is_rebuild(ctx->subcommand)) {
-        status = kvs_vector_index_rebuild();
-        return handle_vector_status_response(status, response);
+        if (!ctx->value) {
+            status = kvs_vector_index_rebuild();
+            return handle_vector_status_response(status, response);
+        }
+
+        if (strcasecmp(ctx->value, "ASYNC") == 0 ||
+            strcasecmp(ctx->value, "START") == 0) {
+            status = kvs_vector_index_rebuild_async_start();
+            return handle_vector_status_response(status, response);
+        }
+
+        if (strcasecmp(ctx->value, "CANCEL") == 0) {
+            status = kvs_vector_index_rebuild_async_cancel();
+            return handle_vector_status_response(status, response);
+        }
+
+        if (strcasecmp(ctx->value, "RETRY") == 0) {
+            status = kvs_vector_index_rebuild_async_retry();
+            return handle_vector_status_response(status, response);
+        }
+
+        if (strcasecmp(ctx->value, "STATUS") == 0) {
+            kvs_vector_rebuild_async_status_t async_status;
+            char item[256];
+            int n;
+
+            status = kvs_vector_index_rebuild_async_status(&async_status);
+            if (status != KVS_VECTOR_OK) {
+                return handle_vector_status_response(status, response);
+            }
+            n = snprintf(
+                item,
+                sizeof(item),
+                "rebuild_async_running:%d rebuild_state:%s progress_done:%zu progress_total:%zu delta_count:%zu last_status:%d cancel_requested:%d",
+                async_status.worker_running,
+                async_status.rebuild_state ? async_status.rebuild_state : "unknown",
+                async_status.progress_done,
+                async_status.progress_total,
+                async_status.delta_count,
+                async_status.last_status,
+                async_status.cancel_requested
+            );
+            if (n < 0 || n >= (int)sizeof(item)) {
+                return resp_generate_simple_string_n(
+                    response,
+                    '-',
+                    "ERR response too large",
+                    sizeof("ERR response too large") - 1
+                );
+            }
+            return resp_generate_bulk_string_n(response, item, (size_t)n);
+        }
     }
 
     return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);

@@ -31,6 +31,25 @@ static void kvs_vector_rebuild_set_error(
 	}
 }
 
+static int kvs_vector_rebuild_reject_transition(
+	kvs_vector_rebuild_context_t *ctx,
+	const char *operation
+) {
+	char message[128];
+
+	if (!ctx) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+
+	snprintf(message,
+	         sizeof(message),
+	         "invalid transition: %s from %s",
+	         operation ? operation : "unknown",
+	         kvs_vector_rebuild_state_name(ctx->state));
+	kvs_vector_rebuild_set_error(ctx, KVS_VECTOR_ERR, message);
+	return KVS_VECTOR_ERR;
+}
+
 static void kvs_vector_rebuild_destroy_shadow(kvs_vector_rebuild_context_t *ctx) {
 	if (!ctx) {
 		return;
@@ -279,9 +298,14 @@ int kvs_vector_rebuild_begin(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (ctx->state != KVS_VECTOR_REBUILD_IDLE) {
-		return KVS_VECTOR_ERR;
+		return kvs_vector_rebuild_reject_transition(ctx, "begin");
 	}
 	if (ctx->current_generation == UINT64_MAX) {
+		kvs_vector_rebuild_set_error(
+			ctx,
+			KVS_VECTOR_ERR,
+			"generation overflow before rebuild begin"
+		);
 		return KVS_VECTOR_ERR;
 	}
 
@@ -309,8 +333,9 @@ int kvs_vector_rebuild_enter_replaying_delta(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (ctx->state != KVS_VECTOR_REBUILD_BUILDING) {
-		return KVS_VECTOR_ERR;
+		return kvs_vector_rebuild_reject_transition(ctx, "enter_replaying_delta");
 	}
+	kvs_vector_rebuild_clear_error(ctx);
 	ctx->state = KVS_VECTOR_REBUILD_REPLAYING_DELTA;
 	return KVS_VECTOR_OK;
 }
@@ -322,8 +347,9 @@ int kvs_vector_rebuild_enter_ready_to_swap(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (ctx->state != KVS_VECTOR_REBUILD_REPLAYING_DELTA) {
-		return KVS_VECTOR_ERR;
+		return kvs_vector_rebuild_reject_transition(ctx, "enter_ready_to_swap");
 	}
+	kvs_vector_rebuild_clear_error(ctx);
 	ctx->state = KVS_VECTOR_REBUILD_READY_TO_SWAP;
 	return KVS_VECTOR_OK;
 }
@@ -335,8 +361,9 @@ int kvs_vector_rebuild_enter_swapping(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (ctx->state != KVS_VECTOR_REBUILD_READY_TO_SWAP) {
-		return KVS_VECTOR_ERR;
+		return kvs_vector_rebuild_reject_transition(ctx, "enter_swapping");
 	}
+	kvs_vector_rebuild_clear_error(ctx);
 	ctx->state = KVS_VECTOR_REBUILD_SWAPPING;
 	return KVS_VECTOR_OK;
 }
@@ -350,7 +377,7 @@ int kvs_vector_rebuild_finish_swap(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (ctx->state != KVS_VECTOR_REBUILD_SWAPPING) {
-		return KVS_VECTOR_ERR;
+		return kvs_vector_rebuild_reject_transition(ctx, "finish_swap");
 	}
 
 	ctx->active_index = new_active_index;
@@ -378,12 +405,22 @@ int kvs_vector_rebuild_promote_shadow(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (ctx->state != KVS_VECTOR_REBUILD_READY_TO_SWAP) {
-		return KVS_VECTOR_ERR;
+		return kvs_vector_rebuild_reject_transition(ctx, "promote_shadow");
 	}
 	if (!ctx->shadow_index) {
+		kvs_vector_rebuild_set_error(
+			ctx,
+			KVS_VECTOR_ERR_NOT_INITIALIZED,
+			"promote_shadow missing shadow index"
+		);
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
 	}
 	if (ctx->retired_index) {
+		kvs_vector_rebuild_set_error(
+			ctx,
+			KVS_VECTOR_ERR,
+			"promote_shadow retired index already present"
+		);
 		return KVS_VECTOR_ERR;
 	}
 
@@ -428,7 +465,11 @@ int kvs_vector_rebuild_fail(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (!kvs_vector_rebuild_is_active(ctx->state)) {
-		return KVS_VECTOR_ERR;
+		if (ctx->state == KVS_VECTOR_REBUILD_FAILED ||
+		    ctx->state == KVS_VECTOR_REBUILD_CANCELLED) {
+			return KVS_VECTOR_ERR;
+		}
+		return kvs_vector_rebuild_reject_transition(ctx, "fail");
 	}
 
 	ctx->state = KVS_VECTOR_REBUILD_FAILED;
@@ -445,12 +486,17 @@ int kvs_vector_rebuild_cancel(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (!kvs_vector_rebuild_is_active(ctx->state)) {
-		return KVS_VECTOR_ERR;
+		if (ctx->state == KVS_VECTOR_REBUILD_FAILED ||
+		    ctx->state == KVS_VECTOR_REBUILD_CANCELLED) {
+			return KVS_VECTOR_ERR;
+		}
+		return kvs_vector_rebuild_reject_transition(ctx, "cancel");
 	}
 
 	ctx->state = KVS_VECTOR_REBUILD_CANCELLED;
 	ctx->cancel_requested = 1;
 	kvs_vector_rebuild_destroy_shadow(ctx);
+	kvs_vector_rebuild_set_error(ctx, KVS_VECTOR_ERR, "rebuild cancelled");
 	return KVS_VECTOR_OK;
 }
 
@@ -461,7 +507,7 @@ int kvs_vector_rebuild_reset_idle(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 	if (kvs_vector_rebuild_is_active(ctx->state)) {
-		return KVS_VECTOR_ERR;
+		return kvs_vector_rebuild_reject_transition(ctx, "reset_idle");
 	}
 
 	kvs_vector_rebuild_delta_clear(ctx);

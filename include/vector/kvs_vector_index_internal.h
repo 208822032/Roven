@@ -58,6 +58,11 @@ typedef struct kvs_vector_index_s {
 	const kvs_vector_index_ops_t *ops;
 } kvs_vector_index_t;
 
+typedef struct kvs_vector_active_index_guard_s {
+	kvs_vector_index_t *index;
+	int locked;
+} kvs_vector_active_index_guard_t;
+
 float kvs_vector_metric_score(
 	const float *lhs,
 	const float *rhs,
@@ -70,6 +75,11 @@ const char *kvs_vector_metric_name(kvs_vector_metric_type_t metric);
 kvs_vector_metric_type_t kvs_vector_metric_from_config(void);
 
 int kvs_vector_index_bind_current(void);
+
+int kvs_vector_active_index_acquire_read(kvs_vector_active_index_guard_t *guard);
+void kvs_vector_active_index_release_read(kvs_vector_active_index_guard_t *guard);
+int kvs_vector_active_index_acquire_write(void);
+void kvs_vector_active_index_release_write(void);
 
 int kvs_vector_index_add_current(
 	size_t record_index,

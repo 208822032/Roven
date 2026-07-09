@@ -1,5 +1,6 @@
 #pragma once
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -114,6 +115,9 @@ typedef struct kvs_vector_state_s {
 
 	/* 当前被VSEARCH使用的manager-side统一ops包装对象。 */
 	kvs_vector_index_t current_index;
+	/* HNSW-R2: manager-owned reader safety for current_index lifetime. */
+	pthread_rwlock_t active_index_rwlock;
+	int active_index_rwlock_initialized;
 
 	/* 最近一次索引重建的返回状态；0通常表示成功，非0表示失败。 */
 	int last_rebuild_status;
@@ -130,6 +134,21 @@ typedef struct kvs_vector_state_s {
 
 	/* Manager-owned background rebuild control-plane skeleton. */
 	kvs_vector_rebuild_context_t rebuild;
+
+	/* HNSW-R6: one-shot background rebuild worker lifecycle. */
+	pthread_mutex_t rebuild_worker_mu;
+	int rebuild_worker_mu_initialized;
+	pthread_rwlock_t rebuild_worker_rwlock;
+	int rebuild_worker_rwlock_initialized;
+	pthread_t rebuild_worker_thread;
+	int rebuild_worker_thread_started;
+	int rebuild_worker_running;
+	int rebuild_worker_cancel_requested;
+	uint64_t rebuild_worker_job_id;
+	int rebuild_worker_last_status;
+	int64_t rebuild_worker_started_at_ms;
+	int64_t rebuild_worker_finished_at_ms;
+	char rebuild_worker_last_error[128];
 
 	/* Manager-owned optional index snapshot load status. */
 	kvs_vector_snapshot_status_t snapshot_status;
@@ -332,6 +351,7 @@ int kvs_vector_manager_capture_delete_delta(
 
 int kvs_vector_manager_rebuild_capture_begin_for_test(void);
 int kvs_vector_manager_rebuild_capture_stop_for_test(void);
+int kvs_vector_index_rebuild_async_wait_for_test(uint64_t timeout_ms);
 
 /********** manager控制接口 **********/
 

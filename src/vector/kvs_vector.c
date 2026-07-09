@@ -5,6 +5,7 @@
 #include "vector/kvs_vector_hnsw_v2_snapshot.h"
 #include "vector/kvs_vector_index_snapshot.h"
 #include "vector/kvs_vector_rebuild.h"
+#include "vector/kvs_vector_rebuild_shadow.h"
 
 #include "kvs_memory.h"
 
@@ -13,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -40,6 +42,14 @@ typedef struct kvs_vector_profile_stats_s {
 static kvs_vector_profile_stats_t g_vector_profile_stats;
 
 static __thread uint64_t g_vsearch_current_resolve_us;
+
+static uint64_t kvs_vector_now_us(void);
+static int kvs_vector_rebuild_worker_acquire_read(void);
+static int kvs_vector_rebuild_worker_acquire_write(void);
+static void kvs_vector_rebuild_worker_release(void);
+static void kvs_vector_index_snapshot_write_best_effort_after_rebuild(
+	const char *source
+);
 
 static uint64_t kvs_vector_stats_add(uint64_t *field, uint64_t value) {
 	return __atomic_add_fetch(field, value, __ATOMIC_RELAXED);
@@ -169,6 +179,386 @@ int kvs_vector_manager_rebuild_capture_stop_for_test(void) {
 	return kvs_vector_rebuild_reset_idle(&g_vector_state.rebuild);
 }
 
+static void kvs_vector_rebuild_async_set_last_error_locked(const char *message) {
+	if (message && message[0]) {
+		snprintf(
+			g_vector_state.rebuild_worker_last_error,
+			sizeof(g_vector_state.rebuild_worker_last_error),
+			"%s",
+			message
+		);
+	} else {
+		g_vector_state.rebuild_worker_last_error[0] = '\0';
+	}
+}
+
+static int kvs_vector_rebuild_async_cancel_requested(void) {
+	int cancel_requested;
+
+	if (!g_vector_state.rebuild_worker_mu_initialized) {
+		return 0;
+	}
+
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	cancel_requested = g_vector_state.rebuild_worker_cancel_requested;
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+	return cancel_requested;
+}
+
+static int kvs_vector_rebuild_async_checkpoint_cancel(void) {
+	if (!kvs_vector_rebuild_async_cancel_requested()) {
+		return KVS_VECTOR_OK;
+	}
+
+	g_vector_state.rebuild.cancel_requested = 1;
+	if (kvs_vector_rebuild_is_capture_active(&g_vector_state.rebuild) ||
+	    g_vector_state.rebuild.state == KVS_VECTOR_REBUILD_SWAPPING) {
+		return kvs_vector_rebuild_cancel(&g_vector_state.rebuild);
+	}
+	return KVS_VECTOR_ERR;
+}
+
+static int kvs_vector_rebuild_async_run_once(void) {
+	int data_locked = 0;
+	int ret;
+
+	if (!g_vector_state.initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	if (g_vector_state.index_type != KVS_VECTOR_INDEX_CORE_HNSW_V2) {
+		g_vector_state.rebuild.error_code = KVS_VECTOR_ERR;
+		snprintf(
+			g_vector_state.rebuild.error_message,
+			sizeof(g_vector_state.rebuild.error_message),
+			"async rebuild requires core_hnsw_v2"
+		);
+		return KVS_VECTOR_ERR;
+	}
+
+	ret = kvs_vector_rebuild_worker_acquire_read();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	data_locked = 1;
+
+	ret = kvs_vector_rebuild_shadow_v2_init();
+	if (ret != KVS_VECTOR_OK) {
+		goto out;
+	}
+
+	ret = kvs_vector_rebuild_async_checkpoint_cancel();
+	if (ret != KVS_VECTOR_OK) {
+		goto out;
+	}
+
+	ret = kvs_vector_rebuild_shadow_v2_build_from_active_records();
+	if (ret != KVS_VECTOR_OK) {
+		goto out;
+	}
+
+	ret = kvs_vector_rebuild_async_checkpoint_cancel();
+	if (ret != KVS_VECTOR_OK) {
+		goto out;
+	}
+
+	ret = kvs_vector_rebuild_shadow_v2_replay_deltas();
+	if (ret != KVS_VECTOR_OK) {
+		goto out;
+	}
+
+	ret = kvs_vector_rebuild_async_checkpoint_cancel();
+	if (ret != KVS_VECTOR_OK) {
+		goto out;
+	}
+
+	ret = kvs_vector_rebuild_publish_ready_shadow();
+	if (ret != KVS_VECTOR_OK) {
+		goto out;
+	}
+
+	kvs_vector_index_snapshot_write_best_effort_after_rebuild(
+		"async_rebuild_publish"
+	);
+
+	ret = kvs_vector_rebuild_retire_cleanup_safe();
+
+out:
+	if (data_locked) {
+		kvs_vector_rebuild_worker_release();
+	}
+	return ret;
+}
+
+static void kvs_vector_rebuild_async_finish(int ret, int64_t started_at_ms) {
+	int64_t finished_at_ms = (int64_t)kv_now_ms();
+	const char *message = NULL;
+
+	if (g_vector_state.rebuild.error_message[0]) {
+		message = g_vector_state.rebuild.error_message;
+	} else if (ret == KVS_VECTOR_OK) {
+		message = "ok";
+	} else {
+		message = "async rebuild failed";
+	}
+
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	g_vector_state.rebuild_worker_running = 0;
+	g_vector_state.rebuild_worker_cancel_requested = 0;
+	g_vector_state.rebuild_worker_last_status =
+		ret == KVS_VECTOR_OK ? 1 : -1;
+	g_vector_state.rebuild_worker_finished_at_ms = finished_at_ms;
+	kvs_vector_rebuild_async_set_last_error_locked(message);
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+
+	g_vector_state.last_rebuild_status = ret == KVS_VECTOR_OK ? 1 : -1;
+	g_vector_state.last_rebuild_ms =
+		finished_at_ms >= started_at_ms ? finished_at_ms - started_at_ms : 0;
+	g_vector_state.last_rebuild_at_ms = finished_at_ms;
+}
+
+static void *kvs_vector_rebuild_async_worker_main(void *arg) {
+	int64_t started_at_ms;
+	int ret;
+
+	(void)arg;
+	started_at_ms = (int64_t)kv_now_ms();
+	ret = kvs_vector_rebuild_async_run_once();
+	kvs_vector_rebuild_async_finish(ret, started_at_ms);
+	return NULL;
+}
+
+static void kvs_vector_rebuild_async_join_completed_locked(void) {
+	pthread_t thread;
+
+	if (!g_vector_state.rebuild_worker_thread_started ||
+	    g_vector_state.rebuild_worker_running) {
+		return;
+	}
+
+	thread = g_vector_state.rebuild_worker_thread;
+	g_vector_state.rebuild_worker_thread_started = 0;
+	memset(&g_vector_state.rebuild_worker_thread, 0, sizeof(pthread_t));
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+	(void)pthread_join(thread, NULL);
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+}
+
+int kvs_vector_index_rebuild_async_status(
+	kvs_vector_rebuild_async_status_t *status
+) {
+	if (!status) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	memset(status, 0, sizeof(*status));
+	if (!g_vector_state.initialized ||
+	    !g_vector_state.rebuild_worker_mu_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	status->worker_running = g_vector_state.rebuild_worker_running;
+	status->cancel_requested = g_vector_state.rebuild_worker_cancel_requested;
+	status->job_id = g_vector_state.rebuild_worker_job_id;
+	status->last_status = g_vector_state.rebuild_worker_last_status;
+	status->started_at_ms = g_vector_state.rebuild_worker_started_at_ms;
+	status->finished_at_ms = g_vector_state.rebuild_worker_finished_at_ms;
+	status->progress_done = g_vector_state.rebuild.progress_done;
+	status->progress_total = g_vector_state.rebuild.progress_total;
+	status->delta_count = g_vector_state.rebuild.delta_count;
+	status->error_code = g_vector_state.rebuild.error_code;
+	snprintf(
+		status->error_message,
+		sizeof(status->error_message),
+		"%s",
+		g_vector_state.rebuild_worker_last_error[0] ?
+			g_vector_state.rebuild_worker_last_error :
+			g_vector_state.rebuild.error_message
+	);
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+
+	status->rebuild_state =
+		kvs_vector_rebuild_state_name(g_vector_state.rebuild.state);
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_index_rebuild_async_start(void) {
+	pthread_t completed_thread;
+	int ret;
+
+	if (!g_vector_state.initialized ||
+	    !g_vector_state.rebuild_worker_mu_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	if (g_vector_state.rebuild_worker_thread_started &&
+	    !g_vector_state.rebuild_worker_running) {
+		completed_thread = g_vector_state.rebuild_worker_thread;
+		g_vector_state.rebuild_worker_thread_started = 0;
+		memset(&g_vector_state.rebuild_worker_thread, 0, sizeof(pthread_t));
+		pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+		(void)pthread_join(completed_thread, NULL);
+		pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	}
+	if (g_vector_state.rebuild_worker_running) {
+		kvs_vector_rebuild_async_set_last_error_locked(
+			"async rebuild already running"
+		);
+		pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+		return KVS_VECTOR_ERR;
+	}
+	if (g_vector_state.rebuild.state != KVS_VECTOR_REBUILD_IDLE) {
+		kvs_vector_rebuild_async_set_last_error_locked(
+			"async rebuild requires idle rebuild context"
+		);
+		pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+		return KVS_VECTOR_ERR;
+	}
+
+	g_vector_state.rebuild_worker_job_id++;
+	g_vector_state.rebuild_worker_running = 1;
+	g_vector_state.rebuild_worker_cancel_requested = 0;
+	g_vector_state.rebuild_worker_last_status = 0;
+	g_vector_state.rebuild_worker_started_at_ms = (int64_t)kv_now_ms();
+	g_vector_state.rebuild_worker_finished_at_ms = 0;
+	kvs_vector_rebuild_async_set_last_error_locked("running");
+	g_vector_state.rebuild.cancel_requested = 0;
+
+	ret = pthread_create(
+		&g_vector_state.rebuild_worker_thread,
+		NULL,
+		kvs_vector_rebuild_async_worker_main,
+		NULL
+	);
+	if (ret != 0) {
+		g_vector_state.rebuild_worker_running = 0;
+		g_vector_state.rebuild_worker_thread_started = 0;
+		kvs_vector_rebuild_async_set_last_error_locked(
+			"async rebuild thread create failed"
+		);
+		pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+		return KVS_VECTOR_ERR;
+	}
+	g_vector_state.rebuild_worker_thread_started = 1;
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_index_rebuild_async_cancel(void) {
+	if (!g_vector_state.initialized ||
+	    !g_vector_state.rebuild_worker_mu_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	if (!g_vector_state.rebuild_worker_running) {
+		kvs_vector_rebuild_async_join_completed_locked();
+		kvs_vector_rebuild_async_set_last_error_locked(
+			"async rebuild is not running"
+		);
+		pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+		return KVS_VECTOR_ERR;
+	}
+
+	g_vector_state.rebuild_worker_cancel_requested = 1;
+	g_vector_state.rebuild.cancel_requested = 1;
+	kvs_vector_rebuild_async_set_last_error_locked("cancel requested");
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_index_rebuild_async_retry(void) {
+	int ret;
+
+	if (!g_vector_state.initialized ||
+	    !g_vector_state.rebuild_worker_mu_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	kvs_vector_rebuild_async_join_completed_locked();
+	if (g_vector_state.rebuild_worker_running) {
+		kvs_vector_rebuild_async_set_last_error_locked(
+			"async rebuild already running"
+		);
+		pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+		return KVS_VECTOR_ERR;
+	}
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+
+	if (g_vector_state.rebuild.state == KVS_VECTOR_REBUILD_FAILED ||
+	    g_vector_state.rebuild.state == KVS_VECTOR_REBUILD_CANCELLED) {
+		ret = kvs_vector_rebuild_reset_idle(&g_vector_state.rebuild);
+		if (ret != KVS_VECTOR_OK) {
+			return ret;
+		}
+	}
+	if (g_vector_state.rebuild.state != KVS_VECTOR_REBUILD_IDLE) {
+		return KVS_VECTOR_ERR;
+	}
+
+	return kvs_vector_index_rebuild_async_start();
+}
+
+int kvs_vector_index_rebuild_async_wait_for_test(uint64_t timeout_ms) {
+	uint64_t start_us;
+	uint64_t timeout_us;
+	int last_status = 0;
+
+	if (!g_vector_state.initialized ||
+	    !g_vector_state.rebuild_worker_mu_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+
+	start_us = kvs_vector_now_us();
+	timeout_us = timeout_ms * 1000ull;
+	for (;;) {
+		pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+		if (!g_vector_state.rebuild_worker_running) {
+			kvs_vector_rebuild_async_join_completed_locked();
+			last_status = g_vector_state.rebuild_worker_last_status;
+			pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+			return last_status == 1 ? KVS_VECTOR_OK : KVS_VECTOR_ERR;
+		}
+		pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+
+		if (timeout_ms > 0 &&
+		    kvs_vector_now_us() - start_us >= timeout_us) {
+			return KVS_VECTOR_ERR;
+		}
+		usleep(1000);
+	}
+}
+
+static void kvs_vector_index_rebuild_async_shutdown(void) {
+	pthread_t thread;
+	int should_join = 0;
+
+	if (!g_vector_state.rebuild_worker_mu_initialized) {
+		return;
+	}
+
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	if (g_vector_state.rebuild_worker_thread_started) {
+		thread = g_vector_state.rebuild_worker_thread;
+		should_join = 1;
+		g_vector_state.rebuild_worker_thread_started = 0;
+		g_vector_state.rebuild_worker_cancel_requested = 1;
+		g_vector_state.rebuild.cancel_requested = 1;
+	}
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+
+	if (should_join) {
+		(void)pthread_join(thread, NULL);
+	}
+
+	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
+	g_vector_state.rebuild_worker_running = 0;
+	g_vector_state.rebuild_worker_cancel_requested = 0;
+	memset(&g_vector_state.rebuild_worker_thread, 0, sizeof(pthread_t));
+	pthread_mutex_unlock(&g_vector_state.rebuild_worker_mu);
+}
+
 static uint64_t kvs_vector_now_us(void) {
 	struct timespec ts;
 
@@ -246,6 +636,75 @@ static int kvs_vector_validate_initialized(void) {
 	}
 
 	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_active_index_acquire_read(kvs_vector_active_index_guard_t *guard) {
+	if (!guard) {
+		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	memset(guard, 0, sizeof(*guard));
+	if (!g_vector_state.active_index_rwlock_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	if (pthread_rwlock_rdlock(&g_vector_state.active_index_rwlock) != 0) {
+		return KVS_VECTOR_ERR;
+	}
+	guard->index = &g_vector_state.current_index;
+	guard->locked = 1;
+	return KVS_VECTOR_OK;
+}
+
+void kvs_vector_active_index_release_read(kvs_vector_active_index_guard_t *guard) {
+	if (!guard || !guard->locked) {
+		return;
+	}
+	(void)pthread_rwlock_unlock(&g_vector_state.active_index_rwlock);
+	guard->index = NULL;
+	guard->locked = 0;
+}
+
+int kvs_vector_active_index_acquire_write(void) {
+	if (!g_vector_state.active_index_rwlock_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	if (pthread_rwlock_wrlock(&g_vector_state.active_index_rwlock) != 0) {
+		return KVS_VECTOR_ERR;
+	}
+	return KVS_VECTOR_OK;
+}
+
+void kvs_vector_active_index_release_write(void) {
+	if (!g_vector_state.active_index_rwlock_initialized) {
+		return;
+	}
+	(void)pthread_rwlock_unlock(&g_vector_state.active_index_rwlock);
+}
+
+static int kvs_vector_rebuild_worker_acquire_read(void) {
+	if (!g_vector_state.rebuild_worker_rwlock_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	if (pthread_rwlock_rdlock(&g_vector_state.rebuild_worker_rwlock) != 0) {
+		return KVS_VECTOR_ERR;
+	}
+	return KVS_VECTOR_OK;
+}
+
+static int kvs_vector_rebuild_worker_acquire_write(void) {
+	if (!g_vector_state.rebuild_worker_rwlock_initialized) {
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	if (pthread_rwlock_wrlock(&g_vector_state.rebuild_worker_rwlock) != 0) {
+		return KVS_VECTOR_ERR;
+	}
+	return KVS_VECTOR_OK;
+}
+
+static void kvs_vector_rebuild_worker_release(void) {
+	if (!g_vector_state.rebuild_worker_rwlock_initialized) {
+		return;
+	}
+	(void)pthread_rwlock_unlock(&g_vector_state.rebuild_worker_rwlock);
 }
 
 /*
@@ -910,7 +1369,7 @@ static const kvs_vector_index_ops_t g_kvs_vector_core_hnsw_v2_ops = {
 	.destroy = kvs_vector_core_hnsw_v2_ops_destroy,
 };
 
-int kvs_vector_index_bind_current(void) {
+static int kvs_vector_index_bind_current_locked(void) {
     kvs_vector_index_t *index = &g_vector_state.current_index;
     kvs_vector_index_type_t index_type = g_vector_state.index_type;
 
@@ -952,7 +1411,19 @@ int kvs_vector_index_bind_current(void) {
         index->ops = &g_kvs_vector_core_flat_ops;
     }
 
-    return KVS_VECTOR_OK;
+	return KVS_VECTOR_OK;
+}
+
+int kvs_vector_index_bind_current(void) {
+	int ret;
+
+	ret = kvs_vector_active_index_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	ret = kvs_vector_index_bind_current_locked();
+	kvs_vector_active_index_release_write();
+	return ret;
 }
 
 int kvs_vector_index_add_current(
@@ -961,12 +1432,21 @@ int kvs_vector_index_add_current(
     int embedding_dim
 ) {
     kvs_vector_index_t *index = &g_vector_state.current_index;
+	int ret;
+
+	ret = kvs_vector_active_index_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
 
     if (!index->ops || !index->ops->add) {
-        return KVS_VECTOR_ERR_NOT_INITIALIZED;
+		kvs_vector_active_index_release_write();
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
     }
 
-    return index->ops->add(index, record_index, embedding, embedding_dim);
+	ret = index->ops->add(index, record_index, embedding, embedding_dim);
+	kvs_vector_active_index_release_write();
+	return ret;
 }
 
 int kvs_vector_index_search_current(
@@ -980,7 +1460,8 @@ int kvs_vector_index_search_current(
     size_t results_capacity,
     size_t *results_count
 ) {
-	kvs_vector_index_t *index = &g_vector_state.current_index;
+	kvs_vector_active_index_guard_t guard;
+	kvs_vector_index_t *index;
 	kvs_vector_index_search_params_t params;
 	uint64_t start_us;
 	uint64_t end_us;
@@ -988,8 +1469,14 @@ int kvs_vector_index_search_current(
 	uint64_t resolve_us;
 	int ret;
 
+	ret = kvs_vector_active_index_acquire_read(&guard);
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	index = guard.index;
     if (!index->ops || !index->ops->search) {
-        return KVS_VECTOR_ERR_NOT_INITIALIZED;
+		kvs_vector_active_index_release_read(&guard);
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
     }
 
     memset(&params, 0, sizeof(params));
@@ -1016,17 +1503,27 @@ int kvs_vector_index_search_current(
 		elapsed_us >= resolve_us ? elapsed_us - resolve_us : 0
 	);
 	g_vsearch_current_resolve_us = 0;
+	kvs_vector_active_index_release_read(&guard);
 	return ret;
 }
 
 int kvs_vector_index_rebuild_current(void) {
     kvs_vector_index_t *index = &g_vector_state.current_index;
+	int ret;
+
+	ret = kvs_vector_active_index_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
 
     if (!index->ops || !index->ops->rebuild) {
-        return KVS_VECTOR_ERR_NOT_INITIALIZED;
+		kvs_vector_active_index_release_write();
+		return KVS_VECTOR_ERR_NOT_INITIALIZED;
     }
 
-    return index->ops->rebuild(index);
+	ret = index->ops->rebuild(index);
+	kvs_vector_active_index_release_write();
+	return ret;
 }
 
 /*
@@ -1381,6 +1878,22 @@ int kvs_vector_init(void) {
 
 	memset(&g_vector_state, 0, sizeof(g_vector_state));
 
+	if (pthread_rwlock_init(&g_vector_state.active_index_rwlock, NULL) != 0) {
+		ret = KVS_VECTOR_ERR;
+		goto fail;
+	}
+	g_vector_state.active_index_rwlock_initialized = 1;
+	if (pthread_mutex_init(&g_vector_state.rebuild_worker_mu, NULL) != 0) {
+		ret = KVS_VECTOR_ERR;
+		goto fail;
+	}
+	g_vector_state.rebuild_worker_mu_initialized = 1;
+	if (pthread_rwlock_init(&g_vector_state.rebuild_worker_rwlock, NULL) != 0) {
+		ret = KVS_VECTOR_ERR;
+		goto fail;
+	}
+	g_vector_state.rebuild_worker_rwlock_initialized = 1;
+
 	ret = kvs_vector_store_init(&g_vector_state.store);
 	if (ret != KVS_VECTOR_OK) {
 		goto fail;
@@ -1494,6 +2007,18 @@ fail:
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
 	kvs_vector_rebuild_context_destroy(&g_vector_state.rebuild);
 	kvs_vector_store_destroy(&g_vector_state.store);
+	if (g_vector_state.active_index_rwlock_initialized) {
+		pthread_rwlock_destroy(&g_vector_state.active_index_rwlock);
+		g_vector_state.active_index_rwlock_initialized = 0;
+	}
+	if (g_vector_state.rebuild_worker_mu_initialized) {
+		pthread_mutex_destroy(&g_vector_state.rebuild_worker_mu);
+		g_vector_state.rebuild_worker_mu_initialized = 0;
+	}
+	if (g_vector_state.rebuild_worker_rwlock_initialized) {
+		pthread_rwlock_destroy(&g_vector_state.rebuild_worker_rwlock);
+		g_vector_state.rebuild_worker_rwlock_initialized = 0;
+	}
 	memset(&g_vector_state, 0, sizeof(g_vector_state));
 
 	return ret;
@@ -1501,8 +2026,14 @@ fail:
 
 //销毁全局状态
 void kvs_vector_destroy(void) {
+	int active_locked = 0;
+
 	if (!g_vector_state.initialized) {
 		return;
+	}
+	kvs_vector_index_rebuild_async_shutdown();
+	if (kvs_vector_active_index_acquire_write() == KVS_VECTOR_OK) {
+		active_locked = 1;
 	}
 	kvs_vector_embedding_provider_destroy(&g_vector_state.embedding_provider);
 	kvs_hnsw_v2_index_destroy(&g_vector_state.core_hnsw_v2_index);
@@ -1510,6 +2041,21 @@ void kvs_vector_destroy(void) {
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
 	kvs_vector_rebuild_context_destroy(&g_vector_state.rebuild);
 	kvs_vector_store_destroy(&g_vector_state.store);
+	if (active_locked) {
+		kvs_vector_active_index_release_write();
+	}
+	if (g_vector_state.active_index_rwlock_initialized) {
+		pthread_rwlock_destroy(&g_vector_state.active_index_rwlock);
+		g_vector_state.active_index_rwlock_initialized = 0;
+	}
+	if (g_vector_state.rebuild_worker_mu_initialized) {
+		pthread_mutex_destroy(&g_vector_state.rebuild_worker_mu);
+		g_vector_state.rebuild_worker_mu_initialized = 0;
+	}
+	if (g_vector_state.rebuild_worker_rwlock_initialized) {
+		pthread_rwlock_destroy(&g_vector_state.rebuild_worker_rwlock);
+		g_vector_state.rebuild_worker_rwlock_initialized = 0;
+	}
 
 	memset(&g_vector_state, 0, sizeof(g_vector_state));
 }
@@ -1522,48 +2068,59 @@ int kvs_vector_reset_for_load(void) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
 	}
 
+	kvs_vector_index_rebuild_async_shutdown();
+
+	ret = kvs_vector_active_index_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
 	kvs_hnsw_v2_index_destroy(&g_vector_state.core_hnsw_v2_index);
 	kvs_flat_index_destroy(&g_vector_state.core_flat_index);
 	kvs_vector_id_map_destroy(&g_vector_state.id_map);
 	kvs_vector_store_destroy(&g_vector_state.store);
 
 	ret = kvs_vector_store_init(&g_vector_state.store);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK) goto out;
 
 	ret = kvs_vector_store_reserve(&g_vector_state.store, KVS_VECTOR_INITIAL_RECORD_CAPACITY);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK) goto out;
 
 	ret = kvs_vector_id_map_init(&g_vector_state.id_map);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK) goto out;
 
 	ret = kvs_vector_id_map_reserve(&g_vector_state.id_map, KVS_VECTOR_INITIAL_ID_MAP_CAPACITY);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK) goto out;
 
 	kvs_vector_rebuild_context_destroy(&g_vector_state.rebuild);
 	ret = kvs_vector_rebuild_context_init(&g_vector_state.rebuild);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK) goto out;
 
 	ret = kvs_flat_index_init(
 		&g_vector_state.core_flat_index,
 		dimension,
 		g_vector_state.metric_type
 	);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK) goto out;
 
 	ret = kvs_hnsw_v2_index_init(
 		&g_vector_state.core_hnsw_v2_index,
 		dimension,
 		g_vector_state.metric_type
 	);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK) goto out;
 	kvs_vector_configure_core_hnsw_v2(&g_vector_state.core_hnsw_v2_index);
 	ret = kvs_hnsw_v2_index_reserve(
 		&g_vector_state.core_hnsw_v2_index,
 		g_vector_state.store.capacity
 	);
-	if (ret != KVS_VECTOR_OK) return ret;
+	if (ret != KVS_VECTOR_OK) goto out;
 
-	return kvs_vector_index_bind_current();
+	ret = kvs_vector_index_bind_current_locked();
+
+out:
+	kvs_vector_active_index_release_write();
+	return ret;
 }
 
 int kvs_vector_restore_record_with_embedding(
@@ -3040,6 +3597,11 @@ static int kvs_vector_core_hnsw_v2_update_existing_record(
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
+	ret = kvs_vector_active_index_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
 	old_record_id = record->id;
 	ret = kvs_hnsw_v2_index_mark_delete(
 		&g_vector_state.core_hnsw_v2_index,
@@ -3049,13 +3611,13 @@ static int kvs_vector_core_hnsw_v2_update_existing_record(
 		g_vector_state.core_hnsw_v2_index.needs_rebuild = 1;
 	} else if (ret != KVS_VECTOR_OK) {
 		g_vector_state.core_hnsw_v2_index.needs_rebuild = 1;
-		return ret;
+		goto out;
 	}
 
 	ret = kvs_vector_record_take_prepared_fields(record, prepared);
 	if (ret != KVS_VECTOR_OK) {
 		g_vector_state.core_hnsw_v2_index.needs_rebuild = 1;
-		return ret;
+		goto out;
 	}
 
 	ret = kvs_vector_record_id_map_remove(
@@ -3064,7 +3626,7 @@ static int kvs_vector_core_hnsw_v2_update_existing_record(
 	);
 	if (ret != KVS_VECTOR_OK && ret != KVS_VECTOR_ERR_NOT_FOUND) {
 		g_vector_state.core_hnsw_v2_index.needs_rebuild = 1;
-		return ret;
+		goto out;
 	}
 	ret = kvs_vector_record_id_map_put(
 		&store->record_id_map,
@@ -3073,7 +3635,7 @@ static int kvs_vector_core_hnsw_v2_update_existing_record(
 	);
 	if (ret != KVS_VECTOR_OK) {
 		g_vector_state.core_hnsw_v2_index.needs_rebuild = 1;
-		return ret;
+		goto out;
 	}
 
 	ret = kvs_vector_core_hnsw_v2_ensure_add_capacity(
@@ -3081,7 +3643,7 @@ static int kvs_vector_core_hnsw_v2_update_existing_record(
 	);
 	if (ret != KVS_VECTOR_OK) {
 		g_vector_state.core_hnsw_v2_index.needs_rebuild = 1;
-		return ret;
+		goto out;
 	}
 	ret = kvs_hnsw_v2_index_add(
 		&g_vector_state.core_hnsw_v2_index,
@@ -3091,7 +3653,7 @@ static int kvs_vector_core_hnsw_v2_update_existing_record(
 	);
 	if (ret != KVS_VECTOR_OK) {
 		g_vector_state.core_hnsw_v2_index.needs_rebuild = 1;
-		return ret;
+		goto out;
 	}
 
 	g_vector_state.generation++;
@@ -3100,7 +3662,11 @@ static int kvs_vector_core_hnsw_v2_update_existing_record(
 		record->embedding,
 		record->embedding_dim
 	);
-	return KVS_VECTOR_OK;
+	ret = KVS_VECTOR_OK;
+
+out:
+	kvs_vector_active_index_release_write();
+	return ret;
 }
 
 //写入接口
@@ -3302,6 +3868,12 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
 
+	ret = kvs_vector_rebuild_worker_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		kvs_vector_set_prepared_destroy(prepared);
+		return ret;
+	}
+
 	/*
 	 * Stage-1 commit rechecks question+scope under the write lock. If another
 	 * VSET inserted the same key while embedding was prepared, keep existing
@@ -3326,7 +3898,7 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 			if (ret != KVS_VECTOR_OK) {
 				kvs_vector_set_prepared_destroy(prepared);
 			}
-			return ret;
+			goto out;
 		}
 
 		ret = kvs_vector_record_update_answer(
@@ -3342,7 +3914,7 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 				record->embedding_dim
 			);
 		}
-		return ret;
+		goto out;
 	}
 
 	store = &g_vector_state.store;
@@ -3352,13 +3924,14 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 		ret = kvs_vector_store_ensure_capacity(store, store->capacity + 1);
 		if (ret != KVS_VECTOR_OK) {
 			kvs_vector_set_prepared_destroy(prepared);
-			return ret;
+			goto out;
 		}
 
 		free_slot = kvs_vector_find_free_slot();
 		if (!free_slot) {
 			kvs_vector_set_prepared_destroy(prepared);
-			return KVS_VECTOR_ERR;
+			ret = KVS_VECTOR_ERR;
+			goto out;
 		}
 	}
 
@@ -3371,7 +3944,7 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 			store->deleted_records--;
 		}
 		kvs_vector_set_prepared_destroy(prepared);
-		return ret;
+		goto out;
 	}
 
 	ret = kvs_vector_id_map_put(
@@ -3384,7 +3957,7 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 	);
 	if (ret != KVS_VECTOR_OK) {
 		kvs_vector_record_destroy(free_slot);
-		return ret;
+		goto out;
 	}
 
 	ret = kvs_vector_record_id_map_put(
@@ -3401,7 +3974,7 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 			free_slot->scope_len
 		);
 		kvs_vector_record_destroy(free_slot);
-		return ret;
+		goto out;
 	}
 
 	ret = kvs_vector_index_add_current(
@@ -3422,7 +3995,7 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 			free_slot->id
 		);
 		kvs_vector_record_destroy(free_slot);
-		return ret;
+		goto out;
 	}
 
 	if (was_deleted && store->deleted_records > 0) {
@@ -3440,7 +4013,11 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 		free_slot->embedding_dim
 	);
 
-	return KVS_VECTOR_OK;
+	ret = KVS_VECTOR_OK;
+
+out:
+	kvs_vector_rebuild_worker_release();
+	return ret;
 }
 
 /*
@@ -3587,6 +4164,12 @@ int kvs_vector_search(
 		return ret;
 	}
 
+	ret = kvs_vector_rebuild_worker_acquire_read();
+	if (ret != KVS_VECTOR_OK) {
+		kvs_free(query_embedding);
+		return ret;
+	}
+
 	ret = kvs_vector_index_search_current(
 		query_embedding,
 		query_dim,
@@ -3598,6 +4181,7 @@ int kvs_vector_search(
 		results_capacity,
 		results_count
 	);
+	kvs_vector_rebuild_worker_release();
 
 	kvs_free(query_embedding);
 	return ret;
@@ -3641,7 +4225,11 @@ int kvs_vector_search_with_prepared(
 		effective_threshold = -1.0f;
 	}
 
-	return kvs_vector_index_search_current(
+	ret = kvs_vector_rebuild_worker_acquire_read();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	ret = kvs_vector_index_search_current(
 		prepared->embedding,
 		prepared->embedding_dim,
 		prepared->scope,
@@ -3652,6 +4240,8 @@ int kvs_vector_search_with_prepared(
 		results_capacity,
 		results_count
 	);
+	kvs_vector_rebuild_worker_release();
+	return ret;
 }
 
 /*
@@ -3692,6 +4282,7 @@ int kvs_vector_del(
 	kvs_vector_store_t *store;
 	size_t record_index;
 	uint64_t record_id;
+	int active_locked = 0;
 	int ret;
 
 	ret = kvs_vector_validate_initialized();
@@ -3707,15 +4298,27 @@ int kvs_vector_del(
 		scope_len = 0;
 	}
 
+	ret = kvs_vector_rebuild_worker_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+
 	record = kvs_vector_find_record(question, question_len, scope, scope_len);
 	if (!record) {
-		return KVS_VECTOR_ERR_NOT_FOUND;
+		ret = KVS_VECTOR_ERR_NOT_FOUND;
+		goto out;
 	}
 	record_id = record->id;
 
+	ret = kvs_vector_active_index_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		goto out;
+	}
+	active_locked = 1;
+
 	ret = kvs_vector_record_mark_deleted(record);
 	if (ret != KVS_VECTOR_OK) {
-		return ret;
+		goto out;
 	}
 
 	if (g_vector_state.index_type == KVS_VECTOR_INDEX_CORE_FLAT) {
@@ -3752,6 +4355,8 @@ int kvs_vector_del(
 			g_vector_state.core_hnsw_v2_index.needs_rebuild = 1;
 		}
 	}
+	kvs_vector_active_index_release_write();
+	active_locked = 0;
 
 	ret = kvs_vector_id_map_remove(
 		&g_vector_state.id_map,
@@ -3768,7 +4373,7 @@ int kvs_vector_del(
 			scope_len,
 			ret
 		);
-		return ret;
+		goto out;
 	}
 	ret = kvs_vector_record_id_map_remove(
 		&g_vector_state.store.record_id_map,
@@ -3781,7 +4386,7 @@ int kvs_vector_del(
 			(unsigned long long)record_id,
 			ret
 		);
-		return ret;
+		goto out;
 	}
 
 	store = &g_vector_state.store;
@@ -3796,7 +4401,7 @@ int kvs_vector_del(
 			record_index,
 			ret
 		);
-		return ret;
+		goto out;
 	}
 
 	if (store->active_records > 0) {
@@ -3810,7 +4415,14 @@ int kvs_vector_del(
 
 	(void)kvs_vector_manager_capture_delete_delta(record_id);
 
-	return KVS_VECTOR_OK;
+	ret = KVS_VECTOR_OK;
+
+out:
+	if (active_locked) {
+		kvs_vector_active_index_release_write();
+	}
+	kvs_vector_rebuild_worker_release();
+	return ret;
 }
 
 //重建接口 — safe rebuild with index swap
@@ -3818,10 +4430,17 @@ int kvs_vector_index_rebuild(void) {
 	kvs_vector_store_t *store;
 	long long start_ms;
 	long long elapsed_ms;
+	int worker_locked = 0;
 	int ret;
 
 	ret = kvs_vector_validate_initialized();
 	if (ret != KVS_VECTOR_OK) return ret;
+
+	ret = kvs_vector_rebuild_worker_acquire_write();
+	if (ret != KVS_VECTOR_OK) {
+		return ret;
+	}
+	worker_locked = 1;
 
 	start_ms = (long long)kv_now_ms();
 	store = &g_vector_state.store;
@@ -3859,6 +4478,9 @@ int kvs_vector_index_rebuild(void) {
 	g_vector_state.generation++;
 
 	kvs_vector_index_snapshot_write_best_effort_after_rebuild("vindex_rebuild");
+	if (worker_locked) {
+		kvs_vector_rebuild_worker_release();
+	}
 
 	return KVS_VECTOR_OK;
 
@@ -3872,6 +4494,9 @@ fail_rebuild:
 		"vector index safe rebuild failed ret=%d elapsed=%lldms (old index preserved)",
 		ret, (long long)elapsed_ms);
 
+	if (worker_locked) {
+		kvs_vector_rebuild_worker_release();
+	}
 	return ret;
 }
 

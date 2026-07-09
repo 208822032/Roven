@@ -242,6 +242,77 @@ static int expect_enabled_product_path(void) {
 	return failed;
 }
 
+static int expect_reader_safety_primitive(void) {
+	kvs_vector_active_index_guard_t guard;
+	kvs_vector_search_result_t result;
+	size_t count = 0;
+	int try_ret;
+	int failed = 0;
+
+	reset_config("core_hnsw_v2", 1);
+	failed |= expect_int(kvs_vector_init() == KVS_VECTOR_OK, "reader safety init");
+	failed |= expect_int(
+		g_vector_state.active_index_rwlock_initialized == 1,
+		"reader safety rwlock initialized"
+	);
+
+	memset(&guard, 0, sizeof(guard));
+	failed |= expect_int(
+		kvs_vector_active_index_acquire_read(&guard) == KVS_VECTOR_OK,
+		"reader safety acquire read"
+	);
+	failed |= expect_int(
+		guard.locked == 1 && guard.index == &g_vector_state.current_index,
+		"reader safety guard points at current index"
+	);
+	try_ret = pthread_rwlock_trywrlock(&g_vector_state.active_index_rwlock);
+	if (try_ret == 0) {
+		(void)pthread_rwlock_unlock(&g_vector_state.active_index_rwlock);
+	}
+	failed |= expect_int(try_ret != 0, "reader safety read guard blocks writer");
+	kvs_vector_active_index_release_read(&guard);
+	failed |= expect_int(
+		guard.locked == 0 && guard.index == NULL,
+		"reader safety release read clears guard"
+	);
+	kvs_vector_active_index_release_read(&guard);
+
+	failed |= expect_int(
+		kvs_vector_active_index_acquire_write() == KVS_VECTOR_OK,
+		"reader safety acquire write"
+	);
+	try_ret = pthread_rwlock_tryrdlock(&g_vector_state.active_index_rwlock);
+	if (try_ret == 0) {
+		(void)pthread_rwlock_unlock(&g_vector_state.active_index_rwlock);
+	}
+	failed |= expect_int(try_ret != 0, "reader safety write guard blocks reader");
+	kvs_vector_active_index_release_write();
+
+	kvs_vector_search_result_reset(&result);
+	failed |= expect_int(
+		kvs_vector_index_search_current(
+			NULL,
+			0,
+			NULL,
+			0,
+			1,
+			-1.0f,
+			&result,
+			1,
+			&count
+		) != KVS_VECTOR_OK,
+		"reader safety search error path returns failure"
+	);
+	failed |= expect_int(
+		kvs_vector_active_index_acquire_write() == KVS_VECTOR_OK,
+		"reader safety search error path releases read lock"
+	);
+	kvs_vector_active_index_release_write();
+
+	kvs_vector_destroy();
+	return failed;
+}
+
 static int expect_rebuild_after_load_like_path(void) {
 	const float vec_a[DIM] = {0.25f, 0.5f, 0.0f, 0.0f};
 	const float vec_b[DIM] = {0.0f, 0.5f, 0.25f, 0.0f};
@@ -281,6 +352,7 @@ int main(void) {
 
 	failed |= expect_explicit_v2_ignores_legacy_flag();
 	failed |= expect_enabled_product_path();
+	failed |= expect_reader_safety_primitive();
 	failed |= expect_rebuild_after_load_like_path();
 
 	mem_destroy();
