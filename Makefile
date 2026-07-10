@@ -353,6 +353,93 @@ ebpf: $(EBPF_TARGETS)
 embedding: check-embedding-assets
 	@$(MAKE) ENABLE_ONNX_EMBEDDING=1 ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) all
 
+# ── B1 real embedding benchmark fixture/cache generator ────────────────────
+# 显式 benchmark 工具，独立于默认构建；直接编译 embedding_runtime_onnx.c +
+# kvs_config.c，不链接 libkvstore.a，避免与 hash provider 目标文件冲突。
+GEN_CACHE_BIN     := build/tools/bin/generate_real_embedding_cache
+GEN_CACHE_SRC     := scripts/benchmark/generate_real_embedding_cache.c
+GEN_CACHE_CFLAGS  := -I./include -I./src -g -O2 -Wall -I$(ONNXRUNTIME_ROOT)/include
+GEN_CACHE_LDFLAGS := -L$(ONNXRUNTIME_ROOT)/lib -lonnxruntime \
+                     -Wl,-rpath,$(abspath $(ONNXRUNTIME_ROOT)/lib) \
+                     -lcrypto -lpthread -lm
+
+.PHONY: gen-embedding-cache smoke-vector-real-embedding-cache
+
+gen-embedding-cache: check-onnx-runtime check-embedding-assets $(GEN_CACHE_BIN)
+
+build/tools/bin:
+	@mkdir -p $@
+
+$(GEN_CACHE_BIN): $(GEN_CACHE_SRC) $(SRC_EMBED)/embedding_runtime_onnx.c $(SRC_CORE)/kvs_config.c | build/tools/bin
+	$(CC) $(GEN_CACHE_CFLAGS) -o $@ \
+		$(GEN_CACHE_SRC) \
+		$(SRC_EMBED)/embedding_runtime_onnx.c \
+		$(SRC_CORE)/kvs_config.c \
+		$(GEN_CACHE_LDFLAGS)
+
+smoke-vector-real-embedding-cache: gen-embedding-cache
+	bash tests/vector_real_embedding_cache_smoke_test.sh
+
+# ── B2 real embedding benchmark ground truth generator ─────────────────────
+# 显式 index-only 工具：链接 libkvstore.a 复用 core_flat exact IP 检索生成
+# ground truth；不链接 onnxruntime，额外链接 -lcrypto 做 checksum 校验。
+GEN_GT_BIN := build/tools/bin/generate_real_embedding_groundtruth
+GEN_GT_SRC := scripts/benchmark/generate_real_embedding_groundtruth.c
+
+.PHONY: gen-embedding-groundtruth smoke-vector-real-embedding-groundtruth
+
+gen-embedding-groundtruth: $(GEN_GT_BIN)
+
+# NOTE: LIBKVSTORE is defined later in this Makefile, so it would expand empty
+# here; reference the archive via the early-defined BUILD_LIB so a clean build
+# builds libkvstore.a before linking this tool.
+$(GEN_GT_BIN): $(GEN_GT_SRC) $(BUILD_LIB)/libkvstore.a $(NTYCO_LIB) | build/tools/bin
+	$(CC) $(CFLAGS) -o $@ \
+		$(GEN_GT_SRC) \
+		$(KVSTORE_TEST_LDFLAGS) -lcrypto
+
+smoke-vector-real-embedding-groundtruth: gen-embedding-groundtruth
+	bash tests/vector_real_embedding_groundtruth_smoke_test.sh
+
+# ── B3 real embedding core_hnsw_v2 index-only benchmark runner ─────────────
+# 显式 index-only 工具：链接 libkvstore.a 复用 core_hnsw_v2 API；不链接
+# onnxruntime，额外链接 -lcrypto 做 checksum 校验。$(LIBKVSTORE) 定义在后文，
+# 通过早定义的 $(BUILD_LIB)/libkvstore.a 引用以保证 clean 构建顺序。
+GEN_HV2_BIN := build/tools/bin/generate_real_embedding_hnsw_v2_benchmark
+GEN_HV2_SRC := scripts/benchmark/generate_real_embedding_hnsw_v2_benchmark.c
+
+.PHONY: gen-embedding-hnsw-v2-benchmark smoke-vector-real-embedding-hnsw-v2-benchmark
+
+gen-embedding-hnsw-v2-benchmark: $(GEN_HV2_BIN)
+
+$(GEN_HV2_BIN): $(GEN_HV2_SRC) $(BUILD_LIB)/libkvstore.a $(NTYCO_LIB) | build/tools/bin
+	$(CC) $(CFLAGS) -o $@ \
+		$(GEN_HV2_SRC) \
+		$(KVSTORE_TEST_LDFLAGS) -lcrypto
+
+smoke-vector-real-embedding-hnsw-v2-benchmark: gen-embedding-hnsw-v2-benchmark
+	bash tests/vector_real_embedding_hnsw_v2_benchmark_smoke_test.sh
+
+# ── B4 real embedding FAISS index-only benchmark runner ────────────────────
+# 显式 index-only 工具：直接链接 vendored libfaiss.a，使用 IndexFlatIP /
+# IndexHNSWFlat；不恢复或调用产品 FAISS backend。
+GEN_FAISS_BIN := build/tools/bin/generate_real_embedding_faiss_benchmark
+GEN_FAISS_SRC := scripts/benchmark/generate_real_embedding_faiss_benchmark.cpp
+GEN_FAISS_CXXFLAGS := -std=c++17 -I./include -I./src -Ithird_party/faiss -g -O2 -Wall
+GEN_FAISS_LDFLAGS := third_party/faiss/build/faiss/libfaiss.a -fopenmp -lblas -llapack -lcrypto -lm
+
+.PHONY: gen-embedding-faiss-benchmark smoke-vector-real-embedding-faiss-benchmark
+
+gen-embedding-faiss-benchmark: $(GEN_FAISS_BIN)
+
+$(GEN_FAISS_BIN): $(GEN_FAISS_SRC) third_party/faiss/build/faiss/libfaiss.a | build/tools/bin
+	$(CXX) $(GEN_FAISS_CXXFLAGS) -o $@ \
+		$(GEN_FAISS_SRC) \
+		$(GEN_FAISS_LDFLAGS)
+
+smoke-vector-real-embedding-faiss-benchmark: gen-embedding-faiss-benchmark
+	bash tests/vector_real_embedding_faiss_benchmark_smoke_test.sh
+
 # 帮助
 help:
 	@echo "用法: make [目标] [选项]"
