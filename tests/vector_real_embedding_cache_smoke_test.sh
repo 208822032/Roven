@@ -27,9 +27,13 @@ GEN_BIN="build/tools/bin/generate_real_embedding_cache"
 OUT_ROOT="/tmp/kvlite_vector_benchmark_artifacts/real_embedding"
 DATASET_ID="b1_smoke_$$_$(date +%s)"
 CORRUPT_ID="${DATASET_ID}_corrupt"
+EXT_ROOT="/tmp/kvlite_vector_benchmark_artifacts/real_embedding_external_tsv_smoke_$$_$(date +%s)"
+EXT_ID="external_tsv_smoke"
+EXT_DIR="$EXT_ROOT/$EXT_ID"
 
 cleanup() {
 	rm -rf "${OUT_ROOT:?}/${DATASET_ID}" "${OUT_ROOT:?}/${CORRUPT_ID}"
+	rm -rf "${EXT_ROOT:?}"
 }
 trap cleanup EXIT
 
@@ -191,6 +195,130 @@ fi
 grep -qi "sha256 mismatch" /tmp/b1_smoke_validate_corrupt.out || fail "corrupt-copy validate failure did not report a sha256 mismatch"
 rm -f /tmp/b1_smoke_validate_corrupt.out
 pass "validate-only fails on a corrupted cache copy (sha256 mismatch detected)"
+
+mkdir -p "$EXT_ROOT/fixture"
+cat >"$EXT_ROOT/fixture/records.tsv" <<'EOF'
+pid	text
+pA	外部文档 A：Redis AOF 会追加写入命令。
+pB	外部文档 B：HNSW 使用图结构做近似最近邻搜索。
+pC	外部文档 C：向量归一化后可以用内积表示 cosine。
+pD	外部文档 D：snapshot 可以减少 cold start rebuild 成本。
+EOF
+cat >"$EXT_ROOT/fixture/queries.tsv" <<'EOF'
+qid	text
+qA	Redis AOF 是什么
+qB	HNSW 检索结构
+qC	向量为什么要归一化
+EOF
+
+"$GEN_BIN" generate \
+	--dataset-id "$EXT_ID" \
+	--records-tsv "$EXT_ROOT/fixture/records.tsv" \
+	--queries-tsv "$EXT_ROOT/fixture/queries.tsv" \
+	--input-format id_text \
+	--expected-record-count 4 \
+	--expected-query-count 3 \
+	--output-dir "$EXT_DIR"
+pass "external TSV id_text generate passed"
+
+"$GEN_BIN" validate --dataset-id "$EXT_ID" --output-dir "$EXT_DIR"
+pass "external TSV output-dir validate passed"
+
+python3 - "$EXT_DIR" <<'PY'
+import json
+import math
+import os
+import struct
+import sys
+
+d = sys.argv[1]
+dim = 512
+
+with open(f"{d}/manifest.json", encoding="utf-8") as f:
+    manifest = json.load(f)
+
+assert manifest["params"]["record_count"] == 4
+assert manifest["params"]["query_count"] == 3
+assert manifest["params"]["input_format"] == "id_text"
+assert manifest["params"]["dim"] == dim
+assert manifest["params"]["expected_record_count"] == 4
+assert manifest["params"]["expected_query_count"] == 3
+assert manifest["validation"]["id_order_alignment"] is True
+assert manifest["tokenizer"]["max_text_len"] == 512
+assert manifest["sanity"]["embedding_runtime_confirmed"] == "onnxruntime"
+
+assert os.path.getsize(f"{d}/embeddings.f32") == 4 * dim * 4
+assert os.path.getsize(f"{d}/query_embeddings.f32") == 3 * dim * 4
+
+with open(f"{d}/records.jsonl", encoding="utf-8") as f:
+    records = [json.loads(line) for line in f]
+with open(f"{d}/queries.jsonl", encoding="utf-8") as f:
+    queries = [json.loads(line) for line in f]
+
+assert [r["pid"] for r in records] == ["pA", "pB", "pC", "pD"]
+assert [r["external_id"] for r in records] == ["pA", "pB", "pC", "pD"]
+assert [r["row"] for r in records] == [0, 1, 2, 3]
+assert [r["id"] for r in records] == [0, 1, 2, 3]
+assert [q["qid"] for q in queries] == ["qA", "qB", "qC"]
+assert [q["external_id"] for q in queries] == ["qA", "qB", "qC"]
+assert [q["query_row"] for q in queries] == [0, 1, 2]
+
+def check(path, count):
+    with open(path, "rb") as f:
+        data = f.read()
+    assert len(data) == count * dim * 4
+    for row in range(count):
+        vec = struct.unpack_from(f"<{dim}f", data, row * dim * 4)
+        assert all(math.isfinite(v) for v in vec)
+        norm = math.sqrt(sum(v * v for v in vec))
+        assert abs(norm - 1.0) <= 1e-3, (path, row, norm)
+
+check(f"{d}/embeddings.f32", 4)
+check(f"{d}/query_embeddings.f32", 3)
+print("[python] external TSV id/order, f32 size, finite, normalized checks passed")
+PY
+pass "external TSV id/order alignment and vector checks passed"
+
+EXT_CORE_BEFORE="$(sha256sum "$EXT_DIR/embeddings.f32" "$EXT_DIR/query_embeddings.f32" "$EXT_DIR/records.jsonl" "$EXT_DIR/queries.jsonl")"
+"$GEN_BIN" generate \
+	--dataset-id "$EXT_ID" \
+	--records-tsv "$EXT_ROOT/fixture/records.tsv" \
+	--queries-tsv "$EXT_ROOT/fixture/queries.tsv" \
+	--input-format id_text \
+	--expected-record-count 4 \
+	--expected-query-count 3 \
+	--output-dir "$EXT_DIR" >"$EXT_ROOT/repeat.out"
+grep -q "status=unchanged" "$EXT_ROOT/repeat.out" || fail "external TSV repeat did not report unchanged"
+EXT_CORE_AFTER="$(sha256sum "$EXT_DIR/embeddings.f32" "$EXT_DIR/query_embeddings.f32" "$EXT_DIR/records.jsonl" "$EXT_DIR/queries.jsonl")"
+[[ "$EXT_CORE_BEFORE" == "$EXT_CORE_AFTER" ]] || fail "external TSV core outputs changed after repeated generate"
+pass "external TSV repeated generate keeps core outputs byte-identical"
+
+BAD_HEADER="$EXT_ROOT/bad_header.tsv"
+cp "$EXT_ROOT/fixture/records.tsv" "$BAD_HEADER"
+sed -i '1s/.*/bad\theader/' "$BAD_HEADER"
+if "$GEN_BIN" generate \
+	--dataset-id bad_header \
+	--records-tsv "$BAD_HEADER" \
+	--queries-tsv "$EXT_ROOT/fixture/queries.tsv" \
+	--input-format id_text \
+	--expected-record-count 4 \
+	--expected-query-count 3 \
+	--output-dir "$EXT_ROOT/bad_header_out" >/dev/null 2>&1; then
+	fail "external TSV bad header must fail"
+fi
+pass "external TSV bad header fails"
+
+if "$GEN_BIN" generate \
+	--dataset-id bad_count \
+	--records-tsv "$EXT_ROOT/fixture/records.tsv" \
+	--queries-tsv "$EXT_ROOT/fixture/queries.tsv" \
+	--input-format id_text \
+	--expected-record-count 5 \
+	--expected-query-count 3 \
+	--output-dir "$EXT_ROOT/bad_count_out" >/dev/null 2>&1; then
+	fail "external TSV expected-record-count mismatch must fail"
+fi
+pass "external TSV expected-count mismatch fails"
 
 echo ""
 echo "=== B1 real embedding cache smoke test: ALL CHECKS PASSED ==="

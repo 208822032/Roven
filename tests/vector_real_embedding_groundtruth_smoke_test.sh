@@ -43,11 +43,10 @@ make gen-embedding-groundtruth
 
 [[ -x "$GT_BIN" ]] || fail "ground truth generator not found at $GT_BIN"
 
-# The B2 smoke needs the B1 cache. Build B1 tool + generate the source dataset if absent.
+# The B2 smoke needs the B1 cache but must not run ONNX implicitly. B1 fixture
+# generation is a separate stage; this test only consumes an existing cache.
 if [[ ! -d "$SRC_DIR" ]]; then
-	printf '[INFO] source B1 dataset missing; building B1 generator and creating it\n'
-	make gen-embedding-cache
-	"$CACHE_BIN" generate --dataset-id "$DATASET_ID" --out-root "$REAL_ROOT"
+	fail "B1 source dataset unavailable: $SRC_DIR (run B1 explicitly; this smoke must not call ONNX)"
 fi
 [[ -d "$SRC_DIR" ]] || fail "B1 source dataset unavailable: $SRC_DIR"
 
@@ -236,6 +235,156 @@ fi
 grep -qi "sha256 mismatch" "$SMOKE_ROOT/gtval.out" || fail "corrupt ground truth validate did not report sha256 mismatch"
 rm -f "$SMOKE_ROOT/gtval.out"
 pass "corrupted ground truth fails validate (sha256 mismatch)"
+
+# 9. External cache/output mode on a tiny synthetic fixture with exact score ties.
+SYN_ROOT="$SMOKE_ROOT/synthetic"
+SYN_CACHE="$SYN_ROOT/cache"
+SYN_OUT="$SYN_ROOT/out"
+mkdir -p "$SYN_ROOT"
+
+make_synthetic_cache() {
+	local dir="$1"
+	local variant="${2:-ok}"
+	python3 - "$dir" "$variant" <<'PY'
+import hashlib
+import json
+import math
+import os
+import struct
+import sys
+
+out = sys.argv[1]
+variant = sys.argv[2]
+os.makedirs(out, exist_ok=True)
+
+records = [
+    (0, (1.0, 0.0)),
+    (1, (1.0, 0.0)),
+    (2, (0.0, 1.0)),
+    (3, (-1.0, 0.0)),
+]
+queries = [
+    (0, (1.0, 0.0)),
+    (1, (0.0, 1.0)),
+]
+record_count = len(records)
+query_count = len(queries)
+dim = 2
+
+if variant == "wrong_dim":
+    dim_for_manifest = 3
+else:
+    dim_for_manifest = dim
+if variant == "count_mismatch":
+    record_count_for_manifest = record_count + 1
+else:
+    record_count_for_manifest = record_count
+
+emb = bytearray()
+for rid, vec in records:
+    vals = list(vec)
+    if variant == "nonfinite" and rid == 2:
+        vals[0] = float("nan")
+    emb.extend(struct.pack("<2f", *vals))
+qemb = b"".join(struct.pack("<2f", *vec) for _, vec in queries)
+
+with open(os.path.join(out, "embeddings.f32"), "wb") as f:
+    f.write(emb)
+with open(os.path.join(out, "query_embeddings.f32"), "wb") as f:
+    f.write(qemb)
+
+with open(os.path.join(out, "records.jsonl"), "w", encoding="utf-8") as f:
+    for rid, _ in records:
+        json_id = 1 if variant == "duplicate_id" and rid == 2 else rid
+        f.write(json.dumps({"id": json_id, "external_id": f"p{rid}", "pid": f"p{rid}", "text": f"record {rid}"}, ensure_ascii=False) + "\n")
+with open(os.path.join(out, "queries.jsonl"), "w", encoding="utf-8") as f:
+    for qid, _ in queries:
+        f.write(json.dumps({"query_row": qid, "query_id": f"q{qid}", "qid": f"q{qid}", "text": f"query {qid}"}, ensure_ascii=False) + "\n")
+
+def sha(name):
+    with open(os.path.join(out, name), "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+manifest = {
+    "schema_version": 1,
+    "dataset_id": "synthetic_tie_cache",
+    "params": {
+        "record_count": record_count_for_manifest,
+        "query_count": query_count,
+        "dim": dim_for_manifest,
+        "dtype": "float32",
+        "byte_order": "little",
+        "metric": "ip_normalized",
+        "normalized": True,
+    },
+    "outputs": {
+        "embeddings_f32": {"path": "embeddings.f32", "sha256": sha("embeddings.f32")},
+        "query_embeddings_f32": {"path": "query_embeddings.f32", "sha256": sha("query_embeddings.f32")},
+        "records_jsonl": {"path": "records.jsonl", "sha256": sha("records.jsonl")},
+        "queries_jsonl": {"path": "queries.jsonl", "sha256": sha("queries.jsonl")},
+    },
+}
+with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8") as f:
+    json.dump(manifest, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
+}
+
+make_synthetic_cache "$SYN_CACHE" ok
+"$GT_BIN" generate --cache-dir "$SYN_CACHE" --output-dir "$SYN_OUT" --top-k 3
+"$GT_BIN" validate --output-dir "$SYN_OUT"
+"$GT_BIN" validate --cache-dir "$SYN_CACHE" --output-dir "$SYN_OUT"
+
+python3 - "$SYN_OUT" <<'PY'
+import json
+import sys
+
+out = sys.argv[1]
+with open(f"{out}/groundtruth.manifest.json") as f:
+    m = json.load(f)
+assert m["params"]["record_count"] == 4
+assert m["params"]["query_count"] == 2
+assert m["params"]["dim"] == 2
+assert m["params"]["topk"] == 3
+assert m["params"]["tie_break"] == "score_desc_record_id_asc"
+assert m["crosscheck"]["set_match_all"] is True
+assert m["crosscheck"]["record_id_match_all"] is True
+assert m["crosscheck"]["strict_order_match_all"] is True
+assert m["crosscheck"]["tie_query_count"] >= 1
+assert m["crosscheck"]["tie_result_count"] >= 2
+
+with open(f"{out}/groundtruth.jsonl") as f:
+    rows = [json.loads(line) for line in f]
+assert [n["record_id"] for n in rows[0]["neighbors"]] == [0, 1, 2]
+assert [n["record_id"] for n in rows[1]["neighbors"]] == [2, 0, 1]
+PY
+pass "external cache/output mode preserves deterministic score-desc record_id-asc tie-break"
+
+SYN_SHA_BEFORE="$(sha256sum "$SYN_OUT/groundtruth.jsonl" | awk '{print $1}')"
+"$GT_BIN" generate --cache-dir "$SYN_CACHE" --output-dir "$SYN_OUT" --top-k 3 >"$SYN_ROOT/repeat.out"
+grep -q "status=unchanged core_outputs_identical=true" "$SYN_ROOT/repeat.out" || fail "external repeat did not return unchanged"
+SYN_SHA_AFTER="$(sha256sum "$SYN_OUT/groundtruth.jsonl" | awk '{print $1}')"
+[[ "$SYN_SHA_BEFORE" == "$SYN_SHA_AFTER" ]] || fail "external repeat changed groundtruth checksum"
+pass "external cache/output repeated generation is deterministic and unchanged"
+
+for variant in duplicate_id wrong_dim count_mismatch nonfinite; do
+	BAD_CACHE="$SYN_ROOT/bad_$variant/cache"
+	BAD_OUT="$SYN_ROOT/bad_$variant/out"
+	make_synthetic_cache "$BAD_CACHE" "$variant"
+	if "$GT_BIN" generate --cache-dir "$BAD_CACHE" --output-dir "$BAD_OUT" --top-k 3 >"$SYN_ROOT/bad_$variant.out" 2>&1; then
+		fail "synthetic bad fixture '$variant' unexpectedly generated ground truth"
+	fi
+	[[ ! -f "$BAD_OUT/groundtruth.jsonl" ]] || fail "bad fixture '$variant' left groundtruth.jsonl behind"
+	[[ ! -f "$BAD_OUT/groundtruth.manifest.json" ]] || fail "bad fixture '$variant' left groundtruth.manifest.json behind"
+done
+pass "external mode rejects duplicate id, wrong dim, count mismatch, and non-finite vectors without half-published output"
+
+SMALL_OUT="$SYN_ROOT/too_large_topk/out"
+if "$GT_BIN" generate --cache-dir "$SYN_CACHE" --output-dir "$SMALL_OUT" --top-k 5 >"$SYN_ROOT/too_large_topk.out" 2>&1; then
+	fail "top-k larger than record_count must fail"
+fi
+[[ ! -f "$SMALL_OUT/groundtruth.jsonl" ]] || fail "top-k failure left groundtruth.jsonl behind"
+pass "external mode rejects insufficient records for requested topK"
 
 echo ""
 echo "=== B2 real embedding ground truth smoke test: ALL CHECKS PASSED ==="

@@ -81,6 +81,46 @@ static int path_exists(const char *p) {
 	return stat(p, &st) == 0;
 }
 
+static int mkdir_p(const char *path) {
+	char tmp[8192];
+	size_t len;
+
+	snprintf(tmp, sizeof(tmp), "%s", path);
+	len = strlen(tmp);
+	if (len > 0 && tmp[len - 1] == '/') {
+		tmp[len - 1] = '\0';
+	}
+	for (char *p = tmp + 1; *p; p++) {
+		if (*p == '/') {
+			*p = '\0';
+			if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+				return -1;
+			}
+			*p = '/';
+		}
+	}
+	if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+		return -1;
+	}
+	return 0;
+}
+
+static void dirname_of(const char *path, char *out, size_t outsz) {
+	const char *slash = strrchr(path, '/');
+	size_t len;
+
+	if (!slash) {
+		snprintf(out, outsz, ".");
+		return;
+	}
+	len = (size_t)(slash - path);
+	if (len >= outsz) {
+		len = outsz - 1;
+	}
+	memcpy(out, path, len);
+	out[len] = '\0';
+}
+
 static void iso8601_utc_now(char *out, size_t outsz) {
 	time_t t = time(NULL);
 	struct tm tm_utc;
@@ -428,12 +468,16 @@ static float *load_f32(const char *path, size_t count, int dim) {
 typedef struct {
 	const char *dataset_id;
 	const char *out_root;
+	const char *cache_dir;
+	const char *output_dir;
 	int topk;
 } cli_args_t;
 
 static void cli_args_default(cli_args_t *a) {
 	a->dataset_id = NULL;
 	a->out_root = "/tmp/kvlite_vector_benchmark_artifacts/real_embedding";
+	a->cache_dir = NULL;
+	a->output_dir = NULL;
 	a->topk = DEFAULT_TOPK;
 }
 
@@ -441,10 +485,12 @@ static void print_usage(const char *prog) {
 	fprintf(stderr,
 		"usage:\n"
 		"  %s generate --dataset-id <id> [--out-root DIR] [--topk N]\n"
+		"  %s generate --cache-dir DIR --output-dir DIR [--dataset-id <id>] [--top-k N]\n"
 		"  %s validate --dataset-id <id> [--out-root DIR]\n"
+		"  %s validate [--cache-dir DIR] --output-dir DIR [--dataset-id <id>]\n"
 		"Must be run from the repository root. Consumes only the B1 cache;\n"
 		"never calls ONNX. Ground truth is produced by the core_flat exact IP scan.\n",
-		prog, prog);
+		prog, prog, prog, prog);
 }
 
 static int parse_args(int argc, char **argv, cli_args_t *a) {
@@ -454,15 +500,26 @@ static int parse_args(int argc, char **argv, cli_args_t *a) {
 			a->dataset_id = argv[++i];
 		} else if (strcmp(key, "--out-root") == 0 && i + 1 < argc) {
 			a->out_root = argv[++i];
-		} else if (strcmp(key, "--topk") == 0 && i + 1 < argc) {
+		} else if (strcmp(key, "--cache-dir") == 0 && i + 1 < argc) {
+			a->cache_dir = argv[++i];
+		} else if (strcmp(key, "--output-dir") == 0 && i + 1 < argc) {
+			a->output_dir = argv[++i];
+		} else if ((strcmp(key, "--topk") == 0 || strcmp(key, "--top-k") == 0) && i + 1 < argc) {
 			a->topk = atoi(argv[++i]);
 		} else {
 			fprintf(stderr, "[error] unrecognized argument: %s\n", key);
 			return -1;
 		}
 	}
-	if (!a->dataset_id || a->dataset_id[0] == '\0') {
+	if ((!a->cache_dir || a->cache_dir[0] == '\0') &&
+	    (!a->output_dir || a->output_dir[0] == '\0') &&
+	    (!a->dataset_id || a->dataset_id[0] == '\0')) {
 		fprintf(stderr, "[error] --dataset-id is required\n");
+		return -1;
+	}
+	if (strcmp(argv[1], "generate") == 0 &&
+	    a->output_dir && (!a->cache_dir || a->cache_dir[0] == '\0')) {
+		fprintf(stderr, "[error] generate --output-dir requires --cache-dir\n");
 		return -1;
 	}
 	if (a->topk <= 0) {
@@ -470,6 +527,24 @@ static int parse_args(int argc, char **argv, cli_args_t *a) {
 		return -1;
 	}
 	return 0;
+}
+
+static void resolve_cache_dir(const cli_args_t *args, char *cache_dir, size_t cache_sz) {
+	if (args->cache_dir && args->cache_dir[0] != '\0') {
+		snprintf(cache_dir, cache_sz, "%s", args->cache_dir);
+	} else if (args->dataset_id && args->dataset_id[0] != '\0') {
+		snprintf(cache_dir, cache_sz, "%s/%s", args->out_root, args->dataset_id);
+	} else {
+		snprintf(cache_dir, cache_sz, ".");
+	}
+}
+
+static void resolve_output_dir(const cli_args_t *args, const char *cache_dir, char *output_dir, size_t output_sz) {
+	if (args->output_dir && args->output_dir[0] != '\0') {
+		snprintf(output_dir, output_sz, "%s", args->output_dir);
+	} else {
+		snprintf(output_dir, output_sz, "%s", cache_dir);
+	}
 }
 
 /* ------------------------------------------------------------------------ */
@@ -480,6 +555,7 @@ typedef struct {
 	long long record_count;
 	long long query_count;
 	long long dim;
+	char dataset_id[256];
 	char metric[64];
 	char manifest_sha[65];
 	char emb_sha[65];
@@ -495,7 +571,7 @@ static int verify_output_sha(const char *outputs, const char *key, const char *d
 	char *block = json_extract_object(outputs, key);
 	char sha_val[80] = {0};
 	char actual[65];
-	char file_path[1200];
+	char file_path[8192];
 	int rc = -1;
 
 	if (!block) {
@@ -524,7 +600,7 @@ done:
 }
 
 static int verify_b1_cache(const char *dataset_dir, const char *dataset_id, b1_cache_info_t *out) {
-	char mf_path[1200];
+	char mf_path[8192];
 	char *buf;
 	char *params = NULL;
 	char *outputs = NULL;
@@ -551,11 +627,12 @@ static int verify_b1_cache(const char *dataset_dir, const char *dataset_id, b1_c
 		goto done;
 	}
 	if (json_get_string(buf, "dataset_id", dataset_id_val, sizeof(dataset_id_val)) != 0 ||
-	    strcmp(dataset_id_val, dataset_id) != 0) {
+	    (dataset_id && dataset_id[0] != '\0' && strcmp(dataset_id_val, dataset_id) != 0)) {
 		fprintf(stderr, "[error] B1 manifest dataset_id mismatch (got '%s', want '%s')\n",
-			dataset_id_val, dataset_id);
+			dataset_id_val, dataset_id ? dataset_id : "(any)");
 		goto done;
 	}
+	snprintf(out->dataset_id, sizeof(out->dataset_id), "%s", dataset_id_val);
 
 	params = json_extract_object(buf, "params");
 	if (!params) {
@@ -614,7 +691,7 @@ done:
  * query_row" assumption into a checked invariant. */
 static int verify_row_id_mapping(const char *dataset_dir, const char *filename,
 				 const char *key, long long expected_count) {
-	char path[1200];
+	char path[8192];
 	FILE *f;
 	char *line = NULL;
 	size_t cap = 0;
@@ -681,6 +758,35 @@ static int oracle_cmp(const void *a, const void *b) {
 	return 0;
 }
 
+static int hit_cmp_score_desc_id_asc(const void *a, const void *b) {
+	const kvs_vector_hit_t *x = a;
+	const kvs_vector_hit_t *y = b;
+	if (x->score > y->score) {
+		return -1;
+	}
+	if (x->score < y->score) {
+		return 1;
+	}
+	if (x->record_id < y->record_id) {
+		return -1;
+	}
+	if (x->record_id > y->record_id) {
+		return 1;
+	}
+	return 0;
+}
+
+static int same_file_sha256(const char *a, const char *b) {
+	char sha_a[65], sha_b[65];
+	if (!path_exists(a) || !path_exists(b)) {
+		return 0;
+	}
+	if (sha256_file(a, sha_a) != 0 || sha256_file(b, sha_b) != 0) {
+		return 0;
+	}
+	return strcmp(sha_a, sha_b) == 0;
+}
+
 /* ------------------------------------------------------------------------ */
 /* generate                                                                  */
 /* ------------------------------------------------------------------------ */
@@ -689,16 +795,23 @@ typedef struct {
 	uint64_t queries_checked;
 	uint64_t set_mismatch;
 	uint64_t score_mismatch;
+	uint64_t record_id_mismatch;
 	uint64_t strict_order_checked;
 	uint64_t strict_order_mismatch;
+	uint64_t tie_query_count;
+	uint64_t tie_result_count;
+	uint64_t score_comparisons;
 	double max_score_abs_diff;
+	double sum_score_abs_diff;
 } crosscheck_stats_t;
 
 static int cmd_generate(const cli_args_t *args) {
 	uint64_t total_start = now_us();
-	char dataset_dir[1024];
-	char gt_path[1200], gtm_path[1200];
-	char gt_tmp[1200] = {0}, gtm_tmp[1200] = {0};
+	char cache_dir[4096];
+	char output_dir[4096];
+	char output_parent[4096];
+	char gt_path[8192], gtm_path[8192];
+	char gt_tmp[8192] = {0}, gtm_tmp[8192] = {0};
 	b1_cache_info_t info;
 	float *base = NULL, *query = NULL;
 	kvs_flat_index_t flat;
@@ -716,24 +829,39 @@ static int cmd_generate(const cli_args_t *args) {
 	char created_at[64];
 	oracle_item_t *oracle = NULL;
 	kvs_vector_hit_t *hits = NULL;
+	int output_mode_external = args->output_dir && args->output_dir[0] != '\0';
+	int final_gt_existed = 0;
+	int final_gtm_existed = 0;
 
 	memset(&info, 0, sizeof(info));
 	memset(&flat, 0, sizeof(flat));
 
-	snprintf(dataset_dir, sizeof(dataset_dir), "%s/%s", args->out_root, args->dataset_id);
-	if (!path_exists(dataset_dir)) {
-		fprintf(stderr, "[error] dataset directory does not exist: %s\n", dataset_dir);
+	resolve_cache_dir(args, cache_dir, sizeof(cache_dir));
+	resolve_output_dir(args, cache_dir, output_dir, sizeof(output_dir));
+	if (!path_exists(cache_dir)) {
+		fprintf(stderr, "[error] cache directory does not exist: %s\n", cache_dir);
 		return 1;
 	}
-	snprintf(gt_path, sizeof(gt_path), "%s/groundtruth.jsonl", dataset_dir);
-	snprintf(gtm_path, sizeof(gtm_path), "%s/groundtruth.manifest.json", dataset_dir);
-	if (path_exists(gt_path) || path_exists(gtm_path)) {
-		fprintf(stderr, "[error] ground truth already exists in %s (refusing to overwrite; remove groundtruth.jsonl and groundtruth.manifest.json to regenerate)\n", dataset_dir);
+	dirname_of(output_dir, output_parent, sizeof(output_parent));
+	if (mkdir_p(output_parent) != 0 || mkdir_p(output_dir) != 0) {
+		fprintf(stderr, "[error] failed to create output directory %s: %s\n", output_dir, strerror(errno));
+		return 1;
+	}
+	snprintf(gt_path, sizeof(gt_path), "%s/groundtruth.jsonl", output_dir);
+	snprintf(gtm_path, sizeof(gtm_path), "%s/groundtruth.manifest.json", output_dir);
+	final_gt_existed = path_exists(gt_path);
+	final_gtm_existed = path_exists(gtm_path);
+	if (!output_mode_external && (final_gt_existed || final_gtm_existed)) {
+		fprintf(stderr, "[error] ground truth already exists in %s (refusing to overwrite; remove groundtruth.jsonl and groundtruth.manifest.json to regenerate)\n", output_dir);
+		return 1;
+	}
+	if (output_mode_external && final_gt_existed != final_gtm_existed) {
+		fprintf(stderr, "[error] output-dir has partial ground truth files: %s\n", output_dir);
 		return 1;
 	}
 
 	/* 1. verify B1 cache (schema + checksums + shape) -> rejects corrupt input */
-	if (verify_b1_cache(dataset_dir, args->dataset_id, &info) != 0) {
+	if (verify_b1_cache(cache_dir, args->dataset_id, &info) != 0) {
 		return 1;
 	}
 	count = info.record_count;
@@ -746,8 +874,8 @@ static int cmd_generate(const cli_args_t *args) {
 	}
 	/* records.jsonl id / queries.jsonl query_row must equal their row index so
 	 * the core_flat record_id (= embedding row) is back-joinable to the text. */
-	if (verify_row_id_mapping(dataset_dir, "records.jsonl", "id", count) != 0 ||
-	    verify_row_id_mapping(dataset_dir, "queries.jsonl", "query_row", qcount) != 0) {
+	if (verify_row_id_mapping(cache_dir, "records.jsonl", "id", count) != 0 ||
+	    verify_row_id_mapping(cache_dir, "queries.jsonl", "query_row", qcount) != 0) {
 		return 1;
 	}
 	fprintf(stdout, "[b1-cache] record_count=%lld query_count=%lld dim=%lld metric=%s (checksums + row/id mapping verified)\n",
@@ -755,11 +883,11 @@ static int cmd_generate(const cli_args_t *args) {
 
 	/* 2. load caches */
 	{
-		char p[1200];
+		char p[8192];
 		uint64_t t0 = now_us();
-		snprintf(p, sizeof(p), "%s/embeddings.f32", dataset_dir);
+		snprintf(p, sizeof(p), "%s/embeddings.f32", cache_dir);
 		base = load_f32(p, (size_t)count, (int)dim);
-		snprintf(p, sizeof(p), "%s/query_embeddings.f32", dataset_dir);
+		snprintf(p, sizeof(p), "%s/query_embeddings.f32", cache_dir);
 		query = load_f32(p, (size_t)qcount, (int)dim);
 		cache_load_us = now_us() - t0;
 		if (!base || !query) {
@@ -818,8 +946,8 @@ static int cmd_generate(const cli_args_t *args) {
 	}
 
 	/* 5. open temp ground truth, search all queries via core_flat exact scan */
-	snprintf(gt_tmp, sizeof(gt_tmp), "%s/.tmp.groundtruth.%d.jsonl", dataset_dir, (int)getpid());
-	snprintf(gtm_tmp, sizeof(gtm_tmp), "%s/.tmp.groundtruth.manifest.%d.json", dataset_dir, (int)getpid());
+	snprintf(gt_tmp, sizeof(gt_tmp), "%s/.tmp.groundtruth.%d.jsonl", output_dir, (int)getpid());
+	snprintf(gtm_tmp, sizeof(gtm_tmp), "%s/.tmp.groundtruth.manifest.%d.json", output_dir, (int)getpid());
 	gt = fopen(gt_tmp, "w");
 	if (!gt) {
 		fprintf(stderr, "[error] cannot open temp ground truth file %s\n", gt_tmp);
@@ -840,7 +968,14 @@ static int cmd_generate(const cli_args_t *args) {
 			fprintf(stderr, "[error] query %lld returned %zu hits, expected %d\n", q, out_count, topk);
 			goto cleanup;
 		}
+		qsort(hits, (size_t)topk, sizeof(kvs_vector_hit_t), hit_cmp_score_desc_id_asc);
 		/* per-query structural checks: monotonic score, finite, unique/in-range ids */
+		int tie_flags[4096] = {0};
+		int query_has_tie = 0;
+		if (topk > (int)(sizeof(tie_flags) / sizeof(tie_flags[0]))) {
+			fprintf(stderr, "[error] topk too large for tie validation buffer: %d\n", topk);
+			goto cleanup;
+		}
 		for (int r = 0; r < topk; r++) {
 			if (!isfinite(hits[r].score)) {
 				fprintf(stderr, "[error] query %lld rank %d non-finite score\n", q, r);
@@ -855,10 +990,27 @@ static int cmd_generate(const cli_args_t *args) {
 				fprintf(stderr, "[error] query %lld scores not monotonic at rank %d\n", q, r);
 				goto cleanup;
 			}
+			if (r > 0 && hits[r].score == hits[r - 1].score) {
+				query_has_tie = 1;
+				tie_flags[r] = 1;
+				tie_flags[r - 1] = 1;
+				if (hits[r].record_id < hits[r - 1].record_id) {
+					fprintf(stderr, "[error] query %lld tie not ordered by record_id at rank %d\n", q, r);
+					goto cleanup;
+				}
+			}
 			for (int s = 0; s < r; s++) {
 				if (hits[s].record_id == hits[r].record_id) {
 					fprintf(stderr, "[error] query %lld duplicate record_id at ranks %d,%d\n", q, s, r);
 					goto cleanup;
+				}
+			}
+		}
+		if (query_has_tie) {
+			cc.tie_query_count++;
+			for (int r = 0; r < topk; r++) {
+				if (tie_flags[r]) {
+					cc.tie_result_count++;
 				}
 			}
 		}
@@ -894,15 +1046,22 @@ static int cmd_generate(const cli_args_t *args) {
 				fprintf(stderr, "[error] query %lld: core_flat top-K set != brute-force top-K set\n", q);
 				goto cleanup;
 			}
-			/* position-wise score match (i-th largest score is unambiguous) */
+			/* position-wise record_id and score match under frozen tie-break:
+			 * score desc, then numeric record_id asc. */
+			int record_id_ok = 1;
 			int score_ok = 1;
 			for (int r = 0; r < topk; r++) {
 				double d = fabs((double)hits[r].score - oracle[r].score);
 				if (d > cc.max_score_abs_diff) {
 					cc.max_score_abs_diff = d;
 				}
+				cc.sum_score_abs_diff += d;
+				cc.score_comparisons++;
 				if (d > SCORE_TOL) {
 					score_ok = 0;
+				}
+				if (hits[r].record_id != oracle[r].record_id) {
+					record_id_ok = 0;
 				}
 			}
 			if (!score_ok) {
@@ -910,24 +1069,18 @@ static int cmd_generate(const cli_args_t *args) {
 				fprintf(stderr, "[error] query %lld: score cross-check exceeded tolerance %g\n", q, SCORE_TOL);
 				goto cleanup;
 			}
-			/* strict order match only where the top-K has no near-ties */
-			int distinct = 1;
-			for (int r = 1; r < topk; r++) {
-				if (fabs(oracle[r].score - oracle[r - 1].score) <= TIE_EPS) {
-					distinct = 0;
-					break;
-				}
-			}
-			if (distinct) {
-				cc.strict_order_checked++;
+			cc.strict_order_checked++;
+			if (!record_id_ok) {
+				cc.record_id_mismatch++;
+				cc.strict_order_mismatch++;
 				for (int r = 0; r < topk; r++) {
 					if (hits[r].record_id != oracle[r].record_id) {
-						cc.strict_order_mismatch++;
 						fprintf(stderr, "[error] query %lld: strict order mismatch at rank %d (core_flat=%" PRIu64 " oracle=%" PRIu64 ")\n",
 							q, r, hits[r].record_id, oracle[r].record_id);
-						goto cleanup;
+						break;
 					}
 				}
+				goto cleanup;
 			}
 		}
 
@@ -962,8 +1115,11 @@ static int cmd_generate(const cli_args_t *args) {
 	fprintf(stdout, "[search] queries=%lld topk=%d search_total_us=%" PRIu64 " search_avg_us=%" PRIu64 "\n",
 		qcount, topk, search_total_us, qcount ? search_total_us / (uint64_t)qcount : 0);
 	fprintf(stdout, "[crosscheck] queries_checked=%" PRIu64 " strict_order_checked=%" PRIu64
-		" max_score_abs_diff=%.3g (set/score/order all consistent)\n",
-		cc.queries_checked, cc.strict_order_checked, cc.max_score_abs_diff);
+		" max_score_abs_diff=%.3g mean_score_abs_diff=%.3g tie_query_count=%" PRIu64
+		" tie_result_count=%" PRIu64 " (set/score/order all consistent)\n",
+		cc.queries_checked, cc.strict_order_checked, cc.max_score_abs_diff,
+		cc.score_comparisons ? cc.sum_score_abs_diff / (double)cc.score_comparisons : 0.0,
+		cc.tie_query_count, cc.tie_result_count);
 
 	/* checksums + sizes for the published ground truth */
 	if (sha256_file(gt_tmp, gt_sha) != 0) {
@@ -996,7 +1152,7 @@ static int cmd_generate(const cli_args_t *args) {
 		fprintf(mf, "{\n");
 		fprintf(mf, "  \"schema_version\": 1,\n");
 		fprintf(mf, "  \"dataset_id\": ");
-		json_write_escaped_string(mf, args->dataset_id);
+		json_write_escaped_string(mf, info.dataset_id);
 		fprintf(mf, ",\n  \"created_at_utc\": ");
 		json_write_escaped_string(mf, created_at);
 		fprintf(mf, ",\n  \"generator\": {\"name\": \"generate_real_embedding_groundtruth\", \"version\": ");
@@ -1008,7 +1164,9 @@ static int cmd_generate(const cli_args_t *args) {
 			fprintf(mf, "null");
 		}
 		fprintf(mf, "},\n");
-		fprintf(mf, "  \"source\": {\"manifest_path\": \"manifest.json\", \"manifest_sha256\": ");
+		fprintf(mf, "  \"source\": {\"cache_dir\": ");
+		json_write_escaped_string(mf, cache_dir);
+		fprintf(mf, ", \"manifest_path\": \"manifest.json\", \"manifest_sha256\": ");
 		json_write_escaped_string(mf, info.manifest_sha);
 		fprintf(mf, ", \"embeddings_sha256\": ");
 		json_write_escaped_string(mf, info.emb_sha);
@@ -1022,7 +1180,7 @@ static int cmd_generate(const cli_args_t *args) {
 		fprintf(mf,
 			"  \"params\": {\"record_count\": %lld, \"query_count\": %lld, \"dim\": %lld, \"topk\": %d, "
 			"\"metric\": \"ip_normalized\", \"ground_truth_source\": \"core_flat_exact_ip\", "
-			"\"tie_break\": \"score_desc__membership_slot_asc_eq_record_id_asc\"},\n",
+			"\"tie_break\": \"score_desc_record_id_asc\"},\n",
 			count, qcount, dim, topk);
 		fprintf(mf,
 			"  \"outputs\": {\"groundtruth_jsonl\": {\"path\": \"groundtruth.jsonl\", \"sha256\": ");
@@ -1030,10 +1188,16 @@ static int cmd_generate(const cli_args_t *args) {
 		fprintf(mf, ", \"size_bytes\": %lld, \"rows\": %lld}},\n", gt_size, qcount);
 		fprintf(mf,
 			"  \"crosscheck\": {\"method\": \"independent_double_precision_bruteforce\", "
-			"\"queries_checked\": %" PRIu64 ", \"score_tolerance\": %g, \"tie_eps\": %g, "
-			"\"set_match_all\": true, \"strict_order_checked\": %" PRIu64 ", \"strict_order_match_all\": true, "
-			"\"max_score_abs_diff\": %.9g},\n",
-			cc.queries_checked, SCORE_TOL, TIE_EPS, cc.strict_order_checked, cc.max_score_abs_diff);
+			"\"verified_query_count\": %" PRIu64 ", \"queries_checked\": %" PRIu64 ", \"top_k\": %d, "
+			"\"score_tolerance\": %g, \"tie_eps\": %g, "
+			"\"set_match_all\": true, \"record_id_match_all\": true, "
+			"\"strict_order_checked\": %" PRIu64 ", \"strict_order_match_all\": true, "
+			"\"max_score_abs_diff\": %.9g, \"mean_score_abs_diff\": %.9g, "
+			"\"tie_query_count\": %" PRIu64 ", \"tie_result_count\": %" PRIu64 "},\n",
+			cc.queries_checked, cc.queries_checked, topk, SCORE_TOL, TIE_EPS,
+			cc.strict_order_checked, cc.max_score_abs_diff,
+			cc.score_comparisons ? cc.sum_score_abs_diff / (double)cc.score_comparisons : 0.0,
+			cc.tie_query_count, cc.tie_result_count);
 		fprintf(mf,
 			"  \"timing_us\": {\"cache_load_us\": %" PRIu64 ", \"index_build_us\": %" PRIu64
 			", \"search_total_us\": %" PRIu64 ", \"search_avg_us\": %" PRIu64
@@ -1056,6 +1220,18 @@ static int cmd_generate(const cli_args_t *args) {
 	}
 
 	/* 9. atomic publish: rename data first, manifest last (validate keys on both) */
+	if (output_mode_external && final_gt_existed && final_gtm_existed) {
+		if (same_file_sha256(gt_tmp, gt_path)) {
+			remove(gt_tmp);
+			remove(gtm_tmp);
+			fprintf(stdout, "[publish] dataset_id=%s groundtruth=%s rows=%lld status=unchanged core_outputs_identical=true\n",
+				info.dataset_id, gt_path, qcount);
+			rc = 0;
+			goto cleanup;
+		}
+		fprintf(stderr, "[error] existing groundtruth.jsonl differs from regenerated output: %s\n", gt_path);
+		goto cleanup;
+	}
 	if (rename(gt_tmp, gt_path) != 0) {
 		fprintf(stderr, "[error] failed to publish groundtruth.jsonl: %s\n", strerror(errno));
 		goto cleanup;
@@ -1066,7 +1242,7 @@ static int cmd_generate(const cli_args_t *args) {
 		remove(gt_path);
 		goto cleanup;
 	}
-	fprintf(stdout, "[publish] dataset_id=%s groundtruth=%s rows=%lld\n", args->dataset_id, gt_path, qcount);
+	fprintf(stdout, "[publish] dataset_id=%s groundtruth=%s rows=%lld\n", info.dataset_id, gt_path, qcount);
 	rc = 0;
 
 cleanup:
@@ -1096,8 +1272,9 @@ cleanup:
 /* ------------------------------------------------------------------------ */
 
 static int cmd_validate(const cli_args_t *args) {
-	char dataset_dir[1024];
-	char gtm_path[1200], gt_path[1200], mf_path[1200];
+	char cache_dir[4096];
+	char output_dir[4096];
+	char gtm_path[8192], gt_path[8192], mf_path[8192];
 	char *mbuf = NULL;
 	char *params = NULL;
 	char *outputs = NULL;
@@ -1111,19 +1288,20 @@ static int cmd_validate(const cli_args_t *args) {
 	long long gt_size_manifest = -1, gt_rows_manifest = -1;
 	char actual_sha[65];
 	char src_manifest_sha[80] = {0};
+	char src_cache_dir[4096] = {0};
 	FILE *gt = NULL;
 	char *line = NULL;
 	size_t linecap = 0;
 	ssize_t len;
 	long long lineno = 0;
 
-	snprintf(dataset_dir, sizeof(dataset_dir), "%s/%s", args->out_root, args->dataset_id);
-	snprintf(gtm_path, sizeof(gtm_path), "%s/groundtruth.manifest.json", dataset_dir);
-	snprintf(gt_path, sizeof(gt_path), "%s/groundtruth.jsonl", dataset_dir);
-	snprintf(mf_path, sizeof(mf_path), "%s/manifest.json", dataset_dir);
+	resolve_cache_dir(args, cache_dir, sizeof(cache_dir));
+	resolve_output_dir(args, cache_dir, output_dir, sizeof(output_dir));
+	snprintf(gtm_path, sizeof(gtm_path), "%s/groundtruth.manifest.json", output_dir);
+	snprintf(gt_path, sizeof(gt_path), "%s/groundtruth.jsonl", output_dir);
 
-	if (!path_exists(dataset_dir)) {
-		fprintf(stderr, "[fail] dataset directory missing: %s\n", dataset_dir);
+	if (!path_exists(output_dir)) {
+		fprintf(stderr, "[fail] output directory missing: %s\n", output_dir);
 		return 1;
 	}
 	mbuf = read_whole_file(gtm_path, NULL);
@@ -1137,7 +1315,7 @@ static int cmd_validate(const cli_args_t *args) {
 		ok = 0;
 	}
 	if (json_get_string(mbuf, "dataset_id", dataset_id_val, sizeof(dataset_id_val)) != 0 ||
-	    strcmp(dataset_id_val, args->dataset_id) != 0) {
+	    (args->dataset_id && args->dataset_id[0] != '\0' && strcmp(dataset_id_val, args->dataset_id) != 0)) {
 		fprintf(stderr, "[fail] ground truth manifest dataset_id mismatch (got '%s')\n", dataset_id_val);
 		ok = 0;
 	}
@@ -1168,11 +1346,19 @@ static int cmd_validate(const cli_args_t *args) {
 		    strlen(src_manifest_sha) != 64) {
 			fprintf(stderr, "[fail] ground truth manifest missing source.manifest_sha256\n");
 			ok = 0;
-		} else if (sha256_file(mf_path, actual_sha) != 0) {
+		} else {
+			if (args->cache_dir && args->cache_dir[0] != '\0') {
+				snprintf(src_cache_dir, sizeof(src_cache_dir), "%s", args->cache_dir);
+			} else if (src && json_get_string(src, "cache_dir", src_cache_dir, sizeof(src_cache_dir)) != 0) {
+				snprintf(src_cache_dir, sizeof(src_cache_dir), "%s", cache_dir);
+			}
+			snprintf(mf_path, sizeof(mf_path), "%s/manifest.json", src_cache_dir);
+		}
+		if (ok && sha256_file(mf_path, actual_sha) != 0) {
 			/* provenance cannot be verified if the B1 manifest is gone/unreadable */
 			fprintf(stderr, "[fail] cannot read B1 manifest.json to verify provenance: %s\n", mf_path);
 			ok = 0;
-		} else if (strcmp(actual_sha, src_manifest_sha) != 0) {
+		} else if (ok && strcmp(actual_sha, src_manifest_sha) != 0) {
 			fprintf(stderr, "[fail] source manifest sha256 mismatch: ground truth built from a different B1 manifest\n");
 			ok = 0;
 		}
@@ -1340,10 +1526,10 @@ done:
 	free(mbuf);
 	if (ok) {
 		fprintf(stdout, "[validate] PASS dataset_id=%s query_count=%lld topk=%lld record_count=%lld dim=%lld\n",
-			args->dataset_id, query_count, topk, record_count, dim);
+			dataset_id_val, query_count, topk, record_count, dim);
 		return 0;
 	}
-	fprintf(stderr, "[validate] FAIL dataset_id=%s\n", args->dataset_id);
+	fprintf(stderr, "[validate] FAIL dataset_id=%s\n", dataset_id_val[0] ? dataset_id_val : "(unknown)");
 	return 1;
 }
 

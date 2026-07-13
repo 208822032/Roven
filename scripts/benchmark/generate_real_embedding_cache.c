@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
@@ -72,8 +73,35 @@ static int path_exists(const char *p) {
 	return stat(p, &st) == 0;
 }
 
+static int dir_is_empty(const char *path) {
+	DIR *d = opendir(path);
+	struct dirent *ent;
+	int empty = 1;
+
+	if (!d) {
+		return 0;
+	}
+	while ((ent = readdir(d)) != NULL) {
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+			continue;
+		}
+		empty = 0;
+		break;
+	}
+	closedir(d);
+	return empty;
+}
+
+static long long peak_rss_kb(void) {
+	struct rusage ru;
+	if (getrusage(RUSAGE_SELF, &ru) != 0) {
+		return -1;
+	}
+	return (long long)ru.ru_maxrss;
+}
+
 static int mkdir_p(const char *path) {
-	char tmp[1024];
+	char tmp[8192];
 	size_t len;
 
 	snprintf(tmp, sizeof(tmp), "%s", path);
@@ -314,8 +342,9 @@ static int read_f32_row_le(FILE *f, float *row, int dim) {
 /* ------------------------------------------------------------------------ */
 
 typedef struct {
-	char *col1; /* question / query text - the embedding source */
-	char *col2; /* answer / expected_answer */
+	char *embed_text; /* question/query/doc text - the embedding source */
+	char *aux_text; /* answer / expected_answer, empty for id_text TSV */
+	char *external_id; /* pid/qid for external id_text TSV, NULL for legacy QA TSV */
 	size_t source_line; /* 1-based */
 } tsv_row_t;
 
@@ -329,15 +358,25 @@ static void tsv_table_free(tsv_table_t *t) {
 		return;
 	}
 	for (size_t i = 0; i < t->count; i++) {
-		free(t->rows[i].col1);
-		free(t->rows[i].col2);
+		free(t->rows[i].embed_text);
+		free(t->rows[i].aux_text);
+		free(t->rows[i].external_id);
 	}
 	free(t->rows);
 	t->rows = NULL;
 	t->count = 0;
 }
 
-static int read_tsv(const char *path, tsv_table_t *out) {
+typedef enum {
+	INPUT_FORMAT_QA = 0,
+	INPUT_FORMAT_ID_TEXT = 1,
+} input_format_t;
+
+static const char *input_format_name(input_format_t format) {
+	return format == INPUT_FORMAT_ID_TEXT ? "id_text" : "qa";
+}
+
+static int read_tsv(const char *path, tsv_table_t *out, input_format_t format, int is_records) {
 	FILE *f;
 	size_t cap = 1024;
 	tsv_row_t *rows;
@@ -363,6 +402,14 @@ static int read_tsv(const char *path, tsv_table_t *out) {
 		while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
 			line[--len] = '\0';
 		}
+		if (lineno == 1 && format == INPUT_FORMAT_ID_TEXT) {
+			const char *expected = is_records ? "pid\ttext" : "qid\ttext";
+			if (strcmp(line, expected) != 0) {
+				fprintf(stderr, "[error] %s: expected header '%s', got '%s'\n", path, expected, line);
+				goto fail;
+			}
+			continue;
+		}
 		if (len == 0) {
 			fprintf(stderr, "[error] %s:%zu empty line, expected 2 tab-separated columns\n", path, lineno);
 			goto fail;
@@ -372,10 +419,12 @@ static int read_tsv(const char *path, tsv_table_t *out) {
 			fprintf(stderr, "[error] %s:%zu missing tab delimiter\n", path, lineno);
 			goto fail;
 		}
-		char *tab2 = memchr(tab + 1, '\t', (size_t)(line + len - (tab + 1)));
-		if (tab2) {
-			fprintf(stderr, "[error] %s:%zu expected exactly 2 columns, found an extra tab\n", path, lineno);
-			goto fail;
+		if (format == INPUT_FORMAT_QA) {
+			char *tab2 = memchr(tab + 1, '\t', (size_t)(line + len - (tab + 1)));
+			if (tab2) {
+				fprintf(stderr, "[error] %s:%zu expected exactly 2 columns, found an extra tab\n", path, lineno);
+				goto fail;
+			}
 		}
 		if (count == cap) {
 			tsv_row_t *grown;
@@ -387,16 +436,31 @@ static int read_tsv(const char *path, tsv_table_t *out) {
 			rows = grown;
 		}
 		*tab = '\0';
-		rows[count].col1 = strdup(line);
-		rows[count].col2 = strdup(tab + 1);
-		rows[count].source_line = lineno;
-		if (!rows[count].col1 || !rows[count].col2 ||
-		    rows[count].col1[0] == '\0' || rows[count].col2[0] == '\0') {
-			fprintf(stderr, "[error] %s:%zu empty column value\n", path, lineno);
-			free(rows[count].col1);
-			free(rows[count].col2);
-			goto fail;
+		memset(&rows[count], 0, sizeof(rows[count]));
+		if (format == INPUT_FORMAT_ID_TEXT) {
+			rows[count].external_id = strdup(line);
+			rows[count].embed_text = strdup(tab + 1);
+			rows[count].aux_text = strdup("");
+			if (!rows[count].external_id || !rows[count].embed_text || !rows[count].aux_text ||
+			    rows[count].external_id[0] == '\0' || rows[count].embed_text[0] == '\0') {
+				fprintf(stderr, "[error] %s:%zu empty id/text value\n", path, lineno);
+				free(rows[count].external_id);
+				free(rows[count].embed_text);
+				free(rows[count].aux_text);
+				goto fail;
+			}
+		} else {
+			rows[count].embed_text = strdup(line);
+			rows[count].aux_text = strdup(tab + 1);
+			if (!rows[count].embed_text || !rows[count].aux_text ||
+			    rows[count].embed_text[0] == '\0' || rows[count].aux_text[0] == '\0') {
+				fprintf(stderr, "[error] %s:%zu empty column value\n", path, lineno);
+				free(rows[count].embed_text);
+				free(rows[count].aux_text);
+				goto fail;
+			}
 		}
+		rows[count].source_line = lineno;
 		count++;
 	}
 	free(line);
@@ -414,11 +478,27 @@ fail:
 	free(line);
 	fclose(f);
 	for (size_t i = 0; i < count; i++) {
-		free(rows[i].col1);
-		free(rows[i].col2);
+		free(rows[i].embed_text);
+		free(rows[i].aux_text);
+		free(rows[i].external_id);
 	}
 	free(rows);
 	return -1;
+}
+
+static int check_external_ids_unique(const tsv_table_t *t, const char *kind) {
+	for (size_t i = 0; i < t->count; i++) {
+		if (!t->rows[i].external_id) {
+			continue;
+		}
+		for (size_t j = i + 1; j < t->count; j++) {
+			if (t->rows[j].external_id && strcmp(t->rows[i].external_id, t->rows[j].external_id) == 0) {
+				fprintf(stderr, "[error] duplicate %s external_id: %s\n", kind, t->rows[i].external_id);
+				return -1;
+			}
+		}
+	}
+	return 0;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -430,10 +510,17 @@ typedef struct {
 	const char *records_tsv;
 	const char *queries_tsv;
 	const char *model_path;
+	const char *model_dir;
 	int dim;
 	int batch_size;
 	int num_threads;
+	int max_text_len;
 	const char *out_root;
+	const char *output_dir;
+	input_format_t input_format;
+	long long expected_record_count;
+	long long expected_query_count;
+	char command_line[4096];
 } cli_args_t;
 
 static void cli_args_default(cli_args_t *a) {
@@ -441,19 +528,29 @@ static void cli_args_default(cli_args_t *a) {
 	a->records_tsv = "tests/fixtures/qa_zh_1000.tsv";
 	a->queries_tsv = "tests/fixtures/qa_zh_queries.tsv";
 	a->model_path = "models/bge-small-zh-v1.5/model.onnx";
+	a->model_dir = NULL;
 	a->dim = 512;
 	a->batch_size = 32;
 	a->num_threads = 1;
+	a->max_text_len = 512;
 	a->out_root = "/tmp/kvlite_vector_benchmark_artifacts/real_embedding";
+	a->output_dir = NULL;
+	a->input_format = INPUT_FORMAT_QA;
+	a->expected_record_count = -1;
+	a->expected_query_count = -1;
+	a->command_line[0] = '\0';
 }
 
 static void print_usage(const char *prog) {
 	fprintf(stderr,
 		"usage:\n"
 		"  %s generate --dataset-id <id> [--records-tsv PATH] [--queries-tsv PATH]\n"
-		"                 [--model-path PATH] [--dim N] [--batch-size N]\n"
-		"                 [--num-threads N] [--out-root DIR]\n"
-		"  %s validate --dataset-id <id> [--out-root DIR]\n"
+		"                 [--model-path PATH | --model-dir DIR] [--dim N]\n"
+		"                 [--batch-size N] [--num-threads N] [--max-text-len N]\n"
+		"                 [--out-root DIR | --output-dir DIR]\n"
+		"                 [--input-format qa|id_text]\n"
+		"                 [--expected-record-count N] [--expected-query-count N]\n"
+		"  %s validate --dataset-id <id> [--out-root DIR | --output-dir DIR]\n"
 		"Must be run from the repository root.\n",
 		prog, prog);
 }
@@ -469,14 +566,34 @@ static int parse_args(int argc, char **argv, cli_args_t *a) {
 			a->queries_tsv = argv[++i];
 		} else if (strcmp(key, "--model-path") == 0 && i + 1 < argc) {
 			a->model_path = argv[++i];
+		} else if (strcmp(key, "--model-dir") == 0 && i + 1 < argc) {
+			a->model_dir = argv[++i];
 		} else if (strcmp(key, "--dim") == 0 && i + 1 < argc) {
 			a->dim = atoi(argv[++i]);
 		} else if (strcmp(key, "--batch-size") == 0 && i + 1 < argc) {
 			a->batch_size = atoi(argv[++i]);
 		} else if (strcmp(key, "--num-threads") == 0 && i + 1 < argc) {
 			a->num_threads = atoi(argv[++i]);
+		} else if (strcmp(key, "--max-text-len") == 0 && i + 1 < argc) {
+			a->max_text_len = atoi(argv[++i]);
 		} else if (strcmp(key, "--out-root") == 0 && i + 1 < argc) {
 			a->out_root = argv[++i];
+		} else if (strcmp(key, "--output-dir") == 0 && i + 1 < argc) {
+			a->output_dir = argv[++i];
+		} else if (strcmp(key, "--input-format") == 0 && i + 1 < argc) {
+			const char *fmt = argv[++i];
+			if (strcmp(fmt, "qa") == 0) {
+				a->input_format = INPUT_FORMAT_QA;
+			} else if (strcmp(fmt, "id_text") == 0) {
+				a->input_format = INPUT_FORMAT_ID_TEXT;
+			} else {
+				fprintf(stderr, "[error] --input-format must be qa or id_text\n");
+				return -1;
+			}
+		} else if (strcmp(key, "--expected-record-count") == 0 && i + 1 < argc) {
+			a->expected_record_count = atoll(argv[++i]);
+		} else if (strcmp(key, "--expected-query-count") == 0 && i + 1 < argc) {
+			a->expected_query_count = atoll(argv[++i]);
 		} else {
 			fprintf(stderr, "[error] unrecognized argument: %s\n", key);
 			return -1;
@@ -486,11 +603,77 @@ static int parse_args(int argc, char **argv, cli_args_t *a) {
 		fprintf(stderr, "[error] --dataset-id is required\n");
 		return -1;
 	}
-	if (a->dim <= 0 || a->batch_size <= 0 || a->num_threads <= 0) {
-		fprintf(stderr, "[error] --dim/--batch-size/--num-threads must be positive\n");
+	if (a->dim <= 0 || a->batch_size <= 0 || a->num_threads <= 0 || a->max_text_len <= 0) {
+		fprintf(stderr, "[error] --dim/--batch-size/--num-threads/--max-text-len must be positive\n");
 		return -1;
 	}
+	if (a->expected_record_count == 0 || a->expected_record_count < -1 ||
+	    a->expected_query_count == 0 || a->expected_query_count < -1) {
+		fprintf(stderr, "[error] expected counts must be positive when provided\n");
+		return -1;
+	}
+	if (a->model_dir && a->model_dir[0] != '\0') {
+		static char model_path_from_dir[1024];
+		snprintf(model_path_from_dir, sizeof(model_path_from_dir), "%s/model.onnx", a->model_dir);
+		a->model_path = model_path_from_dir;
+	}
 	return 0;
+}
+
+static void capture_command_line(int argc, char **argv, char *out, size_t outsz) {
+	size_t used = 0;
+	out[0] = '\0';
+	for (int i = 0; i < argc; i++) {
+		const char *arg = argv[i];
+		size_t len = strlen(arg);
+		if (used + len + 2 >= outsz) {
+			if (used + 4 < outsz) {
+				snprintf(out + used, outsz - used, "...");
+			}
+			return;
+		}
+		if (i > 0) {
+			out[used++] = ' ';
+			out[used] = '\0';
+		}
+		memcpy(out + used, arg, len + 1);
+		used += len;
+	}
+}
+
+static void resolve_target_dir(const cli_args_t *args, char *target_dir, size_t target_sz) {
+	if (args->output_dir && args->output_dir[0] != '\0') {
+		snprintf(target_dir, target_sz, "%s", args->output_dir);
+	} else {
+		snprintf(target_dir, target_sz, "%s/%s", args->out_root, args->dataset_id);
+	}
+}
+
+static int core_outputs_match(const char *tmp_dir, const char *target_dir) {
+	const char *files[4] = {
+		"embeddings.f32",
+		"query_embeddings.f32",
+		"records.jsonl",
+		"queries.jsonl",
+	};
+	for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+		char tmp_path[16384];
+		char target_path[16384];
+		char tmp_sha[65], target_sha[65];
+
+		snprintf(tmp_path, sizeof(tmp_path), "%s/%s", tmp_dir, files[i]);
+		snprintf(target_path, sizeof(target_path), "%s/%s", target_dir, files[i]);
+		if (!path_exists(target_path)) {
+			return 0;
+		}
+		if (sha256_file(tmp_path, tmp_sha) != 0 || sha256_file(target_path, target_sha) != 0) {
+			return 0;
+		}
+		if (strcmp(tmp_sha, target_sha) != 0) {
+			return 0;
+		}
+	}
+	return 1;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -521,9 +704,9 @@ static int run_sanity_gate(EmbeddingHandle *h, tsv_table_t *records, int dim, sa
 		goto done;
 	}
 
-	const char *t0 = records->rows[0].col1;
-	const char *t1 = records->rows[1].col1;
-	const char *t2 = records->rows[2].col1;
+	const char *t0 = records->rows[0].embed_text;
+	const char *t1 = records->rows[1].embed_text;
+	const char *t2 = records->rows[2].embed_text;
 
 	if (embedding_encode(h, t0, strlen(t0), v0, dim) != EMBEDDING_OK) {
 		fprintf(stderr, "[error] sanity encode t0 failed: %s\n", embedding_last_error(h));
@@ -625,7 +808,7 @@ static int embed_and_write(
 		size_t bs = (n - start) < (size_t)batch_size ? (n - start) : (size_t)batch_size;
 
 		for (size_t i = 0; i < bs; i++) {
-			texts[i] = table->rows[start + i].col1;
+			texts[i] = table->rows[start + i].embed_text;
 			lens[i] = strlen(texts[i]);
 		}
 
@@ -661,18 +844,30 @@ static int embed_and_write(
 			if (is_records) {
 				fprintf(jsonl_out, "{\"row\":%zu,\"source_line\":%zu,\"id\":%zu,\"question\":",
 					row, table->rows[row].source_line, row);
-				json_write_escaped_string(jsonl_out, table->rows[row].col1);
+				json_write_escaped_string(jsonl_out, table->rows[row].embed_text);
+				if (table->rows[row].external_id) {
+					fprintf(jsonl_out, ",\"external_id\":");
+					json_write_escaped_string(jsonl_out, table->rows[row].external_id);
+					fprintf(jsonl_out, ",\"pid\":");
+					json_write_escaped_string(jsonl_out, table->rows[row].external_id);
+				}
 				fprintf(jsonl_out, ",\"answer\":");
-				json_write_escaped_string(jsonl_out, table->rows[row].col2);
+				json_write_escaped_string(jsonl_out, table->rows[row].aux_text);
 				fprintf(jsonl_out, ",\"text\":");
-				json_write_escaped_string(jsonl_out, table->rows[row].col1);
+				json_write_escaped_string(jsonl_out, table->rows[row].embed_text);
 				fprintf(jsonl_out, "}\n");
 			} else {
 				fprintf(jsonl_out, "{\"query_row\":%zu,\"source_line\":%zu,\"id\":%zu,\"text\":",
 					row, table->rows[row].source_line, row);
-				json_write_escaped_string(jsonl_out, table->rows[row].col1);
+				json_write_escaped_string(jsonl_out, table->rows[row].embed_text);
+				if (table->rows[row].external_id) {
+					fprintf(jsonl_out, ",\"external_id\":");
+					json_write_escaped_string(jsonl_out, table->rows[row].external_id);
+					fprintf(jsonl_out, ",\"qid\":");
+					json_write_escaped_string(jsonl_out, table->rows[row].external_id);
+				}
 				fprintf(jsonl_out, ",\"expected_answer\":");
-				json_write_escaped_string(jsonl_out, table->rows[row].col2);
+				json_write_escaped_string(jsonl_out, table->rows[row].aux_text);
 				fprintf(jsonl_out, "}\n");
 			}
 		}
@@ -920,8 +1115,9 @@ static void iso8601_utc_now(char *out, size_t outsz) {
 
 static int cmd_generate(const cli_args_t *args) {
 	uint64_t total_start = now_us();
-	char target_dir[1024];
-	char tmp_dir[1024];
+	char target_dir[4096];
+	char target_parent[4096];
+	char tmp_dir[8192];
 	tsv_table_t records = {0};
 	tsv_table_t queries = {0};
 	EmbeddingHandle *h = NULL;
@@ -942,19 +1138,35 @@ static int cmd_generate(const cli_args_t *args) {
 	char source_sha[65];
 	int have_source_sha = 0;
 	char created_at[64];
-	char f32r_path[1100], f32q_path[1100], jr_path[1100], jq_path[1100], mf_path[1100];
+	char f32r_path[16384], f32q_path[16384], jr_path[16384], jq_path[16384], mf_path[16384];
 	uint64_t validation_us = 0;
+	int target_existed = 0;
+	int target_was_empty = 0;
 
-	snprintf(target_dir, sizeof(target_dir), "%s/%s", args->out_root, args->dataset_id);
-	if (path_exists(target_dir)) {
+	resolve_target_dir(args, target_dir, sizeof(target_dir));
+	target_existed = path_exists(target_dir);
+	target_was_empty = target_existed && dir_is_empty(target_dir);
+	if (target_existed && !args->output_dir) {
 		fprintf(stderr, "[error] dataset already exists: %s (refusing to overwrite; remove it first to regenerate)\n", target_dir);
 		return 1;
 	}
-	if (mkdir_p(args->out_root) != 0) {
-		fprintf(stderr, "[error] failed to create out-root %s: %s\n", args->out_root, strerror(errno));
+	if (target_existed && args->output_dir && !target_was_empty) {
+		struct stat st;
+		if (stat(target_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+			fprintf(stderr, "[error] output-dir exists and is not a directory: %s\n", target_dir);
+			return 1;
+		}
+	}
+	if (args->output_dir) {
+		dirname_of(target_dir, target_parent, sizeof(target_parent));
+	} else {
+		snprintf(target_parent, sizeof(target_parent), "%s", args->out_root);
+	}
+	if (mkdir_p(target_parent) != 0) {
+		fprintf(stderr, "[error] failed to create output parent %s: %s\n", target_parent, strerror(errno));
 		return 1;
 	}
-	snprintf(tmp_dir, sizeof(tmp_dir), "%s/.tmp.%s.%d", args->out_root, args->dataset_id, (int)getpid());
+	snprintf(tmp_dir, sizeof(tmp_dir), "%s/.tmp.%s.%d", target_parent, args->dataset_id, (int)getpid());
 	if (path_exists(tmp_dir)) {
 		fprintf(stderr, "[error] stale temp dir already exists: %s\n", tmp_dir);
 		return 1;
@@ -964,10 +1176,25 @@ static int cmd_generate(const cli_args_t *args) {
 		return 1;
 	}
 
-	if (read_tsv(args->records_tsv, &records) != 0) {
+	if (read_tsv(args->records_tsv, &records, args->input_format, 1) != 0) {
 		goto cleanup;
 	}
-	if (read_tsv(args->queries_tsv, &queries) != 0) {
+	if (read_tsv(args->queries_tsv, &queries, args->input_format, 0) != 0) {
+		goto cleanup;
+	}
+	if (args->input_format == INPUT_FORMAT_ID_TEXT &&
+	    (check_external_ids_unique(&records, "record") != 0 ||
+	     check_external_ids_unique(&queries, "query") != 0)) {
+		goto cleanup;
+	}
+	if (args->expected_record_count > 0 && records.count != (size_t)args->expected_record_count) {
+		fprintf(stderr, "[error] record count mismatch: got %zu expected %lld\n",
+			records.count, args->expected_record_count);
+		goto cleanup;
+	}
+	if (args->expected_query_count > 0 && queries.count != (size_t)args->expected_query_count) {
+		fprintf(stderr, "[error] query count mismatch: got %zu expected %lld\n",
+			queries.count, args->expected_query_count);
 		goto cleanup;
 	}
 	fprintf(stdout, "[input] records=%zu queries=%zu\n", records.count, queries.count);
@@ -980,7 +1207,7 @@ static int cmd_generate(const cli_args_t *args) {
 		cfg.model_path = args->model_path;
 		cfg.embedding_dim = args->dim;
 		cfg.num_threads = args->num_threads;
-		cfg.max_text_len = 512;
+		cfg.max_text_len = args->max_text_len;
 		cfg.normalize = 0;
 
 		uint64_t t0 = now_us();
@@ -1124,6 +1351,7 @@ static int cmd_generate(const cli_args_t *args) {
 		uint64_t record_avg_us = records.count ? rstats.embed_total_us / records.count : 0;
 		uint64_t query_avg_us = queries.count ? qstats.embed_total_us / queries.count : 0;
 		uint64_t artifact_write_us = rstats.write_us + qstats.write_us;
+		long long rss_kb = peak_rss_kb();
 
 		fprintf(mf, "{\n");
 		fprintf(mf, "  \"schema_version\": 1,\n");
@@ -1139,6 +1367,8 @@ static int cmd_generate(const cli_args_t *args) {
 		} else {
 			fprintf(mf, "null");
 		}
+		fprintf(mf, ", \"command_line\": ");
+		json_write_escaped_string(mf, args->command_line);
 		fprintf(mf, "},\n");
 
 		fprintf(mf, "  \"model\": {\"id\": \"bge-small-zh-v1.5\", \"path\": ");
@@ -1153,6 +1383,12 @@ static int cmd_generate(const cli_args_t *args) {
 		fprintf(mf, ", \"vocab_txt_sha256\": ");
 		json_write_escaped_string(mf, vocab_sha);
 		fprintf(mf, "}},\n");
+
+		fprintf(mf,
+			"  \"tokenizer\": {\"type\": \"bert_wordpiece\", \"vocab_path\": ");
+		json_write_escaped_string(mf, vocab_path);
+		fprintf(mf, ", \"max_text_len\": %d, \"max_tokens\": %d, \"truncation\": \"runtime_token_cap\"},\n",
+			args->max_text_len, args->max_text_len > 512 ? 512 : args->max_text_len);
 
 		fprintf(mf, "  \"inputs\": {\n");
 		fprintf(mf, "    \"records_tsv\": {\"path\": ");
@@ -1186,8 +1422,29 @@ static int cmd_generate(const cli_args_t *args) {
 
 		fprintf(mf,
 			"  \"params\": {\"record_count\": %zu, \"query_count\": %zu, \"dim\": %d, \"dtype\": \"float32\", "
-			"\"byte_order\": \"little\", \"normalized\": true, \"metric\": \"ip_normalized\", \"batch_size\": %d},\n",
-			records.count, queries.count, args->dim, args->batch_size);
+			"\"byte_order\": \"little\", \"normalized\": true, \"metric\": \"ip_normalized\", "
+			"\"batch_size\": %d, \"num_threads\": %d, \"max_text_len\": %d, \"input_format\": ",
+			records.count, queries.count, args->dim, args->batch_size, args->num_threads, args->max_text_len);
+		json_write_escaped_string(mf, input_format_name(args->input_format));
+		fprintf(mf, ", \"expected_record_count\": ");
+		if (args->expected_record_count > 0) {
+			fprintf(mf, "%lld", args->expected_record_count);
+		} else {
+			fprintf(mf, "null");
+		}
+		fprintf(mf, ", \"expected_query_count\": ");
+		if (args->expected_query_count > 0) {
+			fprintf(mf, "%lld", args->expected_query_count);
+		} else {
+			fprintf(mf, "null");
+		}
+		fprintf(mf, "},\n");
+
+		fprintf(mf,
+			"  \"validation\": {\"finite_values\": true, \"norm_validation_passed\": true, "
+			"\"norm_tolerance\": 0.001, \"record_jsonl_line_count_matches\": true, "
+			"\"query_jsonl_line_count_matches\": true, \"input_order_preserved\": true, "
+			"\"id_order_alignment\": true},\n");
 
 		fprintf(mf,
 			"  \"sanity\": {\"zh_samples_checked\": 3, \"determinism_max_abs_diff\": %.9f, "
@@ -1203,6 +1460,14 @@ static int cmd_generate(const cli_args_t *args) {
 			model_load_us, rstats.embed_total_us, record_avg_us, qstats.embed_total_us,
 			query_avg_us, artifact_write_us, validation_us, total_us);
 
+		fprintf(mf, ",\n  \"resource_usage\": {\"peak_rss_kb\": ");
+		if (rss_kb >= 0) {
+			fprintf(mf, "%lld", rss_kb);
+		} else {
+			fprintf(mf, "null");
+		}
+		fprintf(mf, "}\n");
+
 		fprintf(mf, "}\n");
 		if (ferror(mf)) {
 			fprintf(stderr, "[error] write error while writing manifest.json\n");
@@ -1212,6 +1477,24 @@ static int cmd_generate(const cli_args_t *args) {
 		fclose(mf);
 	}
 
+	if (target_existed && args->output_dir && !target_was_empty) {
+		if (core_outputs_match(tmp_dir, target_dir)) {
+			rm_rf(tmp_dir);
+			fprintf(stdout, "[publish] dataset_id=%s dir=%s status=unchanged core_outputs_identical=true\n",
+				args->dataset_id, target_dir);
+			rc = 0;
+			goto cleanup;
+		}
+		fprintf(stderr, "[error] output-dir already exists with non-identical core outputs: %s\n", target_dir);
+		goto cleanup;
+	}
+	if (target_existed && args->output_dir && target_was_empty) {
+		if (rmdir(target_dir) != 0) {
+			fprintf(stderr, "[error] failed to remove empty output-dir before publish %s: %s\n",
+				target_dir, strerror(errno));
+			goto cleanup;
+		}
+	}
 	if (rename(tmp_dir, target_dir) != 0) {
 		fprintf(stderr, "[error] failed to publish dataset (rename %s -> %s): %s\n", tmp_dir, target_dir, strerror(errno));
 		goto cleanup;
@@ -1262,7 +1545,7 @@ static int cmd_validate(const cli_args_t *args) {
 	int normalized = 0;
 	char *outputs_block = NULL;
 
-	snprintf(target_dir, sizeof(target_dir), "%s/%s", args->out_root, args->dataset_id);
+	resolve_target_dir(args, target_dir, sizeof(target_dir));
 	if (!path_exists(target_dir)) {
 		fprintf(stderr, "[fail] dataset does not exist: %s\n", target_dir);
 		return 1;
@@ -1480,6 +1763,7 @@ int main(int argc, char **argv) {
 		return 2;
 	}
 	cli_args_default(&args);
+	capture_command_line(argc, argv, args.command_line, sizeof(args.command_line));
 
 	if (strcmp(argv[1], "generate") == 0) {
 		if (parse_args(argc, argv, &args) != 0) {

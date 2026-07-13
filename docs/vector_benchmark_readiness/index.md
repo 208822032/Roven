@@ -11,6 +11,10 @@
 - [b3_core_hnsw_v2_index_only_benchmark_report.md](b3_core_hnsw_v2_index_only_benchmark_report.md)：B3 core_hnsw_v2 index-only benchmark runner，recall/latency/build/memory 结果、validate-only 和 B4 输入契约。
 - [b4_faiss_index_only_baseline_report.md](b4_faiss_index_only_baseline_report.md)：B4 FAISS IndexFlatIP / IndexHNSWFlat index-only baseline，flat parity、HNSW recall/latency、storage 口径和 B2/B3/B4 同口径对比。
 - [b_final_consolidation_report.md](b_final_consolidation_report.md)：B-final real embedding benchmark readiness 收口，B0-B4 能力矩阵、1K 同口径结果表、已证明/未证明结论和后续 scale 路线。
+- [b_scale_0_t2ranking_subset_generation_report.md](b_scale_0_t2ranking_subset_generation_report.md)：B-scale-0 T2Ranking deterministic 10K / 100K subset generator，真实输出 checksum、嵌套/positive 保留验证和 B-scale-1 输入契约。
+- [b_scale_1_t2ranking_10k_embedding_cache_report.md](b_scale_1_t2ranking_10k_embedding_cache_report.md)：B-scale-1 T2Ranking 10K real ONNX embedding cache，外部 TSV 输入、pid/qid 对齐、finite/norm 验证、确定性和 B-scale-2 输入契约。
+- [b_scale_2_t2ranking_10k_ground_truth_report.md](b_scale_2_t2ranking_10k_ground_truth_report.md)：B-scale-2 T2Ranking 10K core_flat exact IP ground truth，外部 cache/output、全量 double brute-force 核对、tie-break 和 B-scale-3 输入契约。
+- [b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md](b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md)：B-scale-3 T2Ranking 10K core_hnsw_v2 / FAISS index-only benchmark，共享 deterministic insertion order、FAISS Flat parity、efSearch sweep 和 B-scale-4 建议。
 
 ## 关联文档
 
@@ -37,12 +41,20 @@ B4-FAISS-index-only-baseline 已完成：`scripts/benchmark/generate_real_embedd
 
 B-final 已完成：B0-B4 已收口为 1K real embedding smoke benchmark。最终结论是 provenance/checksum、real ONNX cache、exact ground truth、core_hnsw_v2 harness、FAISS Flat/HNSW harness 和 1K correctness/parity 均已证明；10K/100K real embedding recall、大规模 SLA、参数最优性、product VSEARCH e2e、runtime memory parity 和多线程扩展仍未证明，详见 [b_final_consolidation_report.md](b_final_consolidation_report.md)。
 
+B-scale-0 已完成：`scripts/benchmark/generate_t2ranking_subsets.py` 基于固定 T2Ranking revision `2a369a430a70979223f1b9a41b1919774d46b432`，生成了仓库外 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_0/` 下的 200 query、1131 positive pair、10K / 100K deterministic corpus 子集。10K 是 100K 的前缀子集，全部 selected-query positive pid 保留，重复运行 checksum 不变，详见 [b_scale_0_t2ranking_subset_generation_report.md](b_scale_0_t2ranking_subset_generation_report.md)。
+
+B-scale-1 已完成：`scripts/benchmark/generate_real_embedding_cache.c` 已支持外部 id/text TSV 和直接 `--output-dir` 发布，基于 B-scale-0 的 `collection.10k.tsv` / `queries.dev.200.tsv` 生成了仓库外 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_1_10k_embedding/` 下的 10000 records / 200 queries / dim=512 / float32 / L2-normalized / IP metric embedding cache。核心文件重复生成 byte-identical，详见 [b_scale_1_t2ranking_10k_embedding_cache_report.md](b_scale_1_t2ranking_10k_embedding_cache_report.md)。
+
+B-scale-2 已完成：`scripts/benchmark/generate_real_embedding_groundtruth.c` 已支持外部 `--cache-dir` / `--output-dir`，基于 B-scale-1 cache 生成仓库外 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_2_10k_groundtruth/` 下的 `groundtruth.jsonl` / `groundtruth.manifest.json`。本阶段使用 core_flat exact normalized IP，topK=10，并用独立 double precision brute-force 对全部 200 queries / 10000 documents 复算一致；T2Ranking qrels 未参与 exact topK 生成，详见 [b_scale_2_t2ranking_10k_ground_truth_report.md](b_scale_2_t2ranking_10k_ground_truth_report.md)。
+
+B-scale-3 已完成：新增 combined index-only sweep runner `scripts/benchmark/generate_real_embedding_hnsw_faiss_sweep_benchmark.cpp` 和 core_hnsw_v2 C helper，读取 B-scale-1 cache 与 B-scale-2 exact ground truth，使用共享 qrels-free deterministic insertion order 执行 core_hnsw_v2 / FAISS HNSW `efSearch=32,64,128,256,512,1024` sweep，并用 FAISS IndexFlatIP 验证 strict parity。输出位于仓库外 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_3_10k_benchmark/`；本阶段未调用 ONNX、未重新生成 ground truth、未运行 product e2e benchmark，详见 [b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md](b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md)。
+
 建议后续使用独立阶段完成：
 
 ```text
-B-scale-0:
-  冻结 10K/100K real corpus 来源和生成策略；在进入 scale 前先提交 B0-B4
-  benchmark readiness 工具/测试/文档。
+B-scale-4:
+  读取 B-scale-0 的 T2Ranking 100K subset 和 200 queries，
+  生成一次可复用 100K real embedding cache，不重新生成 B-scale-0 子集。
 
 implement-benchmark-harness (B6+):
   生成或读取 embedding cache，构建 core_hnsw_v2 与 FAISS index-only 对比，

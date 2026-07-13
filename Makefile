@@ -440,6 +440,32 @@ $(GEN_FAISS_BIN): $(GEN_FAISS_SRC) third_party/faiss/build/faiss/libfaiss.a | bu
 smoke-vector-real-embedding-faiss-benchmark: gen-embedding-faiss-benchmark
 	bash tests/vector_real_embedding_faiss_benchmark_smoke_test.sh
 
+# ── B-scale-3 real embedding HNSW/FAISS efSearch sweep runner ──────────────
+# Opt-in index-only runner for external cache + groundtruth dirs. It links both
+# core_hnsw_v2 and FAISS, but does not touch product V command behavior.
+GEN_SWEEP_BIN := build/tools/bin/generate_real_embedding_hnsw_faiss_sweep_benchmark
+GEN_SWEEP_SRC := scripts/benchmark/generate_real_embedding_hnsw_faiss_sweep_benchmark.cpp
+GEN_SWEEP_HELPER_SRC := scripts/benchmark/real_embedding_core_hnsw_v2_sweep_helper.c
+GEN_SWEEP_HELPER_OBJ := build/tools/bin/real_embedding_core_hnsw_v2_sweep_helper.o
+GEN_SWEEP_CXXFLAGS := -std=c++17 -I./include -I./src -Ithird_party/faiss -g -O2 -Wall
+GEN_SWEEP_LDFLAGS := -Lbuild/lib -lkvstore -L ./third_party/NtyCo/ -lntyco -lpthread -luring -ldl third_party/jemalloc/lib/libjemalloc.a third_party/faiss/build/faiss/libfaiss.a -fopenmp -lblas -llapack -lcrypto -lm
+
+.PHONY: gen-embedding-hnsw-faiss-sweep-benchmark smoke-vector-real-embedding-hnsw-faiss-sweep-benchmark
+
+gen-embedding-hnsw-faiss-sweep-benchmark: $(GEN_SWEEP_BIN)
+
+$(GEN_SWEEP_HELPER_OBJ): $(GEN_SWEEP_HELPER_SRC) | build/tools/bin
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(GEN_SWEEP_BIN): $(GEN_SWEEP_SRC) $(GEN_SWEEP_HELPER_OBJ) $(BUILD_LIB)/libkvstore.a third_party/faiss/build/faiss/libfaiss.a $(NTYCO_LIB) | build/tools/bin
+	$(CXX) $(GEN_SWEEP_CXXFLAGS) -o $@ \
+		$(GEN_SWEEP_SRC) \
+		$(GEN_SWEEP_HELPER_OBJ) \
+		$(GEN_SWEEP_LDFLAGS)
+
+smoke-vector-real-embedding-hnsw-faiss-sweep-benchmark: gen-embedding-hnsw-faiss-sweep-benchmark
+	bash tests/vector_real_embedding_hnsw_faiss_sweep_smoke_test.sh
+
 # 帮助
 help:
 	@echo "用法: make [目标] [选项]"
