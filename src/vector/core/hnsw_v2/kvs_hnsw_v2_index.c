@@ -303,6 +303,8 @@ int kvs_hnsw_v2_index_init(
 	}
 
 	memset(index, 0, sizeof(*index));
+	index->build_profiling_enabled = 1;
+	index->search_profiling_enabled = 1;
 	index->dim = dim;
 	index->metric = metric;
 	index->M = KVS_HNSW_V2_DEFAULT_M;

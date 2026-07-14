@@ -454,7 +454,7 @@ GEN_SWEEP_LDFLAGS := -Lbuild/lib -lkvstore -L ./third_party/NtyCo/ -lntyco -lpth
 
 gen-embedding-hnsw-faiss-sweep-benchmark: $(GEN_SWEEP_BIN)
 
-$(GEN_SWEEP_HELPER_OBJ): $(GEN_SWEEP_HELPER_SRC) | build/tools/bin
+$(GEN_SWEEP_HELPER_OBJ): $(GEN_SWEEP_HELPER_SRC) include/vector/kvs_vector_hnsw_v2.h include/vector/kvs_vector_hnsw_v2_score_cache.h | build/tools/bin
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(GEN_SWEEP_BIN): $(GEN_SWEEP_SRC) $(GEN_SWEEP_HELPER_OBJ) $(BUILD_LIB)/libkvstore.a third_party/faiss/build/faiss/libfaiss.a $(NTYCO_LIB) | build/tools/bin

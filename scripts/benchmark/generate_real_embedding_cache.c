@@ -44,7 +44,7 @@
 kvs_config_t g_cfg;
 
 static const char *const GEN_SOURCE_REL_PATH = "scripts/benchmark/generate_real_embedding_cache.c";
-static const char *const GEN_VERSION = "1";
+static const char *const GEN_VERSION = "2";
 
 /* ------------------------------------------------------------------------ */
 /* small helpers                                                            */
@@ -166,6 +166,45 @@ static void dirname_of(const char *path, char *out, size_t outsz) {
 	}
 	memcpy(out, path, len);
 	out[len] = '\0';
+}
+
+static int copy_file(const char *src, const char *dst) {
+	FILE *in = NULL;
+	FILE *out = NULL;
+	unsigned char buf[65536];
+	size_t n;
+	int rc = -1;
+
+	in = fopen(src, "rb");
+	if (!in) {
+		fprintf(stderr, "[error] cannot open %s for copy: %s\n", src, strerror(errno));
+		goto done;
+	}
+	out = fopen(dst, "wb");
+	if (!out) {
+		fprintf(stderr, "[error] cannot open %s for copy: %s\n", dst, strerror(errno));
+		goto done;
+	}
+	while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+		if (fwrite(buf, 1, n, out) != n) {
+			fprintf(stderr, "[error] short write while copying %s to %s\n", src, dst);
+			goto done;
+		}
+	}
+	if (ferror(in) || fflush(out) != 0) {
+		fprintf(stderr, "[error] copy failed from %s to %s\n", src, dst);
+		goto done;
+	}
+	rc = 0;
+
+done:
+	if (in) {
+		fclose(in);
+	}
+	if (out && fclose(out) != 0) {
+		rc = -1;
+	}
+	return rc;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -376,7 +415,14 @@ static const char *input_format_name(input_format_t format) {
 	return format == INPUT_FORMAT_ID_TEXT ? "id_text" : "qa";
 }
 
-static int read_tsv(const char *path, tsv_table_t *out, input_format_t format, int is_records) {
+static int read_tsv(
+	const char *path,
+	tsv_table_t *out,
+	input_format_t format,
+	int is_records,
+	long long start_row,
+	long long end_row
+) {
 	FILE *f;
 	size_t cap = 1024;
 	tsv_row_t *rows;
@@ -385,6 +431,13 @@ static int read_tsv(const char *path, tsv_table_t *out, input_format_t format, i
 	size_t linecap = 0;
 	ssize_t len;
 	size_t lineno = 0;
+	size_t data_row = 0;
+	int ranged = start_row >= 0 || end_row >= 0;
+
+	if (ranged && (start_row < 0 || end_row <= start_row)) {
+		fprintf(stderr, "[error] invalid row range [%lld, %lld)\n", start_row, end_row);
+		return -1;
+	}
 
 	f = fopen(path, "r");
 	if (!f) {
@@ -426,6 +479,13 @@ static int read_tsv(const char *path, tsv_table_t *out, input_format_t format, i
 				goto fail;
 			}
 		}
+		if (ranged && data_row >= (size_t)end_row) {
+			break;
+		}
+		if (ranged && data_row < (size_t)start_row) {
+			data_row++;
+			continue;
+		}
 		if (count == cap) {
 			tsv_row_t *grown;
 			cap *= 2;
@@ -462,9 +522,16 @@ static int read_tsv(const char *path, tsv_table_t *out, input_format_t format, i
 		}
 		rows[count].source_line = lineno;
 		count++;
+		data_row++;
 	}
 	free(line);
 	fclose(f);
+	if (ranged && count != (size_t)(end_row - start_row)) {
+		fprintf(stderr, "[error] %s: row range [%lld, %lld) produced %zu rows\n",
+			path, start_row, end_row, count);
+		free(rows);
+		return -1;
+	}
 	if (count == 0) {
 		fprintf(stderr, "[error] %s: no rows found\n", path);
 		free(rows);
@@ -520,6 +587,9 @@ typedef struct {
 	input_format_t input_format;
 	long long expected_record_count;
 	long long expected_query_count;
+	long long start_row;
+	long long end_row;
+	const char *query_cache_dir;
 	char command_line[4096];
 } cli_args_t;
 
@@ -538,6 +608,9 @@ static void cli_args_default(cli_args_t *a) {
 	a->input_format = INPUT_FORMAT_QA;
 	a->expected_record_count = -1;
 	a->expected_query_count = -1;
+	a->start_row = -1;
+	a->end_row = -1;
+	a->query_cache_dir = NULL;
 	a->command_line[0] = '\0';
 }
 
@@ -550,6 +623,7 @@ static void print_usage(const char *prog) {
 		"                 [--out-root DIR | --output-dir DIR]\n"
 		"                 [--input-format qa|id_text]\n"
 		"                 [--expected-record-count N] [--expected-query-count N]\n"
+		"                 [--start-row N --end-row N] [--query-cache-dir DIR]\n"
 		"  %s validate --dataset-id <id> [--out-root DIR | --output-dir DIR]\n"
 		"Must be run from the repository root.\n",
 		prog, prog);
@@ -594,6 +668,12 @@ static int parse_args(int argc, char **argv, cli_args_t *a) {
 			a->expected_record_count = atoll(argv[++i]);
 		} else if (strcmp(key, "--expected-query-count") == 0 && i + 1 < argc) {
 			a->expected_query_count = atoll(argv[++i]);
+		} else if (strcmp(key, "--start-row") == 0 && i + 1 < argc) {
+			a->start_row = atoll(argv[++i]);
+		} else if (strcmp(key, "--end-row") == 0 && i + 1 < argc) {
+			a->end_row = atoll(argv[++i]);
+		} else if (strcmp(key, "--query-cache-dir") == 0 && i + 1 < argc) {
+			a->query_cache_dir = argv[++i];
 		} else {
 			fprintf(stderr, "[error] unrecognized argument: %s\n", key);
 			return -1;
@@ -610,6 +690,11 @@ static int parse_args(int argc, char **argv, cli_args_t *a) {
 	if (a->expected_record_count == 0 || a->expected_record_count < -1 ||
 	    a->expected_query_count == 0 || a->expected_query_count < -1) {
 		fprintf(stderr, "[error] expected counts must be positive when provided\n");
+		return -1;
+	}
+	if ((a->start_row >= 0 || a->end_row >= 0) &&
+	    (a->start_row < 0 || a->end_row <= a->start_row)) {
+		fprintf(stderr, "[error] --start-row and --end-row must define a non-empty [start,end) range\n");
 		return -1;
 	}
 	if (a->model_dir && a->model_dir[0] != '\0') {
@@ -791,6 +876,7 @@ static int embed_and_write(
 	FILE *f32_out,
 	FILE *jsonl_out,
 	int is_records,
+	size_t global_row_offset,
 	embed_stats_t *stats
 ) {
 	size_t n = table->count;
@@ -841,9 +927,10 @@ static int embed_and_write(
 		}
 		for (size_t i = 0; i < bs; i++) {
 			size_t row = start + i;
+			size_t global_row = global_row_offset + row;
 			if (is_records) {
 				fprintf(jsonl_out, "{\"row\":%zu,\"source_line\":%zu,\"id\":%zu,\"question\":",
-					row, table->rows[row].source_line, row);
+					global_row, table->rows[row].source_line, global_row);
 				json_write_escaped_string(jsonl_out, table->rows[row].embed_text);
 				if (table->rows[row].external_id) {
 					fprintf(jsonl_out, ",\"external_id\":");
@@ -1142,6 +1229,7 @@ static int cmd_generate(const cli_args_t *args) {
 	uint64_t validation_us = 0;
 	int target_existed = 0;
 	int target_was_empty = 0;
+	size_t record_row_offset = args->start_row >= 0 ? (size_t)args->start_row : 0;
 
 	resolve_target_dir(args, target_dir, sizeof(target_dir));
 	target_existed = path_exists(target_dir);
@@ -1176,10 +1264,11 @@ static int cmd_generate(const cli_args_t *args) {
 		return 1;
 	}
 
-	if (read_tsv(args->records_tsv, &records, args->input_format, 1) != 0) {
+	if (read_tsv(args->records_tsv, &records, args->input_format, 1,
+		args->start_row, args->end_row) != 0) {
 		goto cleanup;
 	}
-	if (read_tsv(args->queries_tsv, &queries, args->input_format, 0) != 0) {
+	if (read_tsv(args->queries_tsv, &queries, args->input_format, 0, -1, -1) != 0) {
 		goto cleanup;
 	}
 	if (args->input_format == INPUT_FORMAT_ID_TEXT &&
@@ -1235,28 +1324,44 @@ static int cmd_generate(const cli_args_t *args) {
 
 	f32r = fopen(f32r_path, "wb");
 	jr = fopen(jr_path, "w");
-	f32q = fopen(f32q_path, "wb");
-	jq = fopen(jq_path, "w");
-	if (!f32r || !jr || !f32q || !jq) {
+	if (!args->query_cache_dir) {
+		f32q = fopen(f32q_path, "wb");
+		jq = fopen(jq_path, "w");
+	}
+	if (!f32r || !jr || (!args->query_cache_dir && (!f32q || !jq))) {
 		fprintf(stderr, "[error] failed to open output files in temp dir\n");
 		goto cleanup;
 	}
 
-	if (embed_and_write(h, &records, args->dim, args->batch_size, f32r, jr, 1, &rstats) != 0) {
+	if (embed_and_write(h, &records, args->dim, args->batch_size, f32r, jr, 1,
+		record_row_offset, &rstats) != 0) {
 		goto cleanup;
 	}
-	if (embed_and_write(h, &queries, args->dim, args->batch_size, f32q, jq, 0, &qstats) != 0) {
-		goto cleanup;
+	if (args->query_cache_dir) {
+		char source_qemb[16384], source_qjson[16384];
+		snprintf(source_qemb, sizeof(source_qemb), "%s/query_embeddings.f32", args->query_cache_dir);
+		snprintf(source_qjson, sizeof(source_qjson), "%s/queries.jsonl", args->query_cache_dir);
+		if (copy_file(source_qemb, f32q_path) != 0 || copy_file(source_qjson, jq_path) != 0) {
+			goto cleanup;
+		}
+	} else {
+		if (embed_and_write(h, &queries, args->dim, args->batch_size, f32q, jq, 0, 0, &qstats) != 0) {
+			goto cleanup;
+		}
 	}
 
 	fclose(f32r);
 	f32r = NULL;
 	fclose(jr);
 	jr = NULL;
-	fclose(f32q);
-	f32q = NULL;
-	fclose(jq);
-	jq = NULL;
+	if (f32q) {
+		fclose(f32q);
+		f32q = NULL;
+	}
+	if (jq) {
+		fclose(jq);
+		jq = NULL;
+	}
 
 	fprintf(stdout, "[embed] records_total_us=%" PRIu64 " queries_total_us=%" PRIu64 "\n",
 		rstats.embed_total_us, qstats.embed_total_us);
@@ -1402,6 +1507,16 @@ static int cmd_generate(const cli_args_t *args) {
 		json_write_escaped_string(mf, queries_tsv_sha);
 		fprintf(mf, ", \"size_bytes\": %lld, \"rows\": %zu}\n", queries_tsv_size, queries.count);
 		fprintf(mf, "  },\n");
+		if (args->start_row >= 0) {
+			fprintf(mf, "  \"shard\": {\"start_row\": %lld, \"end_row\": %lld, \"row_count\": %zu, "
+				"\"global_numeric_ids_preserved\": true, \"query_cache_reused\": %s",
+				args->start_row, args->end_row, records.count, args->query_cache_dir ? "true" : "false");
+			if (args->query_cache_dir) {
+				fprintf(mf, ", \"query_cache_dir\": ");
+				json_write_escaped_string(mf, args->query_cache_dir);
+			}
+			fprintf(mf, "},\n");
+		}
 
 		fprintf(mf, "  \"outputs\": {\n");
 		fprintf(mf, "    \"embeddings_f32\": {\"path\": \"embeddings.f32\", \"sha256\": ");

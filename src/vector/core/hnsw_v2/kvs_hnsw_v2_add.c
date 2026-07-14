@@ -15,6 +15,15 @@ static uint64_t kvs_hnsw_v2_now_us(void) {
 	return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
 }
 
+static uint64_t kvs_hnsw_v2_build_profile_now_us(
+	const kvs_hnsw_v2_index_t *index
+) {
+	if (!index || !index->build_profiling_enabled) {
+		return 0;
+	}
+	return kvs_hnsw_v2_now_us();
+}
+
 static void kvs_hnsw_v2_next_construction_visit_tag(
 	kvs_hnsw_v2_index_t *index
 ) {
@@ -993,7 +1002,7 @@ static int kvs_hnsw_v2_add_reverse_edge(
 	uint64_t prune_start_us = 0;
 	int diag_active = 0;
 
-	start_us = kvs_hnsw_v2_now_us();
+	start_us = kvs_hnsw_v2_build_profile_now_us(index);
 	index->graph_stats.reverse_edge_attempt_count++;
 	count_ptr = kvs_hnsw_v2_layer_count_ptr(index, old_slot, level);
 	neighbors = kvs_hnsw_v2_layer_neighbors(index, old_slot, level);
@@ -1024,11 +1033,11 @@ static int kvs_hnsw_v2_add_reverse_edge(
 		} else {
 			index->graph_stats.reverse_edge_rejected_count++;
 		}
-		index->build_stats.reverse_link_us += kvs_hnsw_v2_now_us() - start_us;
+		index->build_stats.reverse_link_us += kvs_hnsw_v2_build_profile_now_us(index) - start_us;
 		return ret;
 	}
 
-	prune_start_us = kvs_hnsw_v2_now_us();
+	prune_start_us = kvs_hnsw_v2_build_profile_now_us(index);
 	candidate_count = (size_t)before + 1;
 	index->build_stats.reverse_prune_call_count++;
 	index->build_stats.reverse_prune_candidate_count_total += candidate_count;
@@ -1051,11 +1060,15 @@ static int kvs_hnsw_v2_add_reverse_edge(
 			kvs_free(selected);
 			index->graph_stats.reverse_edge_rejected_count++;
 			index->build_stats.reverse_link_us +=
-				kvs_hnsw_v2_now_us() - start_us;
+				kvs_hnsw_v2_build_profile_now_us(index) - start_us;
 			index->build_stats.reverse_prune_us +=
-				kvs_hnsw_v2_now_us() - prune_start_us;
+				kvs_hnsw_v2_build_profile_now_us(index) - prune_start_us;
 			return KVS_VECTOR_ERR;
 		}
+		index->build_stats.temporary_allocation_count += 2;
+		index->build_stats.temporary_allocation_bytes +=
+			candidate_count * sizeof(kvs_hnsw_v2_candidate_t) +
+			capacity * sizeof(kvs_hnsw_v2_candidate_t);
 	}
 
 	diag_active = kvs_hnsw_v2_reverse_prune_diag_begin(index);
@@ -1119,7 +1132,7 @@ static int kvs_hnsw_v2_add_reverse_edge(
 	}
 
 	{
-		uint64_t select_start_us = kvs_hnsw_v2_now_us();
+		uint64_t select_start_us = kvs_hnsw_v2_build_profile_now_us(index);
 		uint64_t ns_distance_before =
 			index->build_stats.neighbor_select_distance_compute_count;
 		index->build_stats.reverse_prune_neighbor_select_call_count++;
@@ -1140,7 +1153,7 @@ static int kvs_hnsw_v2_add_reverse_edge(
 			index->reverse_prune_diag.in_neighbor_select = 0;
 		}
 		index->build_stats.neighbor_select_us +=
-			kvs_hnsw_v2_now_us() - select_start_us;
+			kvs_hnsw_v2_build_profile_now_us(index) - select_start_us;
 		index->build_stats.reverse_prune_neighbor_select_distance_compute_count +=
 			index->build_stats.neighbor_select_distance_compute_count -
 			ns_distance_before;
@@ -1202,10 +1215,11 @@ static int kvs_hnsw_v2_add_reverse_edge(
 	if (candidates != stack_candidates) {
 		kvs_free(candidates);
 		kvs_free(selected);
+		index->build_stats.temporary_free_count += 2;
 	}
 
-	index->build_stats.reverse_prune_us += kvs_hnsw_v2_now_us() - prune_start_us;
-	index->build_stats.reverse_link_us += kvs_hnsw_v2_now_us() - start_us;
+	index->build_stats.reverse_prune_us += kvs_hnsw_v2_build_profile_now_us(index) - prune_start_us;
+	index->build_stats.reverse_link_us += kvs_hnsw_v2_build_profile_now_us(index) - start_us;
 	return ret;
 }
 
@@ -1221,7 +1235,7 @@ static int kvs_hnsw_v2_connect_layer(
 
 	for (i = 0; i < selected_count; i++) {
 		uint32_t neighbor = selected[i].slot;
-		uint64_t forward_start_us = kvs_hnsw_v2_now_us();
+		uint64_t forward_start_us = kvs_hnsw_v2_build_profile_now_us(index);
 		kvs_hnsw_v2_reverse_prune_ctx_t reverse_prune_ctx;
 
 		if (kvs_hnsw_v2_layer_append_edge(index, new_slot, neighbor, level) ==
@@ -1229,7 +1243,7 @@ static int kvs_hnsw_v2_connect_layer(
 			index->graph_stats.forward_edge_added_count++;
 		}
 		index->build_stats.forward_link_us +=
-			kvs_hnsw_v2_now_us() - forward_start_us;
+			kvs_hnsw_v2_build_profile_now_us(index) - forward_start_us;
 
 		memset(&reverse_prune_ctx, 0, sizeof(reverse_prune_ctx));
 		reverse_prune_ctx.direct_hint.from_slot = new_slot;
@@ -1303,6 +1317,11 @@ static int kvs_hnsw_v2_connect_new_node(
 		kvs_free(selected);
 		return KVS_VECTOR_ERR;
 	}
+	index->build_stats.temporary_allocation_count += 3;
+	index->build_stats.temporary_allocation_bytes +=
+		search_capacity * sizeof(kvs_hnsw_v2_candidate_t) +
+		ef_construction * sizeof(kvs_hnsw_v2_candidate_t) +
+		index->M0 * sizeof(kvs_hnsw_v2_candidate_t);
 
 	score_cache_capacity = index->M0 * index->M0;
 	if (score_cache_capacity < 4096) {
@@ -1315,8 +1334,12 @@ static int kvs_hnsw_v2_connect_new_node(
 		kvs_free(candidate_queue);
 		kvs_free(top_candidates);
 		kvs_free(selected);
+		index->build_stats.temporary_free_count += 3;
 		return KVS_VECTOR_ERR;
 	}
+	index->build_stats.temporary_allocation_count++;
+	index->build_stats.temporary_allocation_bytes +=
+		score_cache_capacity * sizeof(kvs_hnsw_v2_score_cache_entry_t);
 	kvs_hnsw_v2_score_cache_init(
 		&score_cache,
 		score_cache_entries,
@@ -1331,7 +1354,7 @@ static int kvs_hnsw_v2_connect_new_node(
 
 	if (max_existing_level > node_level) {
 		for (level = max_existing_level; level > node_level; level--) {
-			uint64_t layer_start_us = kvs_hnsw_v2_now_us();
+			uint64_t layer_start_us = kvs_hnsw_v2_build_profile_now_us(index);
 
 			entry = kvs_hnsw_v2_greedy_layer_for_add(
 				index,
@@ -1340,7 +1363,7 @@ static int kvs_hnsw_v2_connect_new_node(
 				entry
 			);
 			index->build_stats.construction_layer_search_us +=
-				kvs_hnsw_v2_now_us() - layer_start_us;
+				kvs_hnsw_v2_build_profile_now_us(index) - layer_start_us;
 
 			/* Stage 9E1a: entry-point drift diagnostic */
 			if (kvs_hnsw_v2_diag_should_sample(index)) {
@@ -1374,7 +1397,7 @@ static int kvs_hnsw_v2_connect_new_node(
 				index, query, entry);
 		}
 
-		layer_start_us = kvs_hnsw_v2_now_us();
+		layer_start_us = kvs_hnsw_v2_build_profile_now_us(index);
 		ret = kvs_hnsw_v2_search_layer_for_add(
 			index,
 			query,
@@ -1388,7 +1411,7 @@ static int kvs_hnsw_v2_connect_new_node(
 			&candidate_count
 		);
 		index->build_stats.construction_layer_search_us +=
-			kvs_hnsw_v2_now_us() - layer_start_us;
+			kvs_hnsw_v2_build_profile_now_us(index) - layer_start_us;
 		if (ret != KVS_VECTOR_OK) {
 			break;
 		}
@@ -1398,7 +1421,7 @@ static int kvs_hnsw_v2_connect_new_node(
 			entry
 		);
 
-		select_start_us = kvs_hnsw_v2_now_us();
+		select_start_us = kvs_hnsw_v2_build_profile_now_us(index);
 		selected_count = kvs_hnsw_v2_neighbor_select(
 			index,
 			query,
@@ -1409,7 +1432,7 @@ static int kvs_hnsw_v2_connect_new_node(
 			selected_capacity
 		);
 		index->build_stats.neighbor_select_us +=
-			kvs_hnsw_v2_now_us() - select_start_us;
+			kvs_hnsw_v2_build_profile_now_us(index) - select_start_us;
 
 		/* Stage 9E1a: neighbor select quality comparison */
 		if (diag_sample) {
@@ -1444,6 +1467,7 @@ static int kvs_hnsw_v2_connect_new_node(
 	kvs_free(top_candidates);
 	kvs_free(selected);
 	kvs_free(score_cache_entries);
+	index->build_stats.temporary_free_count += 4;
 	return ret;
 }
 
@@ -1488,16 +1512,16 @@ int kvs_hnsw_v2_index_add(
 	/* Stage 9E1a: diagnostic add sequence counter */
 	index->diag.add_seq++;
 
-	add_start_us = kvs_hnsw_v2_now_us();
-	start_us = kvs_hnsw_v2_now_us();
+	add_start_us = kvs_hnsw_v2_build_profile_now_us(index);
+	start_us = kvs_hnsw_v2_build_profile_now_us(index);
 	slot = (uint32_t)index->size;
 	level = kvs_hnsw_v2_random_level(&index->rng, index->M);
 	if (level >= KVS_HNSW_V2_MAX_LEVEL) {
 		level = KVS_HNSW_V2_MAX_LEVEL - 1;
 	}
-	index->build_stats.random_level_us += kvs_hnsw_v2_now_us() - start_us;
+	index->build_stats.random_level_us += kvs_hnsw_v2_build_profile_now_us(index) - start_us;
 
-	start_us = kvs_hnsw_v2_now_us();
+	start_us = kvs_hnsw_v2_build_profile_now_us(index);
 	dst = index->vectors + ((size_t)slot * index->vector_stride);
 	memset(dst, 0, index->vector_stride * sizeof(float));
 	memcpy(dst, vector, index->dim * sizeof(float));
@@ -1505,11 +1529,11 @@ int kvs_hnsw_v2_index_add(
 	index->levels[slot] = level;
 	index->deleted_flags[slot] = 0;
 	index->visited_tags[slot] = 0;
-	index->build_stats.vector_write_us += kvs_hnsw_v2_now_us() - start_us;
+	index->build_stats.vector_write_us += kvs_hnsw_v2_build_profile_now_us(index) - start_us;
 
-	start_us = kvs_hnsw_v2_now_us();
+	start_us = kvs_hnsw_v2_build_profile_now_us(index);
 	ret = kvs_vector_id_slot_map_put(&index->record_id_to_slot, record_id, slot);
-	index->build_stats.id_slot_map_us += kvs_hnsw_v2_now_us() - start_us;
+	index->build_stats.id_slot_map_us += kvs_hnsw_v2_build_profile_now_us(index) - start_us;
 	if (ret != KVS_VECTOR_OK) {
 		memset(dst, 0, index->vector_stride * sizeof(float));
 		index->slot_to_record_id[slot] = 0;
@@ -1523,15 +1547,15 @@ int kvs_hnsw_v2_index_add(
 		index->has_entry = 1;
 		index->max_level = level;
 		index->size++;
-		start_us = kvs_hnsw_v2_now_us();
+		start_us = kvs_hnsw_v2_build_profile_now_us(index);
 		kvs_hnsw_v2_graph_stats_refresh(index);
 		index->build_stats.graph_stats_refresh_us +=
-			kvs_hnsw_v2_now_us() - start_us;
-		start_us = kvs_hnsw_v2_now_us();
+			kvs_hnsw_v2_build_profile_now_us(index) - start_us;
+		start_us = kvs_hnsw_v2_build_profile_now_us(index);
 		kvs_hnsw_v2_memory_refresh(index);
-		index->build_stats.memory_refresh_us += kvs_hnsw_v2_now_us() - start_us;
+		index->build_stats.memory_refresh_us += kvs_hnsw_v2_build_profile_now_us(index) - start_us;
 		index->build_stats.add_count++;
-		index->build_stats.add_total_us += kvs_hnsw_v2_now_us() - add_start_us;
+		index->build_stats.add_total_us += kvs_hnsw_v2_build_profile_now_us(index) - add_start_us;
 		return KVS_VECTOR_OK;
 	}
 
@@ -1560,13 +1584,22 @@ int kvs_hnsw_v2_index_add(
 	}
 
 	index->size++;
-	start_us = kvs_hnsw_v2_now_us();
+	start_us = kvs_hnsw_v2_build_profile_now_us(index);
 	kvs_hnsw_v2_graph_stats_refresh(index);
-	index->build_stats.graph_stats_refresh_us += kvs_hnsw_v2_now_us() - start_us;
-	start_us = kvs_hnsw_v2_now_us();
+	index->build_stats.graph_stats_refresh_us += kvs_hnsw_v2_build_profile_now_us(index) - start_us;
+	start_us = kvs_hnsw_v2_build_profile_now_us(index);
 	kvs_hnsw_v2_memory_refresh(index);
-	index->build_stats.memory_refresh_us += kvs_hnsw_v2_now_us() - start_us;
+	index->build_stats.memory_refresh_us += kvs_hnsw_v2_build_profile_now_us(index) - start_us;
 	index->build_stats.add_count++;
-	index->build_stats.add_total_us += kvs_hnsw_v2_now_us() - add_start_us;
+	index->build_stats.add_total_us += kvs_hnsw_v2_build_profile_now_us(index) - add_start_us;
 	return KVS_VECTOR_OK;
+}
+
+void kvs_hnsw_v2_index_set_build_profiling(
+	kvs_hnsw_v2_index_t *index,
+	int enabled
+) {
+	if (index) {
+		index->build_profiling_enabled = enabled ? 1 : 0;
+	}
 }

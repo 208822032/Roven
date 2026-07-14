@@ -160,6 +160,9 @@ typedef struct kvs_hnsw_v2_build_stats_s {
 	uint64_t reverse_prune_pair_cache_insert_count;
 	uint64_t reverse_prune_pair_cache_collision_count;
 	uint64_t reverse_prune_pair_score_saved_count;
+	uint64_t temporary_allocation_count;
+	uint64_t temporary_free_count;
+	uint64_t temporary_allocation_bytes;
 	uint64_t reverse_prune_candidate_count_hist[KVS_HNSW_V2_REVERSE_PRUNE_HIST_BUCKETS];
 	uint64_t reverse_prune_existing_degree_hist[KVS_HNSW_V2_REVERSE_PRUNE_HIST_BUCKETS];
 } kvs_hnsw_v2_build_stats_t;
@@ -240,6 +243,7 @@ struct kvs_hnsw_v2_candidate_s {
 typedef struct kvs_hnsw_v2_search_query_stats_s {
 	uint64_t visited_count;
 	uint64_t distance_compute_count;
+	uint64_t final_top_count;
 	uint64_t metric_score_call_count;
 	uint64_t upper_distance_compute_count;
 	uint64_t level0_distance_compute_count;
@@ -266,6 +270,7 @@ typedef struct kvs_hnsw_v2_search_stats_s {
 	size_t search_ef_search;
 	uint64_t search_visited_count_total;
 	uint64_t search_distance_compute_count_total;
+	uint64_t search_final_top_count_total;
 	uint64_t search_metric_score_call_count_total;
 	uint64_t search_upper_distance_compute_count_total;
 	uint64_t search_level0_distance_compute_count_total;
@@ -288,6 +293,7 @@ typedef struct kvs_hnsw_v2_search_stats_s {
 	uint64_t search_avg_us;
 	uint64_t last_visited_count;
 	uint64_t last_distance_compute_count;
+	uint64_t last_final_top_count;
 	uint64_t last_metric_score_call_count;
 	uint64_t last_upper_distance_compute_count;
 	uint64_t last_level0_distance_compute_count;
@@ -345,6 +351,8 @@ typedef struct kvs_hnsw_v2_index_s {
 	kvs_hnsw_v2_graph_stats_t graph_stats;
 	kvs_hnsw_v2_build_stats_t build_stats;
 	kvs_hnsw_v2_search_stats_t search_stats;
+	int build_profiling_enabled;
+	int search_profiling_enabled;
 	kvs_hnsw_v2_diag_t diag;
 	kvs_hnsw_v2_reverse_prune_diag_t reverse_prune_diag;
 
@@ -393,6 +401,16 @@ int kvs_hnsw_v2_index_search(
 	size_t ef_search,
 	kvs_vector_hit_t *hits,
 	size_t *out_count
+);
+
+void kvs_hnsw_v2_index_set_search_profiling(
+	kvs_hnsw_v2_index_t *index,
+	int enabled
+);
+
+void kvs_hnsw_v2_index_set_build_profiling(
+	kvs_hnsw_v2_index_t *index,
+	int enabled
 );
 
 void kvs_hnsw_v2_index_destroy(

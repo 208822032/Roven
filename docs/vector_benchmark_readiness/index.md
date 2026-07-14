@@ -15,6 +15,9 @@
 - [b_scale_1_t2ranking_10k_embedding_cache_report.md](b_scale_1_t2ranking_10k_embedding_cache_report.md)：B-scale-1 T2Ranking 10K real ONNX embedding cache，外部 TSV 输入、pid/qid 对齐、finite/norm 验证、确定性和 B-scale-2 输入契约。
 - [b_scale_2_t2ranking_10k_ground_truth_report.md](b_scale_2_t2ranking_10k_ground_truth_report.md)：B-scale-2 T2Ranking 10K core_flat exact IP ground truth，外部 cache/output、全量 double brute-force 核对、tie-break 和 B-scale-3 输入契约。
 - [b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md](b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md)：B-scale-3 T2Ranking 10K core_hnsw_v2 / FAISS index-only benchmark，共享 deterministic insertion order、FAISS Flat parity、efSearch sweep 和 B-scale-4 建议。
+- [b_scale_3b_core_hnsw_v2_build_optimization_report.md](b_scale_3b_core_hnsw_v2_build_optimization_report.md)：B-scale-3B core_hnsw_v2 build path audit，冻结三次 baseline/candidate、graph/search 完全一致门禁和“无候选达到 5%”的结论。
+- [b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md](b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md)：B-scale-4A 100K embedding parallel throughput preflight，冻结连续行 shard/resume/merge 契约、2K real-record 矩阵和 VM 扩容结论。
+- [b_scale_4_t2ranking_100k_embedding_cache_report.md](b_scale_4_t2ranking_100k_embedding_cache_report.md)：B-scale-4 T2Ranking 100K real embedding cache，记录正式 90K ONNX 分片生成、资源、100K checksum/顺序/前缀验证和 B-scale-5 输入。
 
 ## 关联文档
 
@@ -49,12 +52,18 @@ B-scale-2 已完成：`scripts/benchmark/generate_real_embedding_groundtruth.c` 
 
 B-scale-3 已完成：新增 combined index-only sweep runner `scripts/benchmark/generate_real_embedding_hnsw_faiss_sweep_benchmark.cpp` 和 core_hnsw_v2 C helper，读取 B-scale-1 cache 与 B-scale-2 exact ground truth，使用共享 qrels-free deterministic insertion order 执行 core_hnsw_v2 / FAISS HNSW `efSearch=32,64,128,256,512,1024` sweep，并用 FAISS IndexFlatIP 验证 strict parity。输出位于仓库外 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_3_10k_benchmark/`；本阶段未调用 ONNX、未重新生成 ground truth、未运行 product e2e benchmark，详见 [b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md](b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md)。
 
+B-scale-3B 已完成：10K/512d build 的主要成本是 reverse-prune 和 neighbor-select。关闭 build 细粒度 wall-clock 与 build-only metric dispatch prototype 的三次 median 改善分别为 `-0.48%` 和 `+2.46%`，均低于接受线；未降低参数、未改变图/搜索语义，metric prototype 已回退。下一阶段保持 `B-scale-4 - T2Ranking 100K Real Embedding Cache`，详见 [b_scale_3b_core_hnsw_v2_build_optimization_report.md](b_scale_3b_core_hnsw_v2_build_optimization_report.md)。
+
+B-scale-4A preflight 已完成：新增连续行 shard、独立 ONNX worker、checksum resume、全局 row 顺序 merge 和 B-scale-1 base/query cache 复用。2K real-record 最佳结果为 `2p x 2t / batch32 = 18.058 records/s`，当前 4 vCPU / 3.8 GiB VM 未达到 28 records/s 且无法安全承载 4p/5p。完整 90K 未启动；下一步是在至少 6 vCPU / 12-14 GiB RAM 上复测 `5p x 1t / batch32`，详见 [b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md](b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md)。
+
+B-scale-4 已完成：在升级后的 8 vCPU / 15 GiB VM 上，使用 `4p x 2t / batch32` 生成新增 90K records，复用前 10K/query cache，得到正式 100K cache。生成吞吐 `35.374 records/s`，无 swap/OOM；四 shard、100K merged、finite/norm、全局 row/id/pid、前缀/query byte-identity 和原子发布均通过，详见 [b_scale_4_t2ranking_100k_embedding_cache_report.md](b_scale_4_t2ranking_100k_embedding_cache_report.md)。
+
 建议后续使用独立阶段完成：
 
 ```text
-B-scale-4:
-  读取 B-scale-0 的 T2Ranking 100K subset 和 200 queries，
-  生成一次可复用 100K real embedding cache，不重新生成 B-scale-0 子集。
+B-scale-5:
+  读取 B-scale-4 的 100K real embedding cache，
+  生成 T2Ranking 100K exact ground truth，不重新运行 ONNX。
 
 implement-benchmark-harness (B6+):
   生成或读取 embedding cache，构建 core_hnsw_v2 与 FAISS index-only 对比，

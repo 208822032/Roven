@@ -27,6 +27,9 @@ snapshot cold-start and async rebuild benchmark readiness
 - [b_scale_1_t2ranking_10k_embedding_cache_report.md](b_scale_1_t2ranking_10k_embedding_cache_report.md)：T2Ranking 10K real ONNX embedding cache，外部 TSV 支持、pid/qid 对齐、finite/norm 验证和 B-scale-2 输入契约。
 - [b_scale_2_t2ranking_10k_ground_truth_report.md](b_scale_2_t2ranking_10k_ground_truth_report.md)：T2Ranking 10K core_flat exact IP ground truth，外部 cache/output 支持、double brute-force 全量核对、tie-break 和 B-scale-3 输入契约。
 - [b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md](b_scale_3_t2ranking_10k_hnsw_faiss_benchmark_report.md)：T2Ranking 10K core_hnsw_v2 / FAISS index-only sweep benchmark，共享确定性插入顺序、FAISS Flat parity、recall-latency 曲线和 B-scale-4 输入建议。
+- [b_scale_3b_core_hnsw_v2_build_optimization_report.md](b_scale_3b_core_hnsw_v2_build_optimization_report.md)：T2Ranking 10K core_hnsw_v2 build path audit 与局部优化 gate，记录 reverse-prune/neighbor-select 热点、三次重复结果、graph/search 完全一致性和未达到 5% 的候选结论。
+- [b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md](b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md)：T2Ranking 100K embedding 连续行分片/resume/merge 能力与 2K real-record 并行吞吐预检，记录当前 4 vCPU VM 未通过 28 records/s gate。
+- [b_scale_4_t2ranking_100k_embedding_cache_report.md](b_scale_4_t2ranking_100k_embedding_cache_report.md)：T2Ranking 100K real ONNX embedding cache 正式生成，记录 90K 分片推理、资源、原子发布、checksum 和 B-scale-5 输入契约。
 - [index.md](index.md)：文档索引和后续建议。
 
 ## 当前结论
@@ -41,6 +44,12 @@ B-scale-2 已完成：复用并扩展 `scripts/benchmark/generate_real_embedding
 
 B-scale-3 已完成：新增 `scripts/benchmark/generate_real_embedding_hnsw_faiss_sweep_benchmark.cpp` 和 `scripts/benchmark/real_embedding_core_hnsw_v2_sweep_helper.c`，读取 B-scale-1 cache 与 B-scale-2 exact ground truth，使用同一 qrels-free deterministic insertion order 对 core_hnsw_v2 和 FAISS IndexHNSWFlat 做 `efSearch=32,64,128,256,512,1024` index-only sweep，并用 FAISS IndexFlatIP 做 exact parity。输出位于仓库外 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_3_10k_benchmark/`。本阶段未调用 ONNX、未重新生成 ground truth、未运行 product e2e benchmark；qrels 未参与 ANN recall。
 
+B-scale-3B 已完成：在不改变图语义、参数或搜索输出的前提下，对 core_hnsw_v2 10K build path 做三次重复 profiling 与两个局部候选验证。实际热点是 reverse-prune / neighbor-select；关闭 build wall-clock profiling 的 median 变化为 `-0.48%`，build-only metric dispatch prototype 为 `+2.46%`，均未达到约 5% 接受线，prototype 已回退。九次运行 graph SHA-256、六档 returned IDs/顺序/score/recall 和 exact counters 完全一致。下一阶段仍为 B-scale-4。
+
+B-scale-4A preflight 已完成：real embedding cache 工具已支持确定性连续行 shard、checksum resume、B-scale-1 前 10K/query cache 复用和全局 row 顺序原子 merge。当前 4 vCPU / 3.8 GiB VM 的最佳完整配置为 `2p x 2t / batch32 = 18.058 records/s`，未达到 28 records/s；batch64 产生严重内存/换页压力，4p/5p 不适合在该 VM 启动。建议在至少 6 vCPU / 12-14 GiB RAM 上复测 `5p x 1t / batch32`，通过后再生成完整 90K。
+
+B-scale-4 已完成：升级后的 8 vCPU / 15 GiB VM 使用 `4 processes x 2 threads / batch32`，复用 B-scale-1 前 10K records 和全部 query cache，生成新增 90K records 并原子发布 100K cache 到 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_4_100k_embedding/`。正式生成吞吐 `35.374 records/s`，无 swap/OOM；100K finite/norm、全局 row/id/pid、shard range、前缀和 query byte-identity、最终 checksum/validate 均通过。
+
 原因：
 
 - `core_hnsw_v2` product 主路径、snapshot、async rebuild、VINFO observability 已具备。
@@ -52,4 +61,4 @@ B-scale-3 已完成：新增 `scripts/benchmark/generate_real_embedding_hnsw_fai
 - 新 B4 runner 已替代旧 FAISS benchmark 脚本缺失的 `tests/vector_index_only_formal.cpp` 依赖；它仍是 index-only 外部 baseline，不是 product backend。
 - `config/kvstore-embedding.conf` 仍配置旧 `hnswlib_hnsw` 名称，会被 resolver 映射到 `core_flat`，不适合作为 v2 真实 embedding benchmark 默认配置。
 
-推荐下一步进入 `B-scale-4 — T2Ranking 100K Real Embedding Cache`，使用 B-scale-0 的 `collection.100k.tsv` 与 `queries.dev.200.tsv` 生成 100K real embedding cache。当前 1K / 10K 结果仍不能作为 100K SLA 或 product e2e 性能证明。
+推荐下一步进入 `B-scale-5 - T2Ranking 100K Exact Ground Truth`。当前 100K cache 只证明 real embedding artifact 生成与完整性，不代表 100K ANN recall、build/search SLA 或 product e2e 性能。

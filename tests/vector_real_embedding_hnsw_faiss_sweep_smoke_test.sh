@@ -14,6 +14,8 @@ SMOKE_ROOT="/tmp/kvlite_vector_benchmark_artifacts/hnsw_faiss_sweep_smoke_$$_$(d
 CACHE_DIR="$SMOKE_ROOT/cache"
 GT_DIR="$SMOKE_ROOT/groundtruth"
 OUT_DIR="$SMOKE_ROOT/out"
+OUT_DIR_B="$SMOKE_ROOT/out_profiling_off_alloc"
+OUT_DIR_C="$SMOKE_ROOT/out_profiling_off_reuse"
 DATASET_ID="synthetic_hnsw_faiss_sweep"
 
 cleanup() { rm -rf "${SMOKE_ROOT:?}"; }
@@ -149,7 +151,9 @@ make_fixture "$CACHE_DIR" "$GT_DIR" ok
 	--dataset-id "$DATASET_ID" \
 	--source-revision smoke-revision \
 	--top-k 2 \
-	--ef-search-list 2,4
+	--ef-search-list 2,4 \
+	--core-build-profiling on \
+	--core-search-profiling on
 pass "external cache/groundtruth/output benchmark generated"
 
 "$BIN" validate \
@@ -204,6 +208,101 @@ for name, expected in [
 PY
 pass "schema, insertion permutation, efSearch sweep, and flat parity checked"
 
+"$BIN" generate \
+	--cache-dir "$CACHE_DIR" \
+	--groundtruth-dir "$GT_DIR" \
+	--output-dir "$OUT_DIR_B" \
+	--dataset-id "$DATASET_ID" \
+	--source-revision smoke-revision \
+	--top-k 2 \
+	--ef-search-list 2,4 \
+	--core-build-profiling off \
+	--core-search-profiling off \
+	--core-hit-buffer-reuse off >/dev/null
+
+"$BIN" generate \
+	--cache-dir "$CACHE_DIR" \
+	--groundtruth-dir "$GT_DIR" \
+	--output-dir "$OUT_DIR_C" \
+	--dataset-id "$DATASET_ID" \
+	--source-revision smoke-revision \
+	--top-k 2 \
+	--ef-search-list 2,4 \
+	--core-build-profiling off \
+	--core-search-profiling off \
+	--core-hit-buffer-reuse on >/dev/null
+
+python3 - "$OUT_DIR" "$OUT_DIR_B" "$OUT_DIR_C" <<'PY'
+import json
+import sys
+
+roots = sys.argv[1:]
+results = []
+rows = []
+for root in roots:
+    with open(f"{root}/core_hnsw_v2_results.json") as f:
+        results.append(json.load(f))
+    with open(f"{root}/core_hnsw_v2_per_query.jsonl") as f:
+        rows.append([json.loads(line) for line in f])
+
+assert results[0]["search_measurement"] == {
+    "hot_loop_profiling_enabled": True,
+    "wrapper_hit_buffer_reused": False,
+}
+assert results[1]["search_measurement"] == {
+    "hot_loop_profiling_enabled": False,
+    "wrapper_hit_buffer_reused": False,
+}
+assert results[2]["search_measurement"] == {
+    "hot_loop_profiling_enabled": False,
+    "wrapper_hit_buffer_reused": True,
+}
+assert results[0]["build_measurement"]["fine_grained_profiling_enabled"] is True
+assert results[1]["build_measurement"]["fine_grained_profiling_enabled"] is False
+assert results[2]["build_measurement"]["fine_grained_profiling_enabled"] is False
+assert len({r["build_measurement"]["graph_sha256"] for r in results}) == 1
+for key in (
+    "distance_compute_count",
+    "construction_distance_compute_count",
+    "neighbor_select_distance_compute_count",
+    "reverse_prune_distance_compute_count",
+    "temporary_allocation_count",
+    "temporary_free_count",
+    "temporary_allocation_bytes",
+    "known_score_reuse_count",
+    "pair_cache_lookup_count",
+    "pair_cache_hit_count",
+):
+    assert len({r["build_measurement"][key] for r in results}) == 1, key
+
+work_keys = (
+    "distance_compute_count",
+    "visited_node_count",
+    "neighbor_scan_count",
+    "final_top_count",
+)
+for triplet in zip(*rows):
+    baseline = triplet[0]
+    for row in triplet[1:]:
+        assert row["ef_search"] == baseline["ef_search"]
+        assert row["query_row"] == baseline["query_row"]
+        assert row["ann"] == baseline["ann"]
+        assert row["hits"] == baseline["hits"]
+        assert row["recall_at_1"] == baseline["recall_at_1"]
+        assert row["recall_at_10"] == baseline["recall_at_10"]
+        assert [row[k] for k in work_keys] == [baseline[k] for k in work_keys]
+
+for result in results:
+    for row in result["sweep"]:
+        assert row["avg_distance_compute_count"] > 0
+        assert row["avg_visited_node_count"] > 0
+        assert row["avg_neighbor_scan_count"] > 0
+        assert row["avg_final_top_count"] >= 2
+assert all(row["avg_final_sort_us"] == 0 for row in results[1]["sweep"])
+assert all(row["avg_final_sort_us"] == 0 for row in results[2]["sweep"])
+PY
+pass "profiling toggle and wrapper buffer reuse preserve ordered results and work counters"
+
 SHA_INS_BEFORE="$(sha256sum "$OUT_DIR/insertion_order.ids" | awk '{print $1}')"
 SHA_CORE_BEFORE="$(sha256sum "$OUT_DIR/core_hnsw_v2_per_query.jsonl" | awk '{print $1}')"
 SHA_FLAT_BEFORE="$(sha256sum "$OUT_DIR/faiss_flat_per_query.jsonl" | awk '{print $1}')"
@@ -215,7 +314,9 @@ SHA_FAISS_BEFORE="$(sha256sum "$OUT_DIR/faiss_hnsw_per_query.jsonl" | awk '{prin
 	--dataset-id "$DATASET_ID" \
 	--source-revision smoke-revision \
 	--top-k 2 \
-	--ef-search-list 2,4 >"$SMOKE_ROOT/repeat.out"
+	--ef-search-list 2,4 \
+	--core-build-profiling on \
+	--core-search-profiling on >"$SMOKE_ROOT/repeat.out"
 grep -q "status=unchanged core_outputs_identical=true" "$SMOKE_ROOT/repeat.out" || fail "repeat did not return unchanged"
 [[ "$SHA_INS_BEFORE" == "$(sha256sum "$OUT_DIR/insertion_order.ids" | awk '{print $1}')" ]] || fail "insertion order changed"
 [[ "$SHA_CORE_BEFORE" == "$(sha256sum "$OUT_DIR/core_hnsw_v2_per_query.jsonl" | awk '{print $1}')" ]] || fail "core per-query changed"
@@ -258,4 +359,3 @@ pass "generate rejects bad ground truth schema/count"
 
 echo ""
 echo "=== B-scale-3 HNSW/FAISS sweep smoke test: ALL CHECKS PASSED ==="
-

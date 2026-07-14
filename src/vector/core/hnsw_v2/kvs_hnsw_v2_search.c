@@ -15,6 +15,15 @@ static uint64_t kvs_hnsw_v2_now_us(void) {
 	return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
 }
 
+static uint64_t kvs_hnsw_v2_profile_now_us(
+	const kvs_hnsw_v2_index_t *index
+) {
+	if (!index || !index->search_profiling_enabled) {
+		return 0;
+	}
+	return kvs_hnsw_v2_now_us();
+}
+
 static int kvs_hnsw_v2_context_ensure(
 	kvs_hnsw_v2_search_context_t *ctx,
 	size_t candidate_capacity,
@@ -208,7 +217,7 @@ static int kvs_hnsw_v2_search_level0(
 	item.slot = entry;
 	item.score = entry_score;
 	kvs_hnsw_v2_mark_visited(index, entry, stats);
-	start_us = kvs_hnsw_v2_now_us();
+	start_us = kvs_hnsw_v2_profile_now_us(index);
 	if (kvs_hnsw_v2_candidate_heap_push(
 		    ctx->candidates,
 		    &candidate_count,
@@ -220,10 +229,12 @@ static int kvs_hnsw_v2_search_level0(
 	}
 	if (stats) {
 		stats->candidate_push_count++;
-		stats->candidate_select_us += kvs_hnsw_v2_now_us() - start_us;
+		if (index->search_profiling_enabled) {
+			stats->candidate_select_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+		}
 	}
 	if (!index->deleted_flags[entry]) {
-		start_us = kvs_hnsw_v2_now_us();
+		start_us = kvs_hnsw_v2_profile_now_us(index);
 		if (kvs_hnsw_v2_top_heap_add_bounded(
 			    ctx->top,
 			    &top_count,
@@ -234,10 +245,14 @@ static int kvs_hnsw_v2_search_level0(
 		    ) == KVS_VECTOR_OK) {
 			if (stats) {
 				stats->top_push_count++;
-				stats->top_maintenance_us += kvs_hnsw_v2_now_us() - start_us;
+				if (index->search_profiling_enabled) {
+					stats->top_maintenance_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+				}
 			}
 		} else if (stats) {
-			stats->top_maintenance_us += kvs_hnsw_v2_now_us() - start_us;
+			if (index->search_profiling_enabled) {
+				stats->top_maintenance_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+			}
 		}
 	} else if (stats) {
 		stats->deleted_skip_count++;
@@ -250,7 +265,7 @@ static int kvs_hnsw_v2_search_level0(
 		uint16_t i;
 		float lower_bound;
 
-		start_us = kvs_hnsw_v2_now_us();
+		start_us = kvs_hnsw_v2_profile_now_us(index);
 		if (kvs_hnsw_v2_candidate_heap_pop_best(
 			    ctx->candidates,
 			    &candidate_count,
@@ -261,7 +276,9 @@ static int kvs_hnsw_v2_search_level0(
 		}
 		if (stats) {
 			stats->candidate_pop_count++;
-			stats->candidate_select_us += kvs_hnsw_v2_now_us() - start_us;
+			if (index->search_profiling_enabled) {
+				stats->candidate_select_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+			}
 		}
 
 		lower_bound = kvs_hnsw_v2_top_heap_lower_bound(ctx->top, top_count);
@@ -316,7 +333,7 @@ static int kvs_hnsw_v2_search_level0(
 				candidate.slot = neighbor;
 				candidate.score = score;
 				candidate_is_deleted = index->deleted_flags[neighbor] != 0;
-				start_us = kvs_hnsw_v2_now_us();
+				start_us = kvs_hnsw_v2_profile_now_us(index);
 				if (kvs_hnsw_v2_candidate_heap_push(
 					    ctx->candidates,
 					    &candidate_count,
@@ -329,7 +346,9 @@ static int kvs_hnsw_v2_search_level0(
 					}
 				}
 				if (stats) {
-					stats->candidate_select_us += kvs_hnsw_v2_now_us() - start_us;
+					if (index->search_profiling_enabled) {
+						stats->candidate_select_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+					}
 				}
 				if (candidate_is_deleted) {
 					if (stats) {
@@ -337,7 +356,7 @@ static int kvs_hnsw_v2_search_level0(
 					}
 					continue;
 				}
-				start_us = kvs_hnsw_v2_now_us();
+				start_us = kvs_hnsw_v2_profile_now_us(index);
 				if (kvs_hnsw_v2_top_heap_add_bounded(
 					    ctx->top,
 					    &top_count,
@@ -352,12 +371,16 @@ static int kvs_hnsw_v2_search_level0(
 						} else {
 							stats->top_push_count++;
 						}
-						stats->top_maintenance_us +=
-							kvs_hnsw_v2_now_us() - start_us;
+						if (index->search_profiling_enabled) {
+							stats->top_maintenance_us +=
+								kvs_hnsw_v2_profile_now_us(index) - start_us;
+						}
 					}
 				} else if (stats) {
-					stats->top_maintenance_us +=
-						kvs_hnsw_v2_now_us() - start_us;
+					if (index->search_profiling_enabled) {
+						stats->top_maintenance_us +=
+							kvs_hnsw_v2_profile_now_us(index) - start_us;
+					}
 				}
 			} else if (stats) {
 				stats->candidate_skip_count++;
@@ -386,6 +409,7 @@ static void kvs_hnsw_v2_record_search_stats(
 	stats->search_visited_count_total += query_stats->visited_count;
 	stats->search_distance_compute_count_total +=
 		query_stats->distance_compute_count;
+	stats->search_final_top_count_total += query_stats->final_top_count;
 	stats->search_metric_score_call_count_total +=
 		query_stats->metric_score_call_count;
 	stats->search_upper_distance_compute_count_total +=
@@ -414,6 +438,7 @@ static void kvs_hnsw_v2_record_search_stats(
 		stats->search_total_us / stats->search_query_count : 0;
 	stats->last_visited_count = query_stats->visited_count;
 	stats->last_distance_compute_count = query_stats->distance_compute_count;
+	stats->last_final_top_count = query_stats->final_top_count;
 	stats->last_metric_score_call_count = query_stats->metric_score_call_count;
 	stats->last_upper_distance_compute_count =
 		query_stats->upper_distance_compute_count;
@@ -479,7 +504,7 @@ int kvs_hnsw_v2_index_search(
 	}
 
 	memset(&query_stats, 0, sizeof(query_stats));
-	total_start_us = kvs_hnsw_v2_now_us();
+	total_start_us = kvs_hnsw_v2_profile_now_us(index);
 	effective_ef = ef_search == 0 ? index->ef_search : ef_search;
 	if (effective_ef < topk) {
 		effective_ef = topk;
@@ -493,7 +518,7 @@ int kvs_hnsw_v2_index_search(
 	candidate_capacity = index->size;
 
 	ctx = &index->context_pool.contexts[0];
-	start_us = kvs_hnsw_v2_now_us();
+	start_us = kvs_hnsw_v2_profile_now_us(index);
 	ret = kvs_hnsw_v2_context_ensure(
 		ctx,
 		candidate_capacity,
@@ -503,11 +528,15 @@ int kvs_hnsw_v2_index_search(
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
-	query_stats.context_acquire_release_us += kvs_hnsw_v2_now_us() - start_us;
+	if (index->search_profiling_enabled) {
+		query_stats.context_acquire_release_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+	}
 
-	start_us = kvs_hnsw_v2_now_us();
+	start_us = kvs_hnsw_v2_profile_now_us(index);
 	kvs_hnsw_v2_next_visit_tag(index);
-	query_stats.context_acquire_release_us += kvs_hnsw_v2_now_us() - start_us;
+	if (index->search_profiling_enabled) {
+		query_stats.context_acquire_release_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+	}
 
 	entry = index->entry_point;
 	if (index->deleted_count >= index->size) {
@@ -521,7 +550,7 @@ int kvs_hnsw_v2_index_search(
 		uint8_t level;
 
 		for (level = index->max_level; level > 0; level--) {
-			start_us = kvs_hnsw_v2_now_us();
+			start_us = kvs_hnsw_v2_profile_now_us(index);
 			entry = kvs_hnsw_v2_greedy_layer(
 				index,
 				query,
@@ -529,11 +558,13 @@ int kvs_hnsw_v2_index_search(
 				level,
 				&query_stats
 			);
-			query_stats.upper_greedy_us += kvs_hnsw_v2_now_us() - start_us;
+			if (index->search_profiling_enabled) {
+				query_stats.upper_greedy_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+			}
 		}
 	}
 
-	start_us = kvs_hnsw_v2_now_us();
+	start_us = kvs_hnsw_v2_profile_now_us(index);
 	ret = kvs_hnsw_v2_search_level0(
 		index,
 		query,
@@ -547,11 +578,16 @@ int kvs_hnsw_v2_index_search(
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
 	}
-	query_stats.level0_search_us += kvs_hnsw_v2_now_us() - start_us;
+	if (index->search_profiling_enabled) {
+		query_stats.level0_search_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+	}
 
-	start_us = kvs_hnsw_v2_now_us();
+	query_stats.final_top_count = top_count;
+	start_us = kvs_hnsw_v2_profile_now_us(index);
 	kvs_hnsw_v2_heap_sort_desc(ctx->top, top_count);
-	query_stats.result_sort_us += kvs_hnsw_v2_now_us() - start_us;
+	if (index->search_profiling_enabled) {
+		query_stats.result_sort_us += kvs_hnsw_v2_profile_now_us(index) - start_us;
+	}
 	result_count = 0;
 	for (i = 0; i < top_count && result_count < topk; i++) {
 		uint32_t slot = ctx->top[i].slot;
@@ -565,8 +601,19 @@ int kvs_hnsw_v2_index_search(
 		result_count++;
 	}
 
-	query_stats.elapsed_us = kvs_hnsw_v2_now_us() - total_start_us;
+	if (index->search_profiling_enabled) {
+		query_stats.elapsed_us = kvs_hnsw_v2_profile_now_us(index) - total_start_us;
+	}
 	kvs_hnsw_v2_record_search_stats(index, &query_stats, effective_ef);
 	*out_count = result_count;
 	return KVS_VECTOR_OK;
+}
+
+void kvs_hnsw_v2_index_set_search_profiling(
+	kvs_hnsw_v2_index_t *index,
+	int enabled
+) {
+	if (index) {
+		index->search_profiling_enabled = enabled ? 1 : 0;
+	}
 }

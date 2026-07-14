@@ -51,13 +51,51 @@ typedef struct bench_core_hnsw_v2_stats_s {
     uint64_t capacity;
     uint64_t duplicate_edge_count;
     uint64_t degree_overflow_count;
+    uint64_t add_count;
+    uint64_t add_total_us;
+    uint64_t random_level_us;
+    uint64_t vector_write_us;
+    uint64_t id_slot_map_us;
+    uint64_t construction_layer_search_us;
+    uint64_t neighbor_select_us;
+    uint64_t forward_link_us;
+    uint64_t reverse_link_us;
+    uint64_t reverse_prune_us;
+    uint64_t graph_stats_refresh_us;
+    uint64_t memory_refresh_us;
+    uint64_t distance_compute_count;
+    uint64_t construction_distance_compute_count;
+    uint64_t neighbor_select_distance_compute_count;
+    uint64_t reverse_prune_distance_compute_count;
+    uint64_t reverse_prune_neighbor_select_distance_compute_count;
+    uint64_t temporary_allocation_count;
+    uint64_t temporary_free_count;
+    uint64_t temporary_allocation_bytes;
+    uint64_t reverse_prune_known_score_reuse_count;
+    uint64_t reverse_prune_pair_cache_lookup_count;
+    uint64_t reverse_prune_pair_cache_hit_count;
+    uint64_t reverse_prune_pair_cache_miss_count;
+    uint64_t reverse_prune_pair_cache_collision_count;
+    uint64_t reverse_prune_pair_score_saved_count;
+    uint64_t reserve_count;
+    uint64_t resize_count;
+    char graph_sha256[65];
 } bench_core_hnsw_v2_stats_t;
+
+typedef struct bench_core_search_work_s {
+    uint64_t distance_compute_count;
+    uint64_t visited_node_count;
+    uint64_t neighbor_scan_count;
+    uint64_t final_top_count;
+    uint64_t final_sort_us;
+} bench_core_search_work_t;
 
 int bench_core_hnsw_v2_build(size_t dim,
                              size_t count,
                              const float* base,
                              const uint64_t* insertion_order,
                              uint64_t seed,
+                             int build_profiling_enabled,
                              void** out_handle,
                              bench_core_hnsw_v2_stats_t* out_stats,
                              uint64_t* out_build_us);
@@ -69,6 +107,14 @@ int bench_core_hnsw_v2_search(void* handle,
                               size_t ef_search,
                               bench_core_hit_t* hits,
                               size_t* out_count);
+
+int bench_core_hnsw_v2_configure_search(void* handle,
+                                        int profiling_enabled,
+                                        int reuse_hit_buffer,
+                                        size_t topk);
+
+int bench_core_hnsw_v2_last_search_work(void* handle,
+                                        bench_core_search_work_t* out);
 
 void bench_core_hnsw_v2_destroy(void* handle);
 }
@@ -106,6 +152,9 @@ struct CliArgs {
     const char* source_revision = DEFAULT_SOURCE_REVISION;
     const char* ef_search_list = DEFAULT_EF_LIST;
     int topk = DEFAULT_TOPK;
+    int core_search_profiling = 0;
+    int core_hit_buffer_reuse = 0;
+    int core_build_profiling = 1;
 };
 
 struct InputsInfo {
@@ -148,6 +197,11 @@ struct SweepResult {
     int ef_search = 0;
     Quality quality;
     LatencyStats latency;
+    double avg_distance_compute_count = 0.0;
+    double avg_visited_node_count = 0.0;
+    double avg_neighbor_scan_count = 0.0;
+    double avg_final_top_count = 0.0;
+    double avg_final_sort_us = 0.0;
 };
 
 struct InsertionItem {
@@ -511,7 +565,7 @@ static void validate_vectors(const std::vector<float>& x, long long rows, int di
 static void print_usage(const char* prog) {
     fprintf(stderr,
             "usage:\n"
-            "  %s generate --cache-dir DIR --groundtruth-dir DIR --output-dir DIR [--dataset-id ID] [--top-k N] [--source-revision REV]\n"
+            "  %s generate --cache-dir DIR --groundtruth-dir DIR --output-dir DIR [--dataset-id ID] [--top-k N] [--source-revision REV] [--core-build-profiling on|off] [--core-search-profiling on|off] [--core-hit-buffer-reuse on|off]\n"
             "  %s validate --cache-dir DIR --groundtruth-dir DIR --output-dir DIR [--dataset-id ID]\n",
             prog, prog);
 }
@@ -532,6 +586,36 @@ static int parse_args(int argc, char** argv, CliArgs* args) {
             args->ef_search_list = argv[++i];
         } else if ((strcmp(argv[i], "--topk") == 0 || strcmp(argv[i], "--top-k") == 0) && i + 1 < argc) {
             args->topk = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--core-search-profiling") == 0 && i + 1 < argc) {
+            const char* value = argv[++i];
+            if (strcmp(value, "on") == 0) {
+                args->core_search_profiling = 1;
+            } else if (strcmp(value, "off") == 0) {
+                args->core_search_profiling = 0;
+            } else {
+                fprintf(stderr, "[error] --core-search-profiling must be on or off\n");
+                return -1;
+            }
+        } else if (strcmp(argv[i], "--core-build-profiling") == 0 && i + 1 < argc) {
+            const char* value = argv[++i];
+            if (strcmp(value, "on") == 0) {
+                args->core_build_profiling = 1;
+            } else if (strcmp(value, "off") == 0) {
+                args->core_build_profiling = 0;
+            } else {
+                fprintf(stderr, "[error] --core-build-profiling must be on or off\n");
+                return -1;
+            }
+        } else if (strcmp(argv[i], "--core-hit-buffer-reuse") == 0 && i + 1 < argc) {
+            const char* value = argv[++i];
+            if (strcmp(value, "on") == 0) {
+                args->core_hit_buffer_reuse = 1;
+            } else if (strcmp(value, "off") == 0) {
+                args->core_hit_buffer_reuse = 0;
+            } else {
+                fprintf(stderr, "[error] --core-hit-buffer-reuse must be on or off\n");
+                return -1;
+            }
         } else {
             fprintf(stderr, "[error] unknown argument: %s\n", argv[i]);
             return -1;
@@ -1077,6 +1161,8 @@ static std::vector<SweepResult> run_core_sweep(void* index,
                                                long long record_count,
                                                const std::vector<uint64_t>& gt_ids,
                                                const std::vector<int>& ef_list,
+                                               int profiling_enabled,
+                                               int reuse_hit_buffer,
                                                const char* out_path) {
     FILE* out = fopen(out_path, "w");
     if (!out) {
@@ -1084,6 +1170,11 @@ static std::vector<SweepResult> run_core_sweep(void* index,
     }
     std::vector<SweepResult> results;
     std::vector<bench_core_hit_t> hits((size_t)topk);
+    if (bench_core_hnsw_v2_configure_search(index, profiling_enabled, reuse_hit_buffer,
+                                            (size_t)topk) != 0) {
+        fclose(out);
+        throw std::runtime_error("cannot configure core_hnsw_v2 search measurement");
+    }
     for (int ef : ef_list) {
         for (int w = 0; w < WARMUP_ROUNDS; w++) {
             for (long long q = 0; q < qcount; q++) {
@@ -1100,6 +1191,12 @@ static std::vector<SweepResult> run_core_sweep(void* index,
         samples.reserve((size_t)qcount * MEASURED_ROUNDS);
         std::vector<std::vector<uint64_t>> first_round((size_t)qcount);
         std::vector<std::vector<float>> first_scores((size_t)qcount);
+        std::vector<bench_core_search_work_t> first_work((size_t)qcount);
+        uint64_t distance_total = 0;
+        uint64_t visited_total = 0;
+        uint64_t neighbor_total = 0;
+        uint64_t final_top_total = 0;
+        uint64_t final_sort_total_us = 0;
         for (int round = 0; round < MEASURED_ROUNDS; round++) {
             for (long long q = 0; q < qcount; q++) {
                 size_t hit_count = 0;
@@ -1111,7 +1208,19 @@ static std::vector<SweepResult> run_core_sweep(void* index,
                     fclose(out);
                     throw std::runtime_error("core_hnsw_v2 search failed");
                 }
+                bench_core_search_work_t work;
+                memset(&work, 0, sizeof(work));
+                if (bench_core_hnsw_v2_last_search_work(index, &work) != 0) {
+                    fclose(out);
+                    throw std::runtime_error("cannot read core_hnsw_v2 search work counters");
+                }
+                distance_total += work.distance_compute_count;
+                visited_total += work.visited_node_count;
+                neighbor_total += work.neighbor_scan_count;
+                final_top_total += work.final_top_count;
+                final_sort_total_us += work.final_sort_us;
                 if (round == 0) {
+                    first_work[(size_t)q] = work;
                     first_round[(size_t)q].resize((size_t)topk);
                     first_scores[(size_t)q].resize((size_t)topk);
                     for (int j = 0; j < topk; j++) {
@@ -1125,6 +1234,12 @@ static std::vector<SweepResult> run_core_sweep(void* index,
         res.ef_search = ef;
         res.latency = make_latency_stats(samples);
         res.quality = compute_quality(first_round, gt_ids, topk);
+        const double measured_queries = (double)qcount * (double)MEASURED_ROUNDS;
+        res.avg_distance_compute_count = (double)distance_total / measured_queries;
+        res.avg_visited_node_count = (double)visited_total / measured_queries;
+        res.avg_neighbor_scan_count = (double)neighbor_total / measured_queries;
+        res.avg_final_top_count = (double)final_top_total / measured_queries;
+        res.avg_final_sort_us = (double)final_sort_total_us / measured_queries;
         for (long long q = 0; q < qcount; q++) {
             validate_ann_result(first_round[(size_t)q], first_scores[(size_t)q], topk, record_count);
             const uint64_t* gt = gt_ids.data() + (size_t)q * (size_t)topk;
@@ -1157,11 +1272,17 @@ static std::vector<SweepResult> run_core_sweep(void* index,
                 }
             }
             r10 = (double)inter / (double)topk;
-            fprintf(out, "],\"recall_at_1\":%d,\"recall_at_10\":%.6f,\"top1_match\":%d,\"exact_match\":%d}\n",
+            fprintf(out, "],\"recall_at_1\":%d,\"recall_at_10\":%.6f,\"top1_match\":%d,\"exact_match\":%d,"
+                         "\"distance_compute_count\":%" PRIu64 ",\"visited_node_count\":%" PRIu64 ","
+                         "\"neighbor_scan_count\":%" PRIu64 ",\"final_top_count\":%" PRIu64 "}\n",
                     std::find(first_round[(size_t)q].begin(), first_round[(size_t)q].end(), gt[0]) != first_round[(size_t)q].end() ? 1 : 0,
                     r10,
                     first_round[(size_t)q][0] == gt[0] ? 1 : 0,
-                    exact);
+                    exact,
+                    first_work[(size_t)q].distance_compute_count,
+                    first_work[(size_t)q].visited_node_count,
+                    first_work[(size_t)q].neighbor_scan_count,
+                    first_work[(size_t)q].final_top_count);
         }
         results.push_back(res);
     }
@@ -1283,14 +1404,19 @@ static void write_sweep_array(FILE* f, const std::vector<SweepResult>& rows) {
                 "\"query_count\":%lld,\"failed_query_count\":%lld,"
                 "\"search_total_us\":%" PRIu64 ",\"search_avg_us\":%.3f,"
                 "\"p50_us\":%" PRIu64 ",\"p95_us\":%" PRIu64 ",\"p99_us\":%" PRIu64
-                ",\"min_us\":%" PRIu64 ",\"max_us\":%" PRIu64 ",\"qps\":%.3f}",
+                ",\"min_us\":%" PRIu64 ",\"max_us\":%" PRIu64 ",\"qps\":%.3f,"
+                "\"avg_distance_compute_count\":%.3f,\"avg_visited_node_count\":%.3f,"
+                "\"avg_neighbor_scan_count\":%.3f,\"avg_final_top_count\":%.3f,"
+                "\"avg_final_sort_us\":%.3f}",
                 i ? "," : "", r.ef_search, r.quality.recall_at_1, r.quality.recall_at_10,
                 r.quality.top1_match_rate, r.quality.top1_match_rate,
                 r.quality.topk_exact_match_rate, r.quality.min_per_query_recall_at_10,
                 r.quality.queries_checked, r.quality.failed_query_count,
                 r.latency.total_us, r.latency.avg_us, r.latency.p50_us,
                 r.latency.p95_us, r.latency.p99_us, r.latency.min_us,
-                r.latency.max_us, r.latency.qps);
+                r.latency.max_us, r.latency.qps, r.avg_distance_compute_count,
+                r.avg_visited_node_count, r.avg_neighbor_scan_count,
+                r.avg_final_top_count, r.avg_final_sort_us);
     }
     fprintf(f, "]");
 }
@@ -1308,7 +1434,11 @@ static void write_result_json(const char* path,
                               const char* per_query_sha,
                               long long per_query_size,
                               const char* insertion_sha,
-                              const char* created_at) {
+                              const char* created_at,
+                              int search_profiling_enabled,
+                              int hit_buffer_reused,
+                              const bench_core_hnsw_v2_stats_t* core_stats,
+                              long core_peak_rss_kb) {
     FILE* f = fopen(path, "w");
     if (!f) {
         throw std::runtime_error("cannot write result json");
@@ -1332,6 +1462,63 @@ static void write_result_json(const char* path,
     json_write_escaped(f, insertion_sha);
     fprintf(f, "},\n  \"build\": {\"build_us\": %" PRIu64 ", \"build_avg_us_per_record\": %.3f},\n",
             build_us, in.record_count ? (double)build_us / (double)in.record_count : 0.0);
+    if (core_stats) {
+        fprintf(f,
+                "  \"build_measurement\": {\"fine_grained_profiling_enabled\": %s, "
+                "\"peak_rss_kb\": %ld, \"graph_sha256\": \"%s\", "
+                "\"add_count\": %" PRIu64 ", \"add_total_us\": %" PRIu64 ", "
+                "\"random_level_us\": %" PRIu64 ", \"vector_write_us\": %" PRIu64 ", "
+                "\"id_slot_map_us\": %" PRIu64 ", "
+                "\"construction_layer_search_us\": %" PRIu64 ", "
+                "\"neighbor_select_us\": %" PRIu64 ", \"forward_link_us\": %" PRIu64 ", "
+                "\"reverse_link_us\": %" PRIu64 ", \"reverse_prune_us\": %" PRIu64 ", "
+                "\"graph_stats_refresh_us\": %" PRIu64 ", \"memory_refresh_us\": %" PRIu64 ", "
+                "\"distance_compute_count\": %" PRIu64 ", "
+                "\"construction_distance_compute_count\": %" PRIu64 ", "
+                "\"neighbor_select_distance_compute_count\": %" PRIu64 ", "
+                "\"reverse_prune_distance_compute_count\": %" PRIu64 ", "
+                "\"reverse_prune_neighbor_select_distance_compute_count\": %" PRIu64 ", "
+                "\"temporary_allocation_count\": %" PRIu64 ", "
+                "\"temporary_free_count\": %" PRIu64 ", "
+                "\"temporary_allocation_bytes\": %" PRIu64 ", "
+                "\"reserve_count\": %" PRIu64 ", \"resize_count\": %" PRIu64 ", "
+                "\"known_score_reuse_count\": %" PRIu64 ", "
+                "\"pair_cache_lookup_count\": %" PRIu64 ", "
+                "\"pair_cache_hit_count\": %" PRIu64 ", "
+                "\"pair_cache_miss_count\": %" PRIu64 ", "
+                "\"pair_cache_collision_count\": %" PRIu64 ", "
+                "\"pair_score_saved_count\": %" PRIu64 "},\n",
+                core_stats->add_total_us > 0 ? "true" : "false",
+                core_peak_rss_kb, core_stats->graph_sha256,
+                core_stats->add_count, core_stats->add_total_us,
+                core_stats->random_level_us, core_stats->vector_write_us,
+                core_stats->id_slot_map_us, core_stats->construction_layer_search_us,
+                core_stats->neighbor_select_us, core_stats->forward_link_us,
+                core_stats->reverse_link_us, core_stats->reverse_prune_us,
+                core_stats->graph_stats_refresh_us, core_stats->memory_refresh_us,
+                core_stats->distance_compute_count,
+                core_stats->construction_distance_compute_count,
+                core_stats->neighbor_select_distance_compute_count,
+                core_stats->reverse_prune_distance_compute_count,
+                core_stats->reverse_prune_neighbor_select_distance_compute_count,
+                core_stats->temporary_allocation_count,
+                core_stats->temporary_free_count,
+                core_stats->temporary_allocation_bytes,
+                core_stats->reserve_count, core_stats->resize_count,
+                core_stats->reverse_prune_known_score_reuse_count,
+                core_stats->reverse_prune_pair_cache_lookup_count,
+                core_stats->reverse_prune_pair_cache_hit_count,
+                core_stats->reverse_prune_pair_cache_miss_count,
+                core_stats->reverse_prune_pair_cache_collision_count,
+                core_stats->reverse_prune_pair_score_saved_count);
+    }
+    if (search_profiling_enabled >= 0) {
+        fprintf(f,
+                "  \"search_measurement\": {\"hot_loop_profiling_enabled\": %s, "
+                "\"wrapper_hit_buffer_reused\": %s},\n",
+                search_profiling_enabled ? "true" : "false",
+                hit_buffer_reused ? "true" : "false");
+    }
     fprintf(f,
             "  \"index_stats\": {\"memory_bytes\": %lld, \"memory_bytes_source\": ",
             memory_bytes);
@@ -1586,12 +1773,15 @@ static int cmd_generate(const CliArgs& args) {
         if (bench_core_hnsw_v2_build((size_t)in.dim, (size_t)in.record_count, base.data(),
                                      insertion_order.data(),
                                      CORE_HNSW_SEED + (uint64_t)in.record_count,
+                                     args.core_build_profiling,
                                      &core_index, &core_stats, &core_build_us) != 0) {
             throw std::runtime_error("core_hnsw_v2 build failed");
         }
+        long core_peak_rss_kb = peak_rss_kb();
         std::vector<SweepResult> core_sweep =
             run_core_sweep(core_index, queries, in.query_count, (int)in.dim, args.topk,
-                           in.record_count, gt_ids, ef_list, core_pq_tmp);
+                           in.record_count, gt_ids, ef_list, args.core_search_profiling,
+                           args.core_hit_buffer_reuse, core_pq_tmp);
 
         faiss::IndexFlatIP flat((int)in.dim);
         uint64_t flat_build_t0 = now_us();
@@ -1646,7 +1836,9 @@ static int cmd_generate(const CliArgs& args) {
         write_result_json(core_result_tmp, "core_hnsw_v2", in, core_sweep, core_build_us,
                           (long long)core_stats.memory_bytes, "estimated", 0,
                           (int)core_stats.M0, "core_hnsw_v2_per_query.jsonl", core_pq_sha,
-                          core_pq_size, insertion_sha, created_at);
+                          core_pq_size, insertion_sha, created_at,
+                          args.core_search_profiling, args.core_hit_buffer_reuse,
+                          &core_stats, core_peak_rss_kb);
         std::vector<SweepResult> flat_as_sweep(1);
         flat_as_sweep[0].ef_search = 0;
         flat_as_sweep[0].latency = flat_latency;
@@ -1659,11 +1851,12 @@ static int cmd_generate(const CliArgs& args) {
         write_result_json(flat_result_tmp, "faiss_index_flat_ip", in, flat_as_sweep, flat_build_us,
                           -1, "unsupported", serialized_index_bytes(flat), -1,
                           "faiss_flat_per_query.jsonl", flat_pq_sha, flat_pq_size,
-                          insertion_sha, created_at);
+                          insertion_sha, created_at, -1, -1, nullptr, -1);
         write_result_json(faiss_result_tmp, "faiss_index_hnsw_flat", in, faiss_sweep, faiss_build_us,
                           -1, "unsupported", serialized_index_bytes(faiss_hnsw),
                           actual_level0_capacity, "faiss_hnsw_per_query.jsonl",
-                          faiss_pq_sha, faiss_pq_size, insertion_sha, created_at);
+                          faiss_pq_sha, faiss_pq_size, insertion_sha, created_at,
+                          -1, -1, nullptr, -1);
 
         char core_result_sha[65], flat_result_sha[65], faiss_result_sha[65];
         if (sha256_file(core_result_tmp, core_result_sha) != 0 ||
