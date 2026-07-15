@@ -97,7 +97,15 @@ assert gm["params"]["topk"] == topk
 assert gm["params"]["metric"] == "ip_normalized"
 assert gm["params"]["ground_truth_source"] == "core_flat_exact_ip"
 assert gm["crosscheck"]["set_match_all"] is True
+assert gm["crosscheck"]["topk_id_match_all"] is True
 assert gm["crosscheck"]["strict_order_match_all"] is True
+assert gm["crosscheck"]["nonfinite_score_count"] == 0
+assert gm["crosscheck"]["max_score_abs_diff"] >= 0.0
+assert gm["crosscheck"]["max_score_rel_diff"] >= 0.0
+for key in ("max_abs_diff_location", "max_rel_diff_location"):
+    assert gm["crosscheck"][key]["query_row"] >= 0
+    assert gm["crosscheck"][key]["record_id"] >= 0
+    assert gm["crosscheck"][key]["rank"] >= 1
 for key in ("cache_load_us", "index_build_us", "search_total_us", "search_avg_us"):
     assert key in gm["timing_us"], f"missing timing {key}"
 

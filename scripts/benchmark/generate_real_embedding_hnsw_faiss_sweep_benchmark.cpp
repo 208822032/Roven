@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <inttypes.h>
 #include <limits>
 #include <stdexcept>
@@ -155,6 +156,7 @@ struct CliArgs {
     int core_search_profiling = 0;
     int core_hit_buffer_reuse = 0;
     int core_build_profiling = 1;
+    const char* backend = "all";
 };
 
 struct InputsInfo {
@@ -212,6 +214,12 @@ struct InsertionItem {
 static uint64_t now_us() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+static uint64_t process_cpu_us() {
+    struct timespec ts;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
     return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
 }
 
@@ -565,7 +573,7 @@ static void validate_vectors(const std::vector<float>& x, long long rows, int di
 static void print_usage(const char* prog) {
     fprintf(stderr,
             "usage:\n"
-            "  %s generate --cache-dir DIR --groundtruth-dir DIR --output-dir DIR [--dataset-id ID] [--top-k N] [--source-revision REV] [--core-build-profiling on|off] [--core-search-profiling on|off] [--core-hit-buffer-reuse on|off]\n"
+            "  %s generate --cache-dir DIR --groundtruth-dir DIR --output-dir DIR [--backend all|core|faiss|finalize] [--dataset-id ID] [--top-k N] [--source-revision REV] [--core-build-profiling on|off] [--core-search-profiling on|off] [--core-hit-buffer-reuse on|off]\n"
             "  %s validate --cache-dir DIR --groundtruth-dir DIR --output-dir DIR [--dataset-id ID]\n",
             prog, prog);
 }
@@ -580,6 +588,13 @@ static int parse_args(int argc, char** argv, CliArgs* args) {
             args->groundtruth_dir = argv[++i];
         } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
             args->output_dir = argv[++i];
+        } else if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+            args->backend = argv[++i];
+            if (strcmp(args->backend, "all") != 0 && strcmp(args->backend, "core") != 0 &&
+                strcmp(args->backend, "faiss") != 0 && strcmp(args->backend, "finalize") != 0) {
+                fprintf(stderr, "[error] --backend must be all, core, faiss, or finalize\n");
+                return -1;
+            }
         } else if (strcmp(argv[i], "--source-revision") == 0 && i + 1 < argc) {
             args->source_revision = argv[++i];
         } else if (strcmp(argv[i], "--ef-search-list") == 0 && i + 1 < argc) {
@@ -1107,11 +1122,22 @@ static int run_flat(faiss::IndexFlatIP& flat,
             flat.search(1, queries.data() + q * dim, topk, scores.data(), labels.data());
             samples.push_back(now_us() - t0);
             if (round == 0) {
+                std::vector<int> order((size_t)topk);
+                for (int j = 0; j < topk; j++) {
+                    order[(size_t)j] = j;
+                }
+                std::sort(order.begin(), order.end(), [&](int a, int b) {
+                    if (scores[(size_t)a] != scores[(size_t)b]) {
+                        return scores[(size_t)a] > scores[(size_t)b];
+                    }
+                    return labels[(size_t)a] < labels[(size_t)b];
+                });
                 first_round[(size_t)q].resize((size_t)topk);
                 first_scores[(size_t)q].resize((size_t)topk);
                 for (int j = 0; j < topk; j++) {
-                    first_round[(size_t)q][(size_t)j] = (uint64_t)labels[(size_t)j];
-                    first_scores[(size_t)q][(size_t)j] = scores[(size_t)j];
+                    int source = order[(size_t)j];
+                    first_round[(size_t)q][(size_t)j] = (uint64_t)labels[(size_t)source];
+                    first_scores[(size_t)q][(size_t)j] = scores[(size_t)source];
                 }
             }
         }
@@ -1426,6 +1452,7 @@ static void write_result_json(const char* path,
                               const InputsInfo& in,
                               const std::vector<SweepResult>& sweep,
                               uint64_t build_us,
+                              uint64_t build_cpu_us,
                               long long memory_bytes,
                               const char* memory_source,
                               size_t serialized_bytes,
@@ -1438,7 +1465,8 @@ static void write_result_json(const char* path,
                               int search_profiling_enabled,
                               int hit_buffer_reused,
                               const bench_core_hnsw_v2_stats_t* core_stats,
-                              long core_peak_rss_kb) {
+                              long process_peak_rss_kb,
+                              long long index_size) {
     FILE* f = fopen(path, "w");
     if (!f) {
         throw std::runtime_error("cannot write result json");
@@ -1460,8 +1488,10 @@ static void write_result_json(const char* path,
     fprintf(f, "], \"warmup_rounds\": %d, \"measured_rounds\": %d},\n", WARMUP_ROUNDS, MEASURED_ROUNDS);
     fprintf(f, "  \"insertion_order\": {\"path\": \"insertion_order.ids\", \"sha256\": ");
     json_write_escaped(f, insertion_sha);
-    fprintf(f, "},\n  \"build\": {\"build_us\": %" PRIu64 ", \"build_avg_us_per_record\": %.3f},\n",
-            build_us, in.record_count ? (double)build_us / (double)in.record_count : 0.0);
+    fprintf(f, "},\n  \"build\": {\"build_us\": %" PRIu64 ", \"build_cpu_us\": %" PRIu64
+               ", \"build_avg_us_per_record\": %.3f},\n",
+            build_us, build_cpu_us,
+            in.record_count ? (double)build_us / (double)in.record_count : 0.0);
     if (core_stats) {
         fprintf(f,
                 "  \"build_measurement\": {\"fine_grained_profiling_enabled\": %s, "
@@ -1489,7 +1519,7 @@ static void write_result_json(const char* path,
                 "\"pair_cache_collision_count\": %" PRIu64 ", "
                 "\"pair_score_saved_count\": %" PRIu64 "},\n",
                 core_stats->add_total_us > 0 ? "true" : "false",
-                core_peak_rss_kb, core_stats->graph_sha256,
+                process_peak_rss_kb, core_stats->graph_sha256,
                 core_stats->add_count, core_stats->add_total_us,
                 core_stats->random_level_us, core_stats->vector_write_us,
                 core_stats->id_slot_map_us, core_stats->construction_layer_search_us,
@@ -1519,14 +1549,24 @@ static void write_result_json(const char* path,
                 search_profiling_enabled ? "true" : "false",
                 hit_buffer_reused ? "true" : "false");
     }
+    fprintf(f, "  \"resource\": {\"process_peak_rss_kb\": %ld},\n", process_peak_rss_kb);
     fprintf(f,
-            "  \"index_stats\": {\"memory_bytes\": %lld, \"memory_bytes_source\": ",
-            memory_bytes);
+            "  \"index_stats\": {\"size\": %lld, \"memory_bytes\": %lld, \"memory_bytes_source\": ",
+            index_size, memory_bytes);
     json_write_escaped(f, memory_source);
     fprintf(f,
             ", \"serialized_index_bytes\": %zu, \"serialized_index_bytes_source\": \"storage_estimate\", "
             "\"actual_level0_neighbor_capacity\": %d},\n",
             serialized_bytes, actual_level0_capacity);
+    if (core_stats) {
+        fprintf(f,
+                "  \"core_graph_stats\": {\"active_count\": %" PRIu64
+                ", \"deleted_count\": %" PRIu64 ", \"capacity\": %" PRIu64
+                ", \"duplicate_edge_count\": %" PRIu64
+                ", \"degree_overflow_count\": %" PRIu64 "},\n",
+                core_stats->active_count, core_stats->deleted_count, core_stats->capacity,
+                core_stats->duplicate_edge_count, core_stats->degree_overflow_count);
+    }
     fprintf(f, "  \"sweep\": ");
     write_sweep_array(f, sweep);
     fprintf(f, ",\n  \"outputs\": {\"per_query_jsonl\": {\"path\": ");
@@ -1683,6 +1723,127 @@ static void remove_if_set(const char* p) {
     }
 }
 
+struct CheckpointOutput {
+    const char* key;
+    const char* path;
+};
+
+static int check_file_sha(const char* path, const char* expected);
+
+static std::string checkpoint_signature(const CliArgs& args,
+                                        const InputsInfo& in,
+                                        const std::vector<int>& ef_list,
+                                        const char* insertion_sha,
+                                        const char* backend) {
+    std::string raw = std::string("schema=1\nbackend=") + backend +
+                      "\ndataset=" + in.dataset_id +
+                      "\ncache_manifest=" + in.manifest_sha +
+                      "\ngroundtruth_manifest=" + in.gt_manifest_sha +
+                      "\ninsertion=" + insertion_sha +
+                      "\nsource_revision=" + args.source_revision +
+                      "\nrecords=" + std::to_string(in.record_count) +
+                      "\nqueries=" + std::to_string(in.query_count) +
+                      "\ndim=" + std::to_string(in.dim) +
+                      "\ntopk=" + std::to_string(args.topk) +
+                      "\nM=" + std::to_string(HNSW_M) +
+                      "\nM0=" + std::to_string(HNSW_M0) +
+                      "\nefC=" + std::to_string(HNSW_EFC) + "\nef=";
+    for (size_t i = 0; i < ef_list.size(); i++) {
+        raw += (i ? "," : "") + std::to_string(ef_list[i]);
+    }
+    if (strcmp(backend, "core") == 0) {
+        raw += "\nbuild_profiling=" + std::to_string(args.core_build_profiling) +
+               "\nsearch_profiling=" + std::to_string(args.core_search_profiling) +
+               "\nhit_buffer_reuse=" + std::to_string(args.core_hit_buffer_reuse);
+    }
+    unsigned char digest[32];
+    if (sha256_bytes((const unsigned char*)raw.data(), raw.size(), digest) != 0) {
+        throw std::runtime_error("cannot compute checkpoint signature");
+    }
+    char hex[65];
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    }
+    hex[64] = '\0';
+    return std::string(hex);
+}
+
+static void write_checkpoint(const char* path,
+                             const char* backend,
+                             const std::string& signature,
+                             const std::vector<CheckpointOutput>& outputs) {
+    FILE* f = fopen(path, "w");
+    if (!f) {
+        throw std::runtime_error("cannot write backend checkpoint");
+    }
+    fprintf(f, "{\n  \"schema_version\": 1,\n  \"backend\": ");
+    json_write_escaped(f, backend);
+    fprintf(f, ",\n  \"signature\": ");
+    json_write_escaped(f, signature.c_str());
+    fprintf(f, ",\n  \"outputs\": {");
+    for (size_t i = 0; i < outputs.size(); i++) {
+        char sha[65];
+        long long size = 0;
+        if (sha256_file(outputs[i].path, sha) != 0 || stat_size(outputs[i].path, &size) != 0) {
+            fclose(f);
+            throw std::runtime_error("cannot checksum backend checkpoint output");
+        }
+        fprintf(f, "%s\n    ", i ? "," : "");
+        json_write_escaped(f, outputs[i].key);
+        fprintf(f, ": {\"path\": ");
+        std::string name = std::filesystem::path(outputs[i].path).filename().string();
+        json_write_escaped(f, name.c_str());
+        fprintf(f, ", \"sha256\": ");
+        json_write_escaped(f, sha);
+        fprintf(f, ", \"size_bytes\": %lld}", size);
+    }
+    fprintf(f, "\n  }\n}\n");
+    int err = (fflush(f) != 0 || ferror(f));
+    if (fclose(f) != 0) {
+        err = 1;
+    }
+    if (err) {
+        throw std::runtime_error("write backend checkpoint failed");
+    }
+}
+
+static int checkpoint_valid(const char* marker_path,
+                            const char* backend,
+                            const std::string& signature,
+                            const std::vector<CheckpointOutput>& outputs) {
+    std::string marker = read_whole_file(marker_path);
+    char value[128] = {0};
+    if (marker.empty() || json_get_string(marker.c_str(), "backend", value, sizeof(value)) != 0 ||
+        strcmp(value, backend) != 0) {
+        fprintf(stderr, "[checkpoint] invalid marker backend: %s\n", marker_path);
+        return 0;
+    }
+    if (json_get_string(marker.c_str(), "signature", value, sizeof(value)) != 0 ||
+        signature != value) {
+        fprintf(stderr, "[checkpoint] signature mismatch: %s\n", marker_path);
+        return 0;
+    }
+    std::string blocks = json_extract_object(marker.c_str(), "outputs");
+    for (const CheckpointOutput& output : outputs) {
+        std::string block = json_extract_object(blocks.c_str(), output.key);
+        char expected[80] = {0};
+        if (block.empty() || json_get_string(block.c_str(), "sha256", expected, sizeof(expected)) != 0 ||
+            check_file_sha(output.path, expected) != 0) {
+            fprintf(stderr, "[checkpoint] output mismatch: %s\n", output.path);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void clear_incomplete_outputs(const std::vector<CheckpointOutput>& outputs) {
+    for (const CheckpointOutput& output : outputs) {
+        remove_if_set(output.path);
+    }
+}
+
+static int cmd_validate(const CliArgs& args);
+
 static int cmd_generate(const CliArgs& args) {
     try {
         setenv("OMP_NUM_THREADS", "1", 1);
@@ -1693,27 +1854,41 @@ static int cmd_generate(const CliArgs& args) {
         std::vector<int> ef_list = parse_ef_list(args.ef_search_list);
         char parent[8192];
         dirname_of(args.output_dir, parent, sizeof(parent));
-        if (mkdir_p(parent) != 0 || mkdir_p(args.output_dir) != 0) {
-            throw std::runtime_error("failed to create output directory");
+        if (mkdir_p(parent) != 0) {
+            throw std::runtime_error("failed to create output parent directory");
+        }
+        if (path_exists(args.output_dir)) {
+            CliArgs validate_args = args;
+            if (cmd_validate(validate_args) == 0) {
+                fprintf(stdout,
+                        "[publish] output_dir=%s status=unchanged core_outputs_identical=true\n",
+                        args.output_dir);
+                return 0;
+            }
+            throw std::runtime_error("output directory already exists but is not a valid artifact");
+        }
+
+        std::string work_dir = std::string(args.output_dir) + ".work";
+        if (mkdir_p(work_dir.c_str()) != 0) {
+            throw std::runtime_error("failed to create backend work directory");
         }
 
         char insertion_path[8192], insertion_manifest_path[8192];
         char core_result_path[8192], core_pq_path[8192];
         char flat_result_path[8192], flat_pq_path[8192];
         char faiss_result_path[8192], faiss_pq_path[8192], manifest_path[8192];
-        snprintf(insertion_path, sizeof(insertion_path), "%s/insertion_order.ids", args.output_dir);
-        snprintf(insertion_manifest_path, sizeof(insertion_manifest_path), "%s/insertion_order.manifest.json", args.output_dir);
-        snprintf(core_result_path, sizeof(core_result_path), "%s/core_hnsw_v2_results.json", args.output_dir);
-        snprintf(core_pq_path, sizeof(core_pq_path), "%s/core_hnsw_v2_per_query.jsonl", args.output_dir);
-        snprintf(flat_result_path, sizeof(flat_result_path), "%s/faiss_flat_results.json", args.output_dir);
-        snprintf(flat_pq_path, sizeof(flat_pq_path), "%s/faiss_flat_per_query.jsonl", args.output_dir);
-        snprintf(faiss_result_path, sizeof(faiss_result_path), "%s/faiss_hnsw_results.json", args.output_dir);
-        snprintf(faiss_pq_path, sizeof(faiss_pq_path), "%s/faiss_hnsw_per_query.jsonl", args.output_dir);
-        snprintf(manifest_path, sizeof(manifest_path), "%s/benchmark_manifest.json", args.output_dir);
-
-        int had_existing = path_exists(insertion_path) || path_exists(core_pq_path) ||
-                           path_exists(flat_pq_path) || path_exists(faiss_pq_path) ||
-                           path_exists(manifest_path);
+        char core_marker_path[8192], faiss_marker_path[8192];
+        snprintf(insertion_path, sizeof(insertion_path), "%s/insertion_order.ids", work_dir.c_str());
+        snprintf(insertion_manifest_path, sizeof(insertion_manifest_path), "%s/insertion_order.manifest.json", work_dir.c_str());
+        snprintf(core_result_path, sizeof(core_result_path), "%s/core_hnsw_v2_results.json", work_dir.c_str());
+        snprintf(core_pq_path, sizeof(core_pq_path), "%s/core_hnsw_v2_per_query.jsonl", work_dir.c_str());
+        snprintf(flat_result_path, sizeof(flat_result_path), "%s/faiss_flat_results.json", work_dir.c_str());
+        snprintf(flat_pq_path, sizeof(flat_pq_path), "%s/faiss_flat_per_query.jsonl", work_dir.c_str());
+        snprintf(faiss_result_path, sizeof(faiss_result_path), "%s/faiss_hnsw_results.json", work_dir.c_str());
+        snprintf(faiss_pq_path, sizeof(faiss_pq_path), "%s/faiss_hnsw_per_query.jsonl", work_dir.c_str());
+        snprintf(manifest_path, sizeof(manifest_path), "%s/benchmark_manifest.json", work_dir.c_str());
+        snprintf(core_marker_path, sizeof(core_marker_path), "%s/.core.checkpoint.json", work_dir.c_str());
+        snprintf(faiss_marker_path, sizeof(faiss_marker_path), "%s/.faiss.checkpoint.json", work_dir.c_str());
 
         InputsInfo in;
         if (verify_inputs(args, &in) != 0) {
@@ -1727,6 +1902,7 @@ static int cmd_generate(const CliArgs& args) {
                 in.record_count, in.query_count, in.dim, args.topk);
 
         char path[8192];
+        long rss_before = peak_rss_kb();
         uint64_t load_t0 = now_us();
         snprintf(path, sizeof(path), "%s/embeddings.f32", args.cache_dir);
         std::vector<float> base = load_f32(path, (size_t)in.record_count, (int)in.dim);
@@ -1744,131 +1920,221 @@ static int cmd_generate(const CliArgs& args) {
             generate_insertion_order(args.cache_dir, args.source_revision, in.record_count);
 
         char insertion_tmp[8192];
-        snprintf(insertion_tmp, sizeof(insertion_tmp), "%s/.tmp.insertion_order.%d.ids", args.output_dir, (int)getpid());
+        snprintf(insertion_tmp, sizeof(insertion_tmp), "%s/.tmp.insertion_order.%d.ids", work_dir.c_str(), (int)getpid());
         write_insertion_order(insertion_tmp, insertion_order);
         validate_insertion_order_file(insertion_tmp, in.record_count);
         char insertion_sha[65];
         if (sha256_file(insertion_tmp, insertion_sha) != 0) {
             throw std::runtime_error("cannot checksum insertion order");
         }
-
-        char core_pq_tmp[8192], flat_pq_tmp[8192], faiss_pq_tmp[8192];
-        char core_result_tmp[8192], flat_result_tmp[8192], faiss_result_tmp[8192];
-        char insertion_manifest_tmp[8192], manifest_tmp[8192];
-        snprintf(core_pq_tmp, sizeof(core_pq_tmp), "%s/.tmp.core_hnsw_v2_per_query.%d.jsonl", args.output_dir, (int)getpid());
-        snprintf(flat_pq_tmp, sizeof(flat_pq_tmp), "%s/.tmp.faiss_flat_per_query.%d.jsonl", args.output_dir, (int)getpid());
-        snprintf(faiss_pq_tmp, sizeof(faiss_pq_tmp), "%s/.tmp.faiss_hnsw_per_query.%d.jsonl", args.output_dir, (int)getpid());
-        snprintf(core_result_tmp, sizeof(core_result_tmp), "%s/.tmp.core_hnsw_v2_results.%d.json", args.output_dir, (int)getpid());
-        snprintf(flat_result_tmp, sizeof(flat_result_tmp), "%s/.tmp.faiss_flat_results.%d.json", args.output_dir, (int)getpid());
-        snprintf(faiss_result_tmp, sizeof(faiss_result_tmp), "%s/.tmp.faiss_hnsw_results.%d.json", args.output_dir, (int)getpid());
-        snprintf(insertion_manifest_tmp, sizeof(insertion_manifest_tmp), "%s/.tmp.insertion_order.manifest.%d.json", args.output_dir, (int)getpid());
-        snprintf(manifest_tmp, sizeof(manifest_tmp), "%s/.tmp.benchmark_manifest.%d.json", args.output_dir, (int)getpid());
-
-        long rss_before = peak_rss_kb();
-
-        void* core_index = nullptr;
-        bench_core_hnsw_v2_stats_t core_stats;
-        memset(&core_stats, 0, sizeof(core_stats));
-        uint64_t core_build_us = 0;
-        if (bench_core_hnsw_v2_build((size_t)in.dim, (size_t)in.record_count, base.data(),
-                                     insertion_order.data(),
-                                     CORE_HNSW_SEED + (uint64_t)in.record_count,
-                                     args.core_build_profiling,
-                                     &core_index, &core_stats, &core_build_us) != 0) {
-            throw std::runtime_error("core_hnsw_v2 build failed");
+        if (path_exists(insertion_path)) {
+            validate_insertion_order_file(insertion_path, in.record_count);
+            if (!same_file_sha256(insertion_tmp, insertion_path)) {
+                throw std::runtime_error("checkpoint insertion order differs from deterministic input");
+            }
+            remove_if_set(insertion_tmp);
+        } else if (rename(insertion_tmp, insertion_path) != 0) {
+            throw std::runtime_error("failed to publish checkpoint insertion order");
         }
-        long core_peak_rss_kb = peak_rss_kb();
-        std::vector<SweepResult> core_sweep =
-            run_core_sweep(core_index, queries, in.query_count, (int)in.dim, args.topk,
-                           in.record_count, gt_ids, ef_list, args.core_search_profiling,
-                           args.core_hit_buffer_reuse, core_pq_tmp);
 
-        faiss::IndexFlatIP flat((int)in.dim);
-        uint64_t flat_build_t0 = now_us();
-        flat.add(in.record_count, base.data());
-        uint64_t flat_build_us = now_us() - flat_build_t0;
-        LatencyStats flat_latency;
-        int flat_strict_rank = 0;
-        double flat_max_score_diff = 0.0;
-        if (run_flat(flat, queries, in.query_count, (int)in.dim, args.topk, in.record_count,
-                     gt_ids, gt_scores, flat_pq_tmp, &flat_latency, &flat_strict_rank,
-                     &flat_max_score_diff) != 0 || !flat_strict_rank) {
+        std::vector<CheckpointOutput> core_outputs = {
+            {"result", core_result_path}, {"per_query", core_pq_path}};
+        std::vector<CheckpointOutput> faiss_outputs = {
+            {"flat_result", flat_result_path}, {"flat_per_query", flat_pq_path},
+            {"hnsw_result", faiss_result_path}, {"hnsw_per_query", faiss_pq_path}};
+        std::string core_signature = checkpoint_signature(args, in, ef_list, insertion_sha, "core");
+        std::string faiss_signature = checkpoint_signature(args, in, ef_list, insertion_sha, "faiss");
+        bool need_core_checkpoint = strcmp(args.backend, "faiss") != 0;
+        bool need_faiss_checkpoint = strcmp(args.backend, "core") != 0;
+        int core_ready = need_core_checkpoint && path_exists(core_marker_path) &&
+                         checkpoint_valid(core_marker_path, "core", core_signature, core_outputs);
+        int faiss_ready = need_faiss_checkpoint && path_exists(faiss_marker_path) &&
+                          checkpoint_valid(faiss_marker_path, "faiss", faiss_signature, faiss_outputs);
+        if (need_core_checkpoint && path_exists(core_marker_path) && !core_ready) {
+            throw std::runtime_error("core checkpoint provenance or checksum mismatch");
+        }
+        if (need_faiss_checkpoint && path_exists(faiss_marker_path) && !faiss_ready) {
+            throw std::runtime_error("FAISS checkpoint provenance or checksum mismatch");
+        }
+
+        bool run_core = strcmp(args.backend, "all") == 0 || strcmp(args.backend, "core") == 0;
+        bool run_faiss = strcmp(args.backend, "all") == 0 || strcmp(args.backend, "faiss") == 0;
+        if (run_core && !core_ready) {
+            clear_incomplete_outputs(core_outputs);
+            char core_pq_tmp[8192], core_result_tmp[8192], core_marker_tmp[8192];
+            snprintf(core_pq_tmp, sizeof(core_pq_tmp), "%s/.tmp.core_hnsw_v2_per_query.%d.jsonl", work_dir.c_str(), (int)getpid());
+            snprintf(core_result_tmp, sizeof(core_result_tmp), "%s/.tmp.core_hnsw_v2_results.%d.json", work_dir.c_str(), (int)getpid());
+            snprintf(core_marker_tmp, sizeof(core_marker_tmp), "%s/.tmp.core.checkpoint.%d.json", work_dir.c_str(), (int)getpid());
+            void* core_index = nullptr;
+            bench_core_hnsw_v2_stats_t core_stats;
+            memset(&core_stats, 0, sizeof(core_stats));
+            uint64_t core_build_us = 0;
+            uint64_t core_cpu_t0 = process_cpu_us();
+            if (bench_core_hnsw_v2_build((size_t)in.dim, (size_t)in.record_count, base.data(),
+                                         insertion_order.data(),
+                                         CORE_HNSW_SEED + (uint64_t)in.record_count,
+                                         args.core_build_profiling,
+                                         &core_index, &core_stats, &core_build_us) != 0) {
+                throw std::runtime_error("core_hnsw_v2 build failed");
+            }
+            uint64_t core_build_cpu_us = process_cpu_us() - core_cpu_t0;
+            long core_peak_rss_kb = peak_rss_kb();
+            std::vector<SweepResult> core_sweep =
+                run_core_sweep(core_index, queries, in.query_count, (int)in.dim, args.topk,
+                               in.record_count, gt_ids, ef_list, args.core_search_profiling,
+                               args.core_hit_buffer_reuse, core_pq_tmp);
+            char core_pq_sha[65];
+            long long core_pq_size = 0;
+            if (sha256_file(core_pq_tmp, core_pq_sha) != 0 ||
+                stat_size(core_pq_tmp, &core_pq_size) != 0) {
+                bench_core_hnsw_v2_destroy(core_index);
+                throw std::runtime_error("cannot checksum core per-query output");
+            }
+            char created_at[64];
+            iso8601_utc_now(created_at, sizeof(created_at));
+            write_result_json(core_result_tmp, "core_hnsw_v2", in, core_sweep, core_build_us,
+                              core_build_cpu_us, (long long)core_stats.memory_bytes, "estimated", 0,
+                              (int)core_stats.M0, "core_hnsw_v2_per_query.jsonl", core_pq_sha,
+                              core_pq_size, insertion_sha, created_at,
+                              args.core_search_profiling, args.core_hit_buffer_reuse,
+                              &core_stats, core_peak_rss_kb, (long long)core_stats.size);
             bench_core_hnsw_v2_destroy(core_index);
-            throw std::runtime_error("FAISS flat parity failed");
+            if (rename(core_pq_tmp, core_pq_path) != 0 ||
+                rename(core_result_tmp, core_result_path) != 0) {
+                throw std::runtime_error("failed to publish core checkpoint outputs");
+            }
+            write_checkpoint(core_marker_tmp, "core", core_signature, core_outputs);
+            if (rename(core_marker_tmp, core_marker_path) != 0) {
+                throw std::runtime_error("failed to publish core checkpoint marker");
+            }
+            core_ready = 1;
+            fprintf(stdout, "[checkpoint] backend=core status=complete work_dir=%s\n", work_dir.c_str());
+        } else if (run_core) {
+            fprintf(stdout, "[checkpoint] backend=core status=reused work_dir=%s\n", work_dir.c_str());
         }
 
-        faiss::IndexHNSWFlat faiss_hnsw((int)in.dim, HNSW_M, faiss::METRIC_INNER_PRODUCT);
-        faiss_hnsw.hnsw.rng = faiss::RandomGenerator(12345);
-        faiss_hnsw.hnsw.efConstruction = HNSW_EFC;
-        faiss_hnsw.hnsw.efSearch = ef_list.back();
-        int actual_level0_capacity = faiss_hnsw.hnsw.nb_neighbors(0);
-        std::vector<float> permuted((size_t)in.record_count * (size_t)in.dim);
-        for (size_t pos = 0; pos < insertion_order.size(); pos++) {
-            uint64_t rid = insertion_order[pos];
-            memcpy(permuted.data() + pos * (size_t)in.dim,
-                   base.data() + rid * (size_t)in.dim,
-                   (size_t)in.dim * sizeof(float));
+        if (run_faiss && !faiss_ready) {
+            clear_incomplete_outputs(faiss_outputs);
+            char flat_pq_tmp[8192], faiss_pq_tmp[8192], flat_result_tmp[8192];
+            char faiss_result_tmp[8192], faiss_marker_tmp[8192];
+            snprintf(flat_pq_tmp, sizeof(flat_pq_tmp), "%s/.tmp.faiss_flat_per_query.%d.jsonl", work_dir.c_str(), (int)getpid());
+            snprintf(faiss_pq_tmp, sizeof(faiss_pq_tmp), "%s/.tmp.faiss_hnsw_per_query.%d.jsonl", work_dir.c_str(), (int)getpid());
+            snprintf(flat_result_tmp, sizeof(flat_result_tmp), "%s/.tmp.faiss_flat_results.%d.json", work_dir.c_str(), (int)getpid());
+            snprintf(faiss_result_tmp, sizeof(faiss_result_tmp), "%s/.tmp.faiss_hnsw_results.%d.json", work_dir.c_str(), (int)getpid());
+            snprintf(faiss_marker_tmp, sizeof(faiss_marker_tmp), "%s/.tmp.faiss.checkpoint.%d.json", work_dir.c_str(), (int)getpid());
+
+            faiss::IndexFlatIP flat((int)in.dim);
+            uint64_t flat_cpu_t0 = process_cpu_us();
+            uint64_t flat_build_t0 = now_us();
+            flat.add(in.record_count, base.data());
+            uint64_t flat_build_us = now_us() - flat_build_t0;
+            uint64_t flat_build_cpu_us = process_cpu_us() - flat_cpu_t0;
+            LatencyStats flat_latency;
+            int flat_strict_rank = 0;
+            double flat_max_score_diff = 0.0;
+            if (run_flat(flat, queries, in.query_count, (int)in.dim, args.topk, in.record_count,
+                         gt_ids, gt_scores, flat_pq_tmp, &flat_latency, &flat_strict_rank,
+                         &flat_max_score_diff) != 0 || !flat_strict_rank) {
+                throw std::runtime_error("FAISS flat parity failed");
+            }
+
+            faiss::IndexHNSWFlat faiss_hnsw((int)in.dim, HNSW_M, faiss::METRIC_INNER_PRODUCT);
+            faiss_hnsw.hnsw.rng = faiss::RandomGenerator(12345);
+            faiss_hnsw.hnsw.efConstruction = HNSW_EFC;
+            faiss_hnsw.hnsw.efSearch = ef_list.back();
+            int actual_level0_capacity = faiss_hnsw.hnsw.nb_neighbors(0);
+            std::vector<float> permuted((size_t)in.record_count * (size_t)in.dim);
+            for (size_t pos = 0; pos < insertion_order.size(); pos++) {
+                uint64_t rid = insertion_order[pos];
+                memcpy(permuted.data() + pos * (size_t)in.dim,
+                       base.data() + rid * (size_t)in.dim,
+                       (size_t)in.dim * sizeof(float));
+            }
+            uint64_t faiss_cpu_t0 = process_cpu_us();
+            uint64_t faiss_build_t0 = now_us();
+            faiss_hnsw.add(in.record_count, permuted.data());
+            uint64_t faiss_build_us = now_us() - faiss_build_t0;
+            uint64_t faiss_build_cpu_us = process_cpu_us() - faiss_cpu_t0;
+            long faiss_peak_rss_kb = peak_rss_kb();
+            std::vector<SweepResult> faiss_sweep =
+                run_faiss_hnsw_sweep(faiss_hnsw, queries, insertion_order, in.query_count,
+                                     (int)in.dim, args.topk, in.record_count, gt_ids,
+                                     ef_list, faiss_pq_tmp);
+
+            char flat_pq_sha[65], faiss_pq_sha[65];
+            long long flat_pq_size = 0, faiss_pq_size = 0;
+            if (sha256_file(flat_pq_tmp, flat_pq_sha) != 0 ||
+                sha256_file(faiss_pq_tmp, faiss_pq_sha) != 0 ||
+                stat_size(flat_pq_tmp, &flat_pq_size) != 0 ||
+                stat_size(faiss_pq_tmp, &faiss_pq_size) != 0) {
+                throw std::runtime_error("cannot checksum FAISS per-query outputs");
+            }
+            char created_at[64];
+            iso8601_utc_now(created_at, sizeof(created_at));
+            std::vector<SweepResult> flat_as_sweep(1);
+            flat_as_sweep[0].ef_search = 0;
+            flat_as_sweep[0].latency = flat_latency;
+            flat_as_sweep[0].quality.recall_at_1 = 1.0;
+            flat_as_sweep[0].quality.recall_at_10 = 1.0;
+            flat_as_sweep[0].quality.top1_match_rate = 1.0;
+            flat_as_sweep[0].quality.topk_exact_match_rate = 1.0;
+            flat_as_sweep[0].quality.min_per_query_recall_at_10 = 1.0;
+            flat_as_sweep[0].quality.queries_checked = in.query_count;
+            write_result_json(flat_result_tmp, "faiss_index_flat_ip", in, flat_as_sweep,
+                              flat_build_us, flat_build_cpu_us, -1, "unsupported",
+                              serialized_index_bytes(flat), -1, "faiss_flat_per_query.jsonl",
+                              flat_pq_sha, flat_pq_size, insertion_sha, created_at,
+                              -1, -1, nullptr, faiss_peak_rss_kb, flat.ntotal);
+            write_result_json(faiss_result_tmp, "faiss_index_hnsw_flat", in, faiss_sweep,
+                              faiss_build_us, faiss_build_cpu_us, -1, "unsupported",
+                              serialized_index_bytes(faiss_hnsw), actual_level0_capacity,
+                              "faiss_hnsw_per_query.jsonl", faiss_pq_sha, faiss_pq_size,
+                              insertion_sha, created_at, -1, -1, nullptr,
+                              faiss_peak_rss_kb, faiss_hnsw.ntotal);
+            if (rename(flat_pq_tmp, flat_pq_path) != 0 ||
+                rename(flat_result_tmp, flat_result_path) != 0 ||
+                rename(faiss_pq_tmp, faiss_pq_path) != 0 ||
+                rename(faiss_result_tmp, faiss_result_path) != 0) {
+                throw std::runtime_error("failed to publish FAISS checkpoint outputs");
+            }
+            write_checkpoint(faiss_marker_tmp, "faiss", faiss_signature, faiss_outputs);
+            if (rename(faiss_marker_tmp, faiss_marker_path) != 0) {
+                throw std::runtime_error("failed to publish FAISS checkpoint marker");
+            }
+            faiss_ready = 1;
+            fprintf(stdout,
+                    "[flat] strict_parity=yes max_score_abs_diff=%.9g build_us=%" PRIu64
+                    " avg_us=%.3f p95=%" PRIu64 "\n",
+                    flat_max_score_diff, flat_build_us, flat_latency.avg_us, flat_latency.p95_us);
+            fprintf(stdout, "[checkpoint] backend=faiss status=complete work_dir=%s\n", work_dir.c_str());
+        } else if (run_faiss) {
+            fprintf(stdout, "[checkpoint] backend=faiss status=reused work_dir=%s\n", work_dir.c_str());
         }
-        uint64_t faiss_build_t0 = now_us();
-        faiss_hnsw.add(in.record_count, permuted.data());
-        uint64_t faiss_build_us = now_us() - faiss_build_t0;
-        std::vector<SweepResult> faiss_sweep =
-            run_faiss_hnsw_sweep(faiss_hnsw, queries, insertion_order, in.query_count,
-                                 (int)in.dim, args.topk, in.record_count, gt_ids,
-                                 ef_list, faiss_pq_tmp);
 
-        long rss_after = peak_rss_kb();
+        if (strcmp(args.backend, "core") == 0 || strcmp(args.backend, "faiss") == 0) {
+            return 0;
+        }
+        if (!core_ready || !faiss_ready) {
+            throw std::runtime_error("finalize requires valid core and FAISS checkpoints");
+        }
 
-        char created_at[64];
-        iso8601_utc_now(created_at, sizeof(created_at));
         char core_pq_sha[65], flat_pq_sha[65], faiss_pq_sha[65];
-        long long core_pq_size = 0, flat_pq_size = 0, faiss_pq_size = 0;
-        if (sha256_file(core_pq_tmp, core_pq_sha) != 0 ||
-            sha256_file(flat_pq_tmp, flat_pq_sha) != 0 ||
-            sha256_file(faiss_pq_tmp, faiss_pq_sha) != 0 ||
-            stat_size(core_pq_tmp, &core_pq_size) != 0 ||
-            stat_size(flat_pq_tmp, &flat_pq_size) != 0 ||
-            stat_size(faiss_pq_tmp, &faiss_pq_size) != 0) {
-            bench_core_hnsw_v2_destroy(core_index);
-            throw std::runtime_error("cannot checksum per-query outputs");
-        }
-
-        write_result_json(core_result_tmp, "core_hnsw_v2", in, core_sweep, core_build_us,
-                          (long long)core_stats.memory_bytes, "estimated", 0,
-                          (int)core_stats.M0, "core_hnsw_v2_per_query.jsonl", core_pq_sha,
-                          core_pq_size, insertion_sha, created_at,
-                          args.core_search_profiling, args.core_hit_buffer_reuse,
-                          &core_stats, core_peak_rss_kb);
-        std::vector<SweepResult> flat_as_sweep(1);
-        flat_as_sweep[0].ef_search = 0;
-        flat_as_sweep[0].latency = flat_latency;
-        flat_as_sweep[0].quality.recall_at_1 = 1.0;
-        flat_as_sweep[0].quality.recall_at_10 = 1.0;
-        flat_as_sweep[0].quality.top1_match_rate = 1.0;
-        flat_as_sweep[0].quality.topk_exact_match_rate = 1.0;
-        flat_as_sweep[0].quality.min_per_query_recall_at_10 = 1.0;
-        flat_as_sweep[0].quality.queries_checked = in.query_count;
-        write_result_json(flat_result_tmp, "faiss_index_flat_ip", in, flat_as_sweep, flat_build_us,
-                          -1, "unsupported", serialized_index_bytes(flat), -1,
-                          "faiss_flat_per_query.jsonl", flat_pq_sha, flat_pq_size,
-                          insertion_sha, created_at, -1, -1, nullptr, -1);
-        write_result_json(faiss_result_tmp, "faiss_index_hnsw_flat", in, faiss_sweep, faiss_build_us,
-                          -1, "unsupported", serialized_index_bytes(faiss_hnsw),
-                          actual_level0_capacity, "faiss_hnsw_per_query.jsonl",
-                          faiss_pq_sha, faiss_pq_size, insertion_sha, created_at,
-                          -1, -1, nullptr, -1);
-
         char core_result_sha[65], flat_result_sha[65], faiss_result_sha[65];
-        if (sha256_file(core_result_tmp, core_result_sha) != 0 ||
-            sha256_file(flat_result_tmp, flat_result_sha) != 0 ||
-            sha256_file(faiss_result_tmp, faiss_result_sha) != 0) {
-            bench_core_hnsw_v2_destroy(core_index);
-            throw std::runtime_error("cannot checksum result json");
+        if (sha256_file(core_pq_path, core_pq_sha) != 0 ||
+            sha256_file(flat_pq_path, flat_pq_sha) != 0 ||
+            sha256_file(faiss_pq_path, faiss_pq_sha) != 0 ||
+            sha256_file(core_result_path, core_result_sha) != 0 ||
+            sha256_file(flat_result_path, flat_result_sha) != 0 ||
+            sha256_file(faiss_result_path, faiss_result_sha) != 0) {
+            throw std::runtime_error("cannot checksum finalized backend outputs");
         }
+
+        char insertion_manifest_tmp[8192], manifest_tmp[8192];
+        snprintf(insertion_manifest_tmp, sizeof(insertion_manifest_tmp), "%s/.tmp.insertion_order.manifest.%d.json", work_dir.c_str(), (int)getpid());
+        snprintf(manifest_tmp, sizeof(manifest_tmp), "%s/.tmp.benchmark_manifest.%d.json", work_dir.c_str(), (int)getpid());
 
         FILE* im = fopen(insertion_manifest_tmp, "w");
         if (!im) {
-            bench_core_hnsw_v2_destroy(core_index);
             throw std::runtime_error("cannot write insertion manifest");
         }
         fprintf(im, "{\n  \"schema_version\": 1,\n  \"algorithm\": ");
@@ -1883,64 +2149,38 @@ static int cmd_generate(const CliArgs& args) {
             im_err = 1;
         }
         if (im_err) {
-            bench_core_hnsw_v2_destroy(core_index);
             throw std::runtime_error("write insertion manifest failed");
         }
 
+        char created_at[64];
+        iso8601_utc_now(created_at, sizeof(created_at));
         std::string cpu = cpu_model_name();
         long logical_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        long rss_after = peak_rss_kb();
         write_manifest_json(manifest_tmp, args, in, ef_list, cache_load_us, insertion_sha,
                             core_result_sha, flat_result_sha, faiss_result_sha,
                             core_pq_sha, flat_pq_sha, faiss_pq_sha,
                             created_at, cpu.c_str(), logical_cpus,
                             rss_before, rss_after);
-
-        bench_core_hnsw_v2_destroy(core_index);
-
-        if (had_existing) {
-            if (same_file_sha256(insertion_tmp, insertion_path) &&
-                same_file_sha256(core_pq_tmp, core_pq_path) &&
-                same_file_sha256(flat_pq_tmp, flat_pq_path) &&
-                same_file_sha256(faiss_pq_tmp, faiss_pq_path)) {
-                remove_if_set(insertion_tmp);
-                remove_if_set(core_pq_tmp);
-                remove_if_set(flat_pq_tmp);
-                remove_if_set(faiss_pq_tmp);
-                remove_if_set(core_result_tmp);
-                remove_if_set(flat_result_tmp);
-                remove_if_set(faiss_result_tmp);
-                remove_if_set(insertion_manifest_tmp);
-                remove_if_set(manifest_tmp);
-                fprintf(stdout, "[publish] output_dir=%s status=unchanged core_outputs_identical=true\n", args.output_dir);
-                return 0;
-            }
-            throw std::runtime_error("existing deterministic outputs differ");
-        }
-
-        if (rename(insertion_tmp, insertion_path) != 0 ||
-            rename(insertion_manifest_tmp, insertion_manifest_path) != 0 ||
-            rename(core_pq_tmp, core_pq_path) != 0 ||
-            rename(core_result_tmp, core_result_path) != 0 ||
-            rename(flat_pq_tmp, flat_pq_path) != 0 ||
-            rename(flat_result_tmp, flat_result_path) != 0 ||
-            rename(faiss_pq_tmp, faiss_pq_path) != 0 ||
-            rename(faiss_result_tmp, faiss_result_path) != 0 ||
+        if (rename(insertion_manifest_tmp, insertion_manifest_path) != 0 ||
             rename(manifest_tmp, manifest_path) != 0) {
-            throw std::runtime_error("failed to publish outputs");
+            throw std::runtime_error("failed to stage final manifests");
         }
 
-        fprintf(stdout, "[flat] strict_parity=yes max_score_abs_diff=%.9g build_us=%" PRIu64 " avg_us=%.3f p95=%" PRIu64 "\n",
-                flat_max_score_diff, flat_build_us, flat_latency.avg_us, flat_latency.p95_us);
-        for (const SweepResult& r : core_sweep) {
-            fprintf(stdout, "[core_hnsw_v2] ef=%d recall@10=%.4f avg_us=%.3f p95=%" PRIu64 " qps=%.3f\n",
-                    r.ef_search, r.quality.recall_at_10, r.latency.avg_us, r.latency.p95_us, r.latency.qps);
+        CliArgs validate_args = args;
+        validate_args.output_dir = work_dir.c_str();
+        if (cmd_validate(validate_args) != 0) {
+            throw std::runtime_error("staged artifact validation failed");
         }
-        for (const SweepResult& r : faiss_sweep) {
-            fprintf(stdout, "[faiss_hnsw] ef=%d recall@10=%.4f avg_us=%.3f p95=%" PRIu64 " qps=%.3f\n",
-                    r.ef_search, r.quality.recall_at_10, r.latency.avg_us, r.latency.p95_us, r.latency.qps);
+        remove_if_set(core_marker_path);
+        remove_if_set(faiss_marker_path);
+        for (const auto& entry : std::filesystem::directory_iterator(work_dir)) {
+            if (entry.path().filename().string().rfind(".tmp.", 0) == 0) {
+                std::filesystem::remove(entry.path());
+            }
         }
+        std::filesystem::rename(work_dir, args.output_dir);
         fprintf(stdout, "[publish] output_dir=%s insertion_sha=%s\n", args.output_dir, insertion_sha);
-        (void)cache_load_us;
         return 0;
     } catch (const std::exception& e) {
         fprintf(stderr, "[error] %s\n", e.what());
@@ -1986,6 +2226,9 @@ static int cmd_validate(const CliArgs& args) {
             {"core_hnsw_v2_results_json", "core_hnsw_v2_results.json"},
             {"faiss_flat_results_json", "faiss_flat_results.json"},
             {"faiss_hnsw_results_json", "faiss_hnsw_results.json"},
+            {"core_hnsw_v2_per_query_jsonl", "core_hnsw_v2_per_query.jsonl"},
+            {"faiss_flat_per_query_jsonl", "faiss_flat_per_query.jsonl"},
+            {"faiss_hnsw_per_query_jsonl", "faiss_hnsw_per_query.jsonl"},
         };
         for (const Bind& b : binds) {
             std::string block = json_extract_object(outputs.c_str(), b.key);
@@ -1996,13 +2239,6 @@ static int cmd_validate(const CliArgs& args) {
             }
             snprintf(path, sizeof(path), "%s/%s", args.output_dir, b.file);
             if (check_file_sha(path, sha) != 0) {
-                return 1;
-            }
-        }
-        for (const char* file : {"core_hnsw_v2_per_query.jsonl", "faiss_flat_per_query.jsonl", "faiss_hnsw_per_query.jsonl"}) {
-            snprintf(path, sizeof(path), "%s/%s", args.output_dir, file);
-            if (!path_exists(path)) {
-                fprintf(stderr, "[fail] missing %s\n", file);
                 return 1;
             }
         }

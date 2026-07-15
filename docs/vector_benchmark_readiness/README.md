@@ -30,6 +30,9 @@ snapshot cold-start and async rebuild benchmark readiness
 - [b_scale_3b_core_hnsw_v2_build_optimization_report.md](b_scale_3b_core_hnsw_v2_build_optimization_report.md)：T2Ranking 10K core_hnsw_v2 build path audit 与局部优化 gate，记录 reverse-prune/neighbor-select 热点、三次重复结果、graph/search 完全一致性和未达到 5% 的候选结论。
 - [b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md](b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md)：T2Ranking 100K embedding 连续行分片/resume/merge 能力与 2K real-record 并行吞吐预检，记录当前 4 vCPU VM 未通过 28 records/s gate。
 - [b_scale_4_t2ranking_100k_embedding_cache_report.md](b_scale_4_t2ranking_100k_embedding_cache_report.md)：T2Ranking 100K real ONNX embedding cache 正式生成，记录 90K 分片推理、资源、原子发布、checksum 和 B-scale-5 输入契约。
+- [b_scale_5_t2ranking_100k_exact_groundtruth_report.md](b_scale_5_t2ranking_100k_exact_groundtruth_report.md)：T2Ranking 100K core_flat exact normalized-IP ground truth，记录 double brute-force 全量 cross-check、score diff 和 B-scale-6 输入契约。
+- [b_scale_6_t2ranking_100k_hnsw_faiss_index_only_report.md](b_scale_6_t2ranking_100k_hnsw_faiss_index_only_report.md)：T2Ranking 100K core_hnsw_v2 / FAISS index-only 完整 efSearch sweep，记录 backend checkpoint/resume、build/search/recall、独立审计和原子发布。
+- [b_scale_7_t2ranking_100k_product_e2e_report.md](b_scale_7_t2ranking_100k_product_e2e_report.md)：T2Ranking 100K core_hnsw_v2 产品 E2E，记录 prepared VSET/VSEARCH、公开文本 ONNX VSEARCH、产品开销、correctness defect 修复和完整 sweep。
 - [index.md](index.md)：文档索引和后续建议。
 
 ## 当前结论
@@ -50,6 +53,12 @@ B-scale-4A preflight 已完成：real embedding cache 工具已支持确定性�
 
 B-scale-4 已完成：升级后的 8 vCPU / 15 GiB VM 使用 `4 processes x 2 threads / batch32`，复用 B-scale-1 前 10K records 和全部 query cache，生成新增 90K records 并原子发布 100K cache 到 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_4_100k_embedding/`。正式生成吞吐 `35.374 records/s`，无 swap/OOM；100K finite/norm、全局 row/id/pid、shard range、前缀和 query byte-identity、最终 checksum/validate 均通过。
 
+B-scale-5 已完成：复用 B-scale-2 runner 和 B-scale-4 100K cache，通过 core_flat exact IP 与独立 double precision brute-force 生成 200 queries / topK=10 ground truth。200/200 query 的 topK ID 和 strict order 完全一致，`nonfinite_score_count=0`；输出位于 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_5_100k_groundtruth/`。
+
+B-scale-6 已完成：复用 B-scale-3 冻结参数和口径，对 B-scale-4/B-scale-5 100K 输入执行 core_hnsw_v2 / FAISS HNSW 完整 sweep。core 与 FAISS HNSW build 分别为 `678,326,503us` / `215,897,392us`；两者均在 efSearch=512 首次达到 recall@10=1.0。结果已通过 backend checkpoint、runner validator 和独立 per-query/checksum 审计，并原子发布到 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_6_100k_benchmark/`。
+
+B-scale-7 已完成：100K records 通过公开 RESP VSET、正常 record commit/ID mapping/current index ops 建立 core_hnsw_v2 产品索引；B-scale-7A 仅绕过 tokenizer/ONNX，B-scale-7B 使用公开文本 VSEARCH 完成 7200 次真实 ONNX encode。prepared/public returned IDs 和顺序完全一致；recall@10 首次在 ef512 达到 1.0。阶段同时修复已有 `vector_hnsw_initial_capacity` 未生效导致 destructive reserve 丢图的 correctness defect。FAISS 产品 backend 不存在，未用 standalone API 冒充产品 E2E。正式结果位于 `/home/zhengpan/share/benchmark_artifacts/T2Ranking/b_scale_7_100k_product_e2e/`。
+
 原因：
 
 - `core_hnsw_v2` product 主路径、snapshot、async rebuild、VINFO observability 已具备。
@@ -61,4 +70,4 @@ B-scale-4 已完成：升级后的 8 vCPU / 15 GiB VM 使用 `4 processes x 2 th
 - 新 B4 runner 已替代旧 FAISS benchmark 脚本缺失的 `tests/vector_index_only_formal.cpp` 依赖；它仍是 index-only 外部 baseline，不是 product backend。
 - `config/kvstore-embedding.conf` 仍配置旧 `hnswlib_hnsw` 名称，会被 resolver 映射到 `core_flat`，不适合作为 v2 真实 embedding benchmark 默认配置。
 
-推荐下一步进入 `B-scale-5 - T2Ranking 100K Exact Ground Truth`。当前 100K cache 只证明 real embedding artifact 生成与完整性，不代表 100K ANN recall、build/search SLA 或 product e2e 性能。
+`ready_for_B_scale_8=yes`。B-scale-7 是单实例、单客户端产品 E2E，不代表并发 SLA；FAISS product parity 仍需独立立项。

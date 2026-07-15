@@ -16,6 +16,7 @@ GT_DIR="$SMOKE_ROOT/groundtruth"
 OUT_DIR="$SMOKE_ROOT/out"
 OUT_DIR_B="$SMOKE_ROOT/out_profiling_off_alloc"
 OUT_DIR_C="$SMOKE_ROOT/out_profiling_off_reuse"
+OUT_DIR_PHASED="$SMOKE_ROOT/out_phased"
 DATASET_ID="synthetic_hnsw_faiss_sweep"
 
 cleanup() { rm -rf "${SMOKE_ROOT:?}"; }
@@ -211,6 +212,79 @@ pass "schema, insertion permutation, efSearch sweep, and flat parity checked"
 "$BIN" generate \
 	--cache-dir "$CACHE_DIR" \
 	--groundtruth-dir "$GT_DIR" \
+	--output-dir "$OUT_DIR_PHASED" \
+	--backend core \
+	--dataset-id "$DATASET_ID" \
+	--source-revision smoke-revision \
+	--top-k 2 \
+	--ef-search-list 2,4 \
+	--core-build-profiling off \
+	--core-search-profiling off >/dev/null
+[[ ! -e "$OUT_DIR_PHASED" ]] || fail "formal output published before both backends completed"
+[[ -f "$OUT_DIR_PHASED.work/.core.checkpoint.json" ]] || fail "core checkpoint marker missing"
+[[ ! -e "$OUT_DIR_PHASED.work/.faiss.checkpoint.json" ]] || fail "FAISS checkpoint appeared during core phase"
+PHASED_CORE_SHA="$(sha256sum "$OUT_DIR_PHASED.work/core_hnsw_v2_per_query.jsonl" | awk '{print $1}')"
+if "$BIN" generate \
+	--cache-dir "$CACHE_DIR" \
+	--groundtruth-dir "$GT_DIR" \
+	--output-dir "$OUT_DIR_PHASED" \
+	--backend finalize \
+	--dataset-id "$DATASET_ID" \
+	--source-revision smoke-revision \
+	--top-k 2 \
+	--ef-search-list 2,4 \
+	--core-build-profiling off \
+	--core-search-profiling off >"$SMOKE_ROOT/premature_finalize.out" 2>&1; then
+	fail "finalize must reject a missing FAISS checkpoint"
+fi
+[[ "$PHASED_CORE_SHA" == "$(sha256sum "$OUT_DIR_PHASED.work/core_hnsw_v2_per_query.jsonl" | awk '{print $1}')" ]] || fail "failed finalize changed core checkpoint"
+
+"$BIN" generate \
+	--cache-dir "$CACHE_DIR" \
+	--groundtruth-dir "$GT_DIR" \
+	--output-dir "$OUT_DIR_PHASED" \
+	--backend core \
+	--dataset-id "$DATASET_ID" \
+	--source-revision smoke-revision \
+	--top-k 2 \
+	--ef-search-list 2,4 \
+	--core-build-profiling off \
+	--core-search-profiling off >"$SMOKE_ROOT/core_resume.out"
+grep -q 'backend=core status=reused' "$SMOKE_ROOT/core_resume.out" || fail "valid core checkpoint was not reused"
+
+"$BIN" generate \
+	--cache-dir "$CACHE_DIR" \
+	--groundtruth-dir "$GT_DIR" \
+	--output-dir "$OUT_DIR_PHASED" \
+	--backend faiss \
+	--dataset-id "$DATASET_ID" \
+	--source-revision smoke-revision \
+	--top-k 2 \
+	--ef-search-list 2,4 >/dev/null
+[[ ! -e "$OUT_DIR_PHASED" ]] || fail "formal output published before finalize"
+"$BIN" generate \
+	--cache-dir "$CACHE_DIR" \
+	--groundtruth-dir "$GT_DIR" \
+	--output-dir "$OUT_DIR_PHASED" \
+	--backend finalize \
+	--dataset-id "$DATASET_ID" \
+	--source-revision smoke-revision \
+	--top-k 2 \
+	--ef-search-list 2,4 \
+	--core-build-profiling off \
+	--core-search-profiling off >/dev/null
+"$BIN" validate \
+	--cache-dir "$CACHE_DIR" \
+	--groundtruth-dir "$GT_DIR" \
+	--output-dir "$OUT_DIR_PHASED" \
+	--dataset-id "$DATASET_ID" \
+	--top-k 2 >/dev/null
+[[ ! -e "$OUT_DIR_PHASED.work" ]] || fail "work directory remained after atomic publish"
+pass "backend checkpoints survive partial execution, resume, and finalize atomically"
+
+"$BIN" generate \
+	--cache-dir "$CACHE_DIR" \
+	--groundtruth-dir "$GT_DIR" \
 	--output-dir "$OUT_DIR_B" \
 	--dataset-id "$DATASET_ID" \
 	--source-revision smoke-revision \
@@ -331,6 +405,14 @@ if "$BIN" validate --cache-dir "$CACHE_DIR" --groundtruth-dir "$GT_DIR" --output
 fi
 mv "$OUT_DIR/insertion_order.ids.bak" "$OUT_DIR/insertion_order.ids"
 pass "validate rejects duplicate insertion order"
+
+cp "$OUT_DIR/core_hnsw_v2_per_query.jsonl" "$OUT_DIR/core_hnsw_v2_per_query.jsonl.bak"
+printf '\n' >> "$OUT_DIR/core_hnsw_v2_per_query.jsonl"
+if "$BIN" validate --cache-dir "$CACHE_DIR" --groundtruth-dir "$GT_DIR" --output-dir "$OUT_DIR" --dataset-id "$DATASET_ID" --top-k 2 >"$SMOKE_ROOT/bad_per_query.out" 2>&1; then
+	fail "validate must fail on corrupt per-query output"
+fi
+mv "$OUT_DIR/core_hnsw_v2_per_query.jsonl.bak" "$OUT_DIR/core_hnsw_v2_per_query.jsonl"
+pass "validate rejects corrupt per-query checksum"
 
 BAD_CACHE="$SMOKE_ROOT/bad_cache"
 BAD_GT="$SMOKE_ROOT/bad_gt"

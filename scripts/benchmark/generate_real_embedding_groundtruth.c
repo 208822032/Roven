@@ -25,6 +25,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <ctype.h>
+#include <float.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <math.h>
@@ -48,7 +49,7 @@
 extern kvs_config_t g_cfg;
 
 static const char *const GEN_SOURCE_REL_PATH = "scripts/benchmark/generate_real_embedding_groundtruth.c";
-static const char *const GEN_VERSION = "1";
+static const char *const GEN_VERSION = "2";
 static const int DEFAULT_TOPK = 10;
 static const double SCORE_TOL = 1e-4;   /* cross-check |float core_flat - double oracle| tolerance */
 static const double TIE_EPS = 1e-6;     /* adjacent oracle score gap below this counts as a tie */
@@ -801,8 +802,16 @@ typedef struct {
 	uint64_t tie_query_count;
 	uint64_t tie_result_count;
 	uint64_t score_comparisons;
+	uint64_t nonfinite_score_count;
 	double max_score_abs_diff;
+	double max_score_rel_diff;
 	double sum_score_abs_diff;
+	long long max_abs_diff_query_row;
+	uint64_t max_abs_diff_record_id;
+	int max_abs_diff_rank;
+	long long max_rel_diff_query_row;
+	uint64_t max_rel_diff_record_id;
+	int max_rel_diff_rank;
 } crosscheck_stats_t;
 
 static int cmd_generate(const cli_args_t *args) {
@@ -835,6 +844,10 @@ static int cmd_generate(const cli_args_t *args) {
 
 	memset(&info, 0, sizeof(info));
 	memset(&flat, 0, sizeof(flat));
+	cc.max_abs_diff_query_row = -1;
+	cc.max_abs_diff_rank = -1;
+	cc.max_rel_diff_query_row = -1;
+	cc.max_rel_diff_rank = -1;
 
 	resolve_cache_dir(args, cache_dir, sizeof(cache_dir));
 	resolve_output_dir(args, cache_dir, output_dir, sizeof(output_dir));
@@ -978,6 +991,7 @@ static int cmd_generate(const cli_args_t *args) {
 		}
 		for (int r = 0; r < topk; r++) {
 			if (!isfinite(hits[r].score)) {
+				cc.nonfinite_score_count++;
 				fprintf(stderr, "[error] query %lld rank %d non-finite score\n", q, r);
 				goto cleanup;
 			}
@@ -1021,6 +1035,11 @@ static int cmd_generate(const cli_args_t *args) {
 			for (long long i = 0; i < count; i++) {
 				oracle[i].record_id = (uint64_t)i;
 				oracle[i].score = dot_double(qv, base + i * dim, (int)dim);
+				if (!isfinite(oracle[i].score)) {
+					cc.nonfinite_score_count++;
+					fprintf(stderr, "[error] query %lld record %lld brute-force score is non-finite\n", q, i);
+					goto cleanup;
+				}
 			}
 			qsort(oracle, (size_t)count, sizeof(oracle_item_t), oracle_cmp);
 			crosscheck_us += (now_us() - c0);
@@ -1052,8 +1071,19 @@ static int cmd_generate(const cli_args_t *args) {
 			int score_ok = 1;
 			for (int r = 0; r < topk; r++) {
 				double d = fabs((double)hits[r].score - oracle[r].score);
+				double denom = fmax(fabs(oracle[r].score), DBL_MIN);
+				double rel = d / denom;
 				if (d > cc.max_score_abs_diff) {
 					cc.max_score_abs_diff = d;
+					cc.max_abs_diff_query_row = q;
+					cc.max_abs_diff_record_id = oracle[r].record_id;
+					cc.max_abs_diff_rank = r + 1;
+				}
+				if (rel > cc.max_score_rel_diff) {
+					cc.max_score_rel_diff = rel;
+					cc.max_rel_diff_query_row = q;
+					cc.max_rel_diff_record_id = oracle[r].record_id;
+					cc.max_rel_diff_rank = r + 1;
 				}
 				cc.sum_score_abs_diff += d;
 				cc.score_comparisons++;
@@ -1115,11 +1145,12 @@ static int cmd_generate(const cli_args_t *args) {
 	fprintf(stdout, "[search] queries=%lld topk=%d search_total_us=%" PRIu64 " search_avg_us=%" PRIu64 "\n",
 		qcount, topk, search_total_us, qcount ? search_total_us / (uint64_t)qcount : 0);
 	fprintf(stdout, "[crosscheck] queries_checked=%" PRIu64 " strict_order_checked=%" PRIu64
-		" max_score_abs_diff=%.3g mean_score_abs_diff=%.3g tie_query_count=%" PRIu64
+		" max_score_abs_diff=%.3g max_score_rel_diff=%.3g mean_score_abs_diff=%.3g "
+		"nonfinite_score_count=%" PRIu64 " tie_query_count=%" PRIu64
 		" tie_result_count=%" PRIu64 " (set/score/order all consistent)\n",
-		cc.queries_checked, cc.strict_order_checked, cc.max_score_abs_diff,
+		cc.queries_checked, cc.strict_order_checked, cc.max_score_abs_diff, cc.max_score_rel_diff,
 		cc.score_comparisons ? cc.sum_score_abs_diff / (double)cc.score_comparisons : 0.0,
-		cc.tie_query_count, cc.tie_result_count);
+		cc.nonfinite_score_count, cc.tie_query_count, cc.tie_result_count);
 
 	/* checksums + sizes for the published ground truth */
 	if (sha256_file(gt_tmp, gt_sha) != 0) {
@@ -1190,13 +1221,18 @@ static int cmd_generate(const cli_args_t *args) {
 			"  \"crosscheck\": {\"method\": \"independent_double_precision_bruteforce\", "
 			"\"verified_query_count\": %" PRIu64 ", \"queries_checked\": %" PRIu64 ", \"top_k\": %d, "
 			"\"score_tolerance\": %g, \"tie_eps\": %g, "
-			"\"set_match_all\": true, \"record_id_match_all\": true, "
+			"\"set_match_all\": true, \"record_id_match_all\": true, \"topk_id_match_all\": true, "
 			"\"strict_order_checked\": %" PRIu64 ", \"strict_order_match_all\": true, "
-			"\"max_score_abs_diff\": %.9g, \"mean_score_abs_diff\": %.9g, "
+			"\"nonfinite_score_count\": %" PRIu64 ", "
+			"\"max_score_abs_diff\": %.9g, \"max_score_rel_diff\": %.9g, \"mean_score_abs_diff\": %.9g, "
+			"\"max_abs_diff_location\": {\"query_row\": %lld, \"record_id\": %" PRIu64 ", \"rank\": %d}, "
+			"\"max_rel_diff_location\": {\"query_row\": %lld, \"record_id\": %" PRIu64 ", \"rank\": %d}, "
 			"\"tie_query_count\": %" PRIu64 ", \"tie_result_count\": %" PRIu64 "},\n",
 			cc.queries_checked, cc.queries_checked, topk, SCORE_TOL, TIE_EPS,
-			cc.strict_order_checked, cc.max_score_abs_diff,
+			cc.strict_order_checked, cc.nonfinite_score_count, cc.max_score_abs_diff, cc.max_score_rel_diff,
 			cc.score_comparisons ? cc.sum_score_abs_diff / (double)cc.score_comparisons : 0.0,
+			cc.max_abs_diff_query_row, cc.max_abs_diff_record_id, cc.max_abs_diff_rank,
+			cc.max_rel_diff_query_row, cc.max_rel_diff_record_id, cc.max_rel_diff_rank,
 			cc.tie_query_count, cc.tie_result_count);
 		fprintf(mf,
 			"  \"timing_us\": {\"cache_load_us\": %" PRIu64 ", \"index_build_us\": %" PRIu64

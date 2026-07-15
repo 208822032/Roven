@@ -18,6 +18,9 @@
 - [b_scale_3b_core_hnsw_v2_build_optimization_report.md](b_scale_3b_core_hnsw_v2_build_optimization_report.md)：B-scale-3B core_hnsw_v2 build path audit，冻结三次 baseline/candidate、graph/search 完全一致门禁和“无候选达到 5%”的结论。
 - [b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md](b_scale_4a_100k_embedding_parallel_throughput_preflight_report.md)：B-scale-4A 100K embedding parallel throughput preflight，冻结连续行 shard/resume/merge 契约、2K real-record 矩阵和 VM 扩容结论。
 - [b_scale_4_t2ranking_100k_embedding_cache_report.md](b_scale_4_t2ranking_100k_embedding_cache_report.md)：B-scale-4 T2Ranking 100K real embedding cache，记录正式 90K ONNX 分片生成、资源、100K checksum/顺序/前缀验证和 B-scale-5 输入。
+- [b_scale_5_t2ranking_100k_exact_groundtruth_report.md](b_scale_5_t2ranking_100k_exact_groundtruth_report.md)：B-scale-5 T2Ranking 100K exact ground truth，记录 core_flat / independent double 全量一致性、score diff、资源和 B-scale-6 输入。
+- [b_scale_6_t2ranking_100k_hnsw_faiss_index_only_report.md](b_scale_6_t2ranking_100k_hnsw_faiss_index_only_report.md)：B-scale-6 T2Ranking 100K core_hnsw_v2 / FAISS index-only sweep，记录 backend 恢复、完整 recall/latency、build/resource、独立审计和正式 checksum。
+- [b_scale_7_t2ranking_100k_product_e2e_report.md](b_scale_7_t2ranking_100k_product_e2e_report.md)：B-scale-7 T2Ranking 100K core_hnsw_v2 产品 E2E，记录 prepared/public ONNX 两阶段、产品开销、correctness gate、artifact 和 FAISS case-C 审计。
 
 ## 关联文档
 
@@ -58,14 +61,18 @@ B-scale-4A preflight 已完成：新增连续行 shard、独立 ONNX worker、ch
 
 B-scale-4 已完成：在升级后的 8 vCPU / 15 GiB VM 上，使用 `4p x 2t / batch32` 生成新增 90K records，复用前 10K/query cache，得到正式 100K cache。生成吞吐 `35.374 records/s`，无 swap/OOM；四 shard、100K merged、finite/norm、全局 row/id/pid、前缀/query byte-identity 和原子发布均通过，详见 [b_scale_4_t2ranking_100k_embedding_cache_report.md](b_scale_4_t2ranking_100k_embedding_cache_report.md)。
 
+B-scale-5 已完成：B-scale-2 runner 原生支持 100K cache，仅补充 crosscheck 可观测字段；core_flat exact 与 independent double 对 20,000,000 scores 全量核对，200/200 query 的 topK ID / strict order 一致且无 non-finite score。正式输出位于仓库外 B-scale-5 artifact，详见 [b_scale_5_t2ranking_100k_exact_groundtruth_report.md](b_scale_5_t2ranking_100k_exact_groundtruth_report.md)。
+
+B-scale-6 已完成：combined runner 增加 backend checkpoint/resume/finalize，复用同一 100K cache、exact ground truth、插入顺序和冻结参数执行完整 sweep。core/FAISS HNSW build gap 为 `3.142x`；两者首次完全召回均为 efSearch=512。正式 artifact、runner validator 和独立原始 query 审计均通过，详见 [b_scale_6_t2ranking_100k_hnsw_faiss_index_only_report.md](b_scale_6_t2ranking_100k_hnsw_faiss_index_only_report.md)。
+
+B-scale-7 已完成：使用独立 opt-in ONNX server 和 linker-wrap prepare shim，在不修改公开协议的前提下让 100K VSET、record commit、dispatch、ID mapping、result build 和 response encode 全部经过产品链路。7A prepared sweep 不调用 ONNX；7B 对同一索引执行公开文本 VSEARCH，`runtime_encode_count=7200`。两阶段 IDs/顺序一致，ef512 首次完全召回。FAISS 审计为 case C，未恢复产品 backend，详见 [b_scale_7_t2ranking_100k_product_e2e_report.md](b_scale_7_t2ranking_100k_product_e2e_report.md)。
+
 建议后续使用独立阶段完成：
 
 ```text
-B-scale-5:
-  读取 B-scale-4 的 100K real embedding cache，
-  生成 T2Ranking 100K exact ground truth，不重新运行 ONNX。
+B-scale-8:
+  按既定 roadmap 单独冻结下一阶段范围；B-scale-7 已满足 ready_for_B_scale_8=yes。
 
-implement-benchmark-harness (B6+):
-  生成或读取 embedding cache，构建 core_hnsw_v2 与 FAISS index-only 对比，
-  并执行 end-to-end VSET / VSEARCH / VINDEX / VINFO 压测。
+FAISS product parity:
+  当前没有产品 backend；如需推进必须独立立项，不得把 standalone FAISS API 与 core 产品链路直接比较。
 ```

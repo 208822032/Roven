@@ -466,6 +466,37 @@ $(GEN_SWEEP_BIN): $(GEN_SWEEP_SRC) $(GEN_SWEEP_HELPER_OBJ) $(BUILD_LIB)/libkvsto
 smoke-vector-real-embedding-hnsw-faiss-sweep-benchmark: gen-embedding-hnsw-faiss-sweep-benchmark
 	bash tests/vector_real_embedding_hnsw_faiss_sweep_smoke_test.sh
 
+# Opt-in product E2E benchmark server. It is built in an isolated object tree
+# with ONNX and a linker-wrap prepare shim. The normal kvstore binary and its
+# public RESP command table remain unchanged.
+PRODUCT_E2E_BIN := build/tools/bin/kvstore_vector_product_e2e_benchmark
+PRODUCT_E2E_OBJDIR := build/tools/product_e2e
+PRODUCT_E2E_SHIM := scripts/benchmark/vector_product_e2e_prepare_shim.c
+PRODUCT_E2E_SRCS := $(filter-out $(SRC_EMBED)/embedding_runtime.c $(SRC_EMBED)/embedding_runtime_onnx.c,$(BASE_SRCS)) \
+	$(SRC_EMBED)/embedding_runtime_onnx.c $(SRC_DIST)/sync_backend_tcp.c $(PRODUCT_E2E_SHIM)
+PRODUCT_E2E_OBJS := $(patsubst %.c,$(PRODUCT_E2E_OBJDIR)/%.o,$(PRODUCT_E2E_SRCS))
+PRODUCT_E2E_CFLAGS := -I ./third_party/NtyCo/core/ -I ./include -I ./src \
+	-I $(JEMALLOC_INCLUDE) -I$(ONNXRUNTIME_ROOT)/include -DSYNC_MODE=$(SYNC_MODE) \
+	-g $(OPT_CFLAGS) $(EXTRA_CFLAGS)
+PRODUCT_E2E_LDFLAGS := -L ./third_party/NtyCo/ -lntyco -lpthread -luring -ldl -lm \
+	$(EXTRA_LIBS) $(JEMALLOC_LIB) -L$(ONNXRUNTIME_LIBDIR) -lonnxruntime \
+	-Wl,-rpath,$(abspath $(ONNXRUNTIME_LIBDIR)) \
+	-Wl,--wrap=kvs_vector_set_prepare -Wl,--wrap=kvs_vector_search_prepare
+
+.PHONY: product-e2e-benchmark-server smoke-vector-t2ranking-product-e2e
+
+product-e2e-benchmark-server: check-onnx-runtime check-embedding-assets $(NTYCO_LIB) $(PRODUCT_E2E_BIN)
+
+$(PRODUCT_E2E_OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(PRODUCT_E2E_CFLAGS) $(AVX2_CFLAGS) -c -o $@ $<
+
+$(PRODUCT_E2E_BIN): $(PRODUCT_E2E_OBJS) $(NTYCO_LIB) | build/tools/bin
+	$(CC) -o $@ $(PRODUCT_E2E_OBJS) $(PRODUCT_E2E_LDFLAGS)
+
+smoke-vector-t2ranking-product-e2e: product-e2e-benchmark-server
+	bash tests/vector_t2ranking_product_e2e_smoke_test.sh
+
 # 帮助
 help:
 	@echo "用法: make [目标] [选项]"

@@ -795,6 +795,16 @@ static size_t kvs_vector_provider_dimension_or_default(void) {
 	return dimension;
 }
 
+static size_t kvs_vector_initial_record_capacity(void) {
+	size_t capacity = KVS_VECTOR_INITIAL_RECORD_CAPACITY;
+
+	if (g_cfg.vector_hnsw_initial_capacity > 0 &&
+	    (size_t)g_cfg.vector_hnsw_initial_capacity > capacity) {
+		capacity = (size_t)g_cfg.vector_hnsw_initial_capacity;
+	}
+	return capacity;
+}
+
 static size_t kvs_vector_hnsw_param_or_default(int value, size_t def) {
 	if (value <= 0) {
 		return def;
@@ -1901,7 +1911,7 @@ int kvs_vector_init(void) {
 
 	ret = kvs_vector_store_reserve(
 		&g_vector_state.store,
-		KVS_VECTOR_INITIAL_RECORD_CAPACITY
+		kvs_vector_initial_record_capacity()
 	);
 	if (ret != KVS_VECTOR_OK) {
 		goto fail;
@@ -2083,7 +2093,10 @@ int kvs_vector_reset_for_load(void) {
 	ret = kvs_vector_store_init(&g_vector_state.store);
 	if (ret != KVS_VECTOR_OK) goto out;
 
-	ret = kvs_vector_store_reserve(&g_vector_state.store, KVS_VECTOR_INITIAL_RECORD_CAPACITY);
+	ret = kvs_vector_store_reserve(
+		&g_vector_state.store,
+		kvs_vector_initial_record_capacity()
+	);
 	if (ret != KVS_VECTOR_OK) goto out;
 
 	ret = kvs_vector_id_map_init(&g_vector_state.id_map);
