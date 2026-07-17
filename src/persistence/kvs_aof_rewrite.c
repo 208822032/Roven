@@ -546,6 +546,10 @@ static void* aof_rewrite_thread(void *arg) {
 
 //后台重写函数
 void aof_rewrite_background(void){
+	if (!g_cfg.enable_aof || !g_cfg.aof_rewrite_enabled) {
+		KVS_LOG_WARN("aof", "AOF rewrite requested while disabled");
+		return;
+	}
     if (aof_state.rewrite_in_progress) {
         // fprintf(stderr, "AOF rewrite already in progress\n");
         return;

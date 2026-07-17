@@ -12,7 +12,11 @@ static void *ttl_scan_thread_main(void *arg) {
 	(void)arg;
 
 	while (!__atomic_load_n(&g_ttl_scan_stop, __ATOMIC_ACQUIRE)) {
-		struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
+		int interval_ms = g_cfg.ttl_scan_interval_ms > 0 ? g_cfg.ttl_scan_interval_ms : 1000;
+		struct timespec ts = {
+			.tv_sec = interval_ms / 1000,
+			.tv_nsec = (long)(interval_ms % 1000) * 1000000L
+		};
 		nanosleep(&ts, NULL);
 
 		if (__atomic_load_n(&g_ttl_scan_stop, __ATOMIC_ACQUIRE)) {
@@ -21,13 +25,18 @@ static void *ttl_scan_thread_main(void *arg) {
 		if (global_dist_config.role == ROLE_SLAVE) {
 			continue;
 		}
-		(void)kvs_command_executor_submit_ttl_scan(32);
+		(void)kvs_command_executor_submit_ttl_scan(
+			g_cfg.ttl_scan_budget > 0 ? g_cfg.ttl_scan_budget : 32
+		);
 	}
 
 	return NULL;
 }
 
 int kvs_ttl_background_start(void) {
+	if (!g_cfg.ttl_enabled || !g_cfg.ttl_scan_enabled) {
+		return 0;
+	}
 	if (__atomic_load_n(&g_ttl_scan_running, __ATOMIC_ACQUIRE)) {
 		return 0;
 	}

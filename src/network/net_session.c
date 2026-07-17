@@ -1,14 +1,62 @@
 #include "net_session.h"
 #include "kvs_api.h"
 #include "kvs_log.h"
+#include "kvs_globals.h"
 
 #include <string.h>
 #include <stdio.h>
 
-//一次最多处理多少条命令 防止单连接长时间占用CPU
-#ifndef NET_SESSION_MAX_COMMANDS_PER_BATCH
-#define NET_SESSION_MAX_COMMANDS_PER_BATCH 10000000
-#endif
+static int g_net_session_connection_count = 0;
+
+static size_t net_session_request_limit(void) {
+	return g_cfg.network_max_request_bytes > 0 ?
+		g_cfg.network_max_request_bytes : (size_t)NETBUF_MAX_CAPACITY;
+}
+
+static size_t net_session_response_limit(void) {
+	return g_cfg.network_max_response_bytes > 0 ?
+		g_cfg.network_max_response_bytes : (size_t)KVS_MAX_RESPONSE_LENGTH;
+}
+
+static int net_session_response_too_large(char *response) {
+	return resp_generate_simple_string_n(
+		response,
+		'-',
+		"ERR response exceeds network.max_response_bytes",
+		sizeof("ERR response exceeds network.max_response_bytes") - 1
+	);
+}
+
+static int net_session_command_limit(void) {
+	return g_cfg.network_max_commands_per_read > 0 ?
+		g_cfg.network_max_commands_per_read : 1024;
+}
+
+static int net_session_validate_command_batch(const net_session_t *session) {
+	size_t offset = 0;
+	int commands = 0;
+	int limit = net_session_command_limit();
+
+	while (offset < session->recv_buf.size) {
+		int command_len = resp_peek_command(
+			session->recv_buf.data,
+			session->recv_buf.size,
+			offset
+		);
+		if (command_len < 0) {
+			return -1;
+		}
+		if (command_len == 0) {
+			return 0;
+		}
+		commands++;
+		if (commands > limit) {
+			return -1;
+		}
+		offset += (size_t)command_len;
+	}
+	return 0;
+}
 
 //初始化会话
 int net_session_init(net_session_t* session,
@@ -16,15 +64,28 @@ int net_session_init(net_session_t* session,
                      size_t send_initial){
 
     if(!session) return -1;
-    
-    memset(session, 0, sizeof(net_session_t));
 
-    if(netbuf_init(&session->recv_buf, recv_initial) < 0){
+    memset(session, 0, sizeof(net_session_t));
+	{
+		int limit = g_cfg.network_max_connections > 0 ? g_cfg.network_max_connections : 1024;
+		int count = __atomic_add_fetch(&g_net_session_connection_count, 1, __ATOMIC_ACQ_REL);
+		if (count > limit) {
+			__atomic_sub_fetch(&g_net_session_connection_count, 1, __ATOMIC_ACQ_REL);
+			return -1;
+		}
+		session->connection_counted = 1;
+	}
+
+    if(netbuf_init_limit(&session->recv_buf, recv_initial, net_session_request_limit()) < 0){
+		__atomic_sub_fetch(&g_net_session_connection_count, 1, __ATOMIC_ACQ_REL);
+		session->connection_counted = 0;
         return -1;
     }
 
-    if(netbuf_init(&session->send_buf, send_initial) < 0){
+    if(netbuf_init_limit(&session->send_buf, send_initial, NETBUF_MAX_CAPACITY) < 0){
         netbuf_free(&session->recv_buf);
+		__atomic_sub_fetch(&g_net_session_connection_count, 1, __ATOMIC_ACQ_REL);
+		session->connection_counted = 0;
         return -1;
     }
 
@@ -50,6 +111,10 @@ void net_session_free(net_session_t* session){
 
     //释放RESP解析器相关资源
     resp_parser_free(&session->resp_parser);
+	if (session->connection_counted) {
+		__atomic_sub_fetch(&g_net_session_connection_count, 1, __ATOMIC_ACQ_REL);
+		session->connection_counted = 0;
+	}
 
     memset(session, 0, sizeof(net_session_t));
 }
@@ -155,6 +220,8 @@ int net_session_process_resp(int fd,
                              void* user_data){
     
     if(!session || !handler) return -1;
+	if (session->recv_buf.size > net_session_request_limit()) return -1;
+	if (net_session_validate_command_batch(session) != 0) return -1;
 
     if(session->processing) return 0; //正在处理 避免重复调度
     session->processing = 1;
@@ -205,7 +272,7 @@ int net_session_process_resp(int fd,
     int commands_count = 0;
 
     while(parsed_total < session->recv_buf.size
-          && commands_count < NET_SESSION_MAX_COMMANDS_PER_BATCH){
+          && commands_count < net_session_command_limit()){
 
         //用无状态peek探测 当前位置是否有完整命令
         int cmd_len = resp_peek_command(session->recv_buf.data,
@@ -265,11 +332,14 @@ int net_session_process_resp(int fd,
             response_cap,
             user_data
         );
-        if(resp_len <= 0 || resp_len > (int)KVS_MAX_RESPONSE_LENGTH){
+        if(resp_len <= 0 || (size_t)resp_len > response_cap){
             KVS_LOG_ERROR("net", "fd=%d handler returned invalid response length: %d", fd, resp_len);
             session->processing = 0;
             return -1;
         }
+		if ((size_t)resp_len > net_session_response_limit()) {
+			resp_len = net_session_response_too_large(response_buf);
+		}
 
         session->send_buf.size += resp_len;
         commands_count++;
@@ -299,6 +369,12 @@ int net_session_parse_one_resp(int fd,
         return -1;
     }
     *cmd_len = 0;
+	if (session->recv_buf.size > net_session_request_limit()) {
+		return -1;
+	}
+	if (net_session_validate_command_batch(session) != 0) {
+		return -1;
+	}
 
     if (session->processing) {
         return 0;

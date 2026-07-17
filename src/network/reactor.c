@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -301,7 +302,8 @@ static int reactor_session_handler(resp_parser_t* parser,
     int resp_len = 0;
 
         //单独处理REPLSYNC命令
-        if(g_cfg.sync_mode == KVS_SYNC_EBPF && strcasecmp(cmd_name, "REPLSYNC") == 0){
+        if(g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR &&
+           strcasecmp(cmd_name, "REPLSYNC") == 0){
             extern distributed_config_t global_dist_config;
 
             const char* ok_resp = "+OK\r\n";
@@ -765,7 +767,7 @@ static int reactor_handle_replication_fallback(int fd,
     if (kind == KVS_REPL_FALLBACK_REPLSYNC) {
         extern distributed_config_t global_dist_config;
 
-        if (g_cfg.sync_mode == KVS_SYNC_EBPF &&
+        if (g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR &&
             global_dist_config.role == ROLE_SLAVE) {
             ext->is_replication = 1;
             return reactor_finish_inline_fallback_command(fd, session, parser, cmd_len, "+OK\r\n");
@@ -842,9 +844,12 @@ int recv_cb(int fd) {
     
     while (1) {
         size_t min_space = 64 * 1024;
-        if(recv_buf->capacity - recv_buf->size < min_space){
+        if(recv_buf->capacity - recv_buf->size < min_space &&
+           recv_buf->capacity < recv_buf->max_capacity){
+            size_t target = recv_buf->size + min_space;
+            if (target > recv_buf->max_capacity) target = recv_buf->max_capacity;
             // 扩展缓冲区
-            if(netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0){
+            if(netbuf_reserve(recv_buf, target) < 0){
                 KVS_LOG_ERROR("net", "failed to reserve space in recv buffer for fd %d", fd);
                 event_unregister(fd);
                 return -1;
@@ -1012,7 +1017,11 @@ int r_init_server(unsigned short port) {
 
 	struct sockaddr_in servaddr;
 	servaddr.sin_family = AF_INET;
-	servaddr.sin_addr.s_addr = htonl(INADDR_ANY); // 0.0.0.0
+	if (inet_pton(AF_INET, g_cfg.listen_address, &servaddr.sin_addr) != 1) {
+		KVS_LOG_ERROR("net", "invalid listen address: %s", g_cfg.listen_address);
+		close(sockfd);
+		return -1;
+	}
 	servaddr.sin_port = htons(port); // 0-1023, 
 
 	if (bind(sockfd, (struct sockaddr*)&servaddr, sizeof(struct sockaddr)) < 0) {
@@ -1021,7 +1030,7 @@ int r_init_server(unsigned short port) {
         return -1;
 	}
 
-	if (listen(sockfd, 1024) < 0) {
+	if (listen(sockfd, g_cfg.network_listen_backlog) < 0) {
         KVS_LOG_ERROR_ERRNO("net", "listen failed on port %u", port);
         close(sockfd);
         return -1;
@@ -1036,6 +1045,7 @@ int r_init_server(unsigned short port) {
 }
 
 int reactor_start(unsigned short port, msg_handler handler) {
+	int listener_count = 0;
 
 	//unsigned short port = 2000;
 	kvs_handler = handler;
@@ -1053,11 +1063,16 @@ int reactor_start(unsigned short port, msg_handler handler) {
 	for (int i = 0;i < MAX_PORTS;i ++) {
 		int sockfd = r_init_server(port + i);
 		if (sockfd < 0) continue;
+		listener_count++;
 
 		conn_list[sockfd].fd = sockfd;
 		conn_list[sockfd].r_action.recv_callback = accept_cb;
 		
 		set_event(sockfd, EPOLLIN, 1);
+	}
+	if (listener_count == 0) {
+		close(epfd);
+		return -1;
 	}
 
     int executor_event_fd = kvs_command_executor_response_event_fd();

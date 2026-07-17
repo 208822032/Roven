@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define KVS_VECTOR_INDEX_MANIFEST_MAGIC "KVLITE_HNSW_SNAPSHOT"
-#define KVS_VECTOR_INDEX_MANIFEST_VERSION 1
+#define KVS_VECTOR_INDEX_MANIFEST_VERSION 2
 #define KVS_VECTOR_INDEX_SNAPSHOT_FORMAT_VERSION 1
 
 typedef struct kvs_vector_index_snapshot_manifest_s {
@@ -33,6 +33,7 @@ typedef struct kvs_vector_index_snapshot_manifest_s {
 	uint64_t snapshot_checksum;
 
 	uint64_t created_at_ms;
+	uint64_t model_content_identity;
 } kvs_vector_index_snapshot_manifest_t;
 
 int kvs_vector_index_snapshot_manifest_init(

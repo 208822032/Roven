@@ -9,6 +9,7 @@
 
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -322,7 +323,7 @@ static int ntyco_process_received_data(ntyco_conn_ctx_t *ctx) {
         if (kind == KVS_REPL_FALLBACK_REPLSYNC) {
             extern distributed_config_t global_dist_config;
 
-            if (g_cfg.sync_mode == KVS_SYNC_EBPF &&
+            if (g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR &&
                 global_dist_config.role == ROLE_SLAVE) {
                 ctx->is_replication = 1;
                 return ntyco_finish_inline_command(ctx, cmd_len, "+OK\r\n");
@@ -384,8 +385,11 @@ static void ntyco_conn_routine(void *arg) {
 
         // 扩容检查-
         size_t min_space = 64 * 1024;
-        if (recv_buf->capacity - recv_buf->size < min_space) {
-            if (netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0) {
+        if (recv_buf->capacity - recv_buf->size < min_space &&
+            recv_buf->capacity < recv_buf->max_capacity) {
+            size_t target = recv_buf->size + min_space;
+            if (target > recv_buf->max_capacity) target = recv_buf->max_capacity;
+            if (netbuf_reserve(recv_buf, target) < 0) {
                 KVS_LOG_ERROR("ntyco", "failed to reserve recv buffer for fd %d", ctx->fd);
                 break;
             }
@@ -508,7 +512,11 @@ static int ntyco_init_server(unsigned short port) {
     memset(&servaddr, 0, sizeof(servaddr));
 
     servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (inet_pton(AF_INET, g_cfg.listen_address, &servaddr.sin_addr) != 1) {
+        KVS_LOG_ERROR("net", "invalid listen address: %s", g_cfg.listen_address);
+        nty_close(sockfd);
+        return -1;
+    }
     servaddr.sin_port = htons(port);
 
     if (bind(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
@@ -517,7 +525,7 @@ static int ntyco_init_server(unsigned short port) {
         return -1;
     }
 
-    if (listen(sockfd, 1024) < 0) {
+    if (listen(sockfd, g_cfg.network_listen_backlog) < 0) {
         KVS_LOG_ERROR_ERRNO("ntyco", "listen failed on port %u", port);
         nty_close(sockfd);
         return -1;

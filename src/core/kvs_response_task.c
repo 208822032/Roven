@@ -1,8 +1,12 @@
 #include "kvs_response_task.h"
 
+#include "kvs_config.h"
 #include "kvs_memory.h"
+#include "resp_protocol.h"
 
 #include <string.h>
+
+extern kvs_config_t g_cfg;
 
 void kvs_response_task_reset(kvs_response_task_t *resp) {
 	if (!resp) {
@@ -137,8 +141,20 @@ int kvs_response_task_status(const kvs_response_task_t *resp) {
 }
 
 void kvs_response_task_finalize(kvs_response_task_t *resp, int status) {
+	size_t configured_limit;
+
 	if (!resp) {
 		return;
+	}
+	configured_limit = g_cfg.network_max_response_bytes > 0 ?
+		g_cfg.network_max_response_bytes : (size_t)KVS_MAX_RESPONSE_LENGTH;
+	if (status > 0 && (size_t)status > configured_limit && resp->buf) {
+		status = resp_generate_simple_string_n(
+			resp->buf,
+			'-',
+			"ERR response exceeds network.max_response_bytes",
+			sizeof("ERR response exceeds network.max_response_bytes") - 1
+		);
 	}
 	resp->status = status;
 	resp->finalized = 1;

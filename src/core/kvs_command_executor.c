@@ -3003,7 +3003,7 @@ int kvs_command_executor_start(void) {
 	g_executor.stopping = 0;
 	pthread_mutex_unlock(&g_executor.cmd_mu);
 
-	if (g_cfg.embedding_worker_pool_enabled) {
+	if (g_cfg.vector_enabled && g_cfg.embedding_worker_pool_enabled) {
 		if (kvs_embedding_worker_pool_start(
 			    g_cfg.embedding_worker_threads,
 			    g_cfg.embedding_worker_queue_capacity) != 0) {

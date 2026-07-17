@@ -148,7 +148,7 @@ def write_config(path, port, rdb, backend):
     path.write_text(f"""port = {port}
 role = master
 sync_port = {port + 1000}
-sync_mode = ebpf
+sync_mode = disabled
 network_mode = reactor
 enable_aof = false
 rdb_filename = {rdb}
@@ -164,6 +164,8 @@ vector_hnsw_m = 8
 vector_hnsw_ef_construction = 64
 vector_hnsw_ef_search = 64
 vector_hnsw_initial_capacity = 256
+vector_snapshot_manifest_path = {path.parent / "vector_index.manifest"}
+vector_snapshot_index_path = {path.parent / "vector_index.snapshot"}
 """)
 
 def start(conf, log_path):
@@ -235,7 +237,7 @@ def unlink_snapshot_files(snapshot_dir):
 
 def run_fresh_no_snapshot(tmp):
     conf = tmp / "fresh.conf"
-    unlink_snapshot_files(root)
+    unlink_snapshot_files(tmp)
     write_config(conf, pick_port(), tmp / "fresh.rdb", "core_hnsw_v2")
     proc, log = start(conf, tmp / "fresh.log")
     try:
@@ -254,7 +256,7 @@ def run_fresh_no_snapshot(tmp):
 
 def run_non_v2(tmp):
     conf = tmp / "flat.conf"
-    unlink_snapshot_files(root)
+    unlink_snapshot_files(tmp)
     write_config(conf, pick_port(), tmp / "flat.rdb", "core_flat")
     proc, log = start(conf, tmp / "flat.log")
     try:
@@ -272,7 +274,7 @@ def run_non_v2(tmp):
         stop(proc, log)
 
 def run_snapshot_status_lifecycle(tmp):
-    snapshot_dir = root
+    snapshot_dir = tmp
     rdb = tmp / "v2.rdb"
     conf = tmp / "v2.conf"
     unlink_snapshot_files(snapshot_dir)
@@ -331,38 +333,11 @@ def run_snapshot_status_lifecycle(tmp):
         stop(proc, log)
         os.rmdir(snapshot_dir / "vector_index.snapshot.tmp")
 
-def backup_root_snapshot_files(tmp):
-    backup = tmp / "root_snapshot_backup"
-    backup.mkdir()
-    names = (
-        "vector_index.manifest",
-        "vector_index.manifest.tmp",
-        "vector_index.manifest.bak",
-        "vector_index.snapshot",
-        "vector_index.snapshot.tmp",
-        "vector_index.snapshot.bak",
-    )
-    for name in names:
-        src = root / name
-        if src.exists():
-            dst = backup / name
-            src.rename(dst)
-    return backup
-
-def restore_root_snapshot_files(backup):
-    unlink_snapshot_files(root)
-    for src in backup.iterdir():
-        src.rename(root / src.name)
-
 with tempfile.TemporaryDirectory(prefix="kvlite_snapshot_vinfo_") as td:
     tmp = Path(td)
-    backup = backup_root_snapshot_files(tmp)
-    try:
-        run_fresh_no_snapshot(tmp)
-        run_non_v2(tmp)
-        run_snapshot_status_lifecycle(tmp)
-    finally:
-        restore_root_snapshot_files(backup)
+    run_fresh_no_snapshot(tmp)
+    run_non_v2(tmp)
+    run_snapshot_status_lifecycle(tmp)
 
 print("vector_index_snapshot_vinfo_status_test PASS")
 PY

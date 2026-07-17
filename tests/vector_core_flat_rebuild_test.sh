@@ -120,7 +120,7 @@ def write_config(path, port, rdb):
     path.write_text(f"""port = {port}
 role = master
 sync_port = {port + 1000}
-sync_mode = ebpf
+sync_mode = disabled
 network_mode = reactor
 enable_aof = false
 rdb_filename = {rdb}
@@ -132,6 +132,7 @@ vector_metric = ip
 vector_score_threshold = -1.0
 vector_scope_overfetch_factor = 4
 vector_index_type = core_flat
+vector_snapshot_enabled = false
 """)
 
 def start(args, log_path):

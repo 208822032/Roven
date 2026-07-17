@@ -174,6 +174,7 @@ CXXFLAGS      = -I ./include -I ./src -g -std=c++17
 CFLAGS        = -I ./third_party/NtyCo/core/ -I ./include -I ./src \
                 -I $(JEMALLOC_INCLUDE) \
                 -DSYNC_MODE=$(SYNC_MODE) \
+				-DKVS_ENABLE_EBPF=$(ENABLE_EBPF) \
                 -g $(OPT_CFLAGS) $(EXTRA_CFLAGS) $(ONNX_CFLAGS)
 LDFLAGS       = -L ./third_party/NtyCo/ -lntyco -lpthread -luring -ldl -lm \
                 $(EXTRA_LIBS) $(JEMALLOC_LIB) $(ONNX_LDFLAGS)
@@ -921,6 +922,7 @@ EBPF_SYNCD_SRCS = $(EBPF_DIR)/ebpf_syncd.c \
 $(EBPF_SYNCD_BIN): $(BOOTSTRAP_LIBBPF) $(EBPF_SYNCD_SRCS)
 	$(CC) -O2 -g $(EBPF_SYNCD_SRCS) -o $@ \
 		-I $(LIBBPF_INC) -I ./include \
+		-DKVS_ENABLE_EBPF=1 \
 		-L $(LIBBPF_LIB) -lbpf -lelf -lz \
 		-Wl,-rpath,$(LIBBPF_LIB) \
 		-lpthread $(JEMALLOC_LIB) -ldl

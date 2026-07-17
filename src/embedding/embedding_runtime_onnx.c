@@ -3,6 +3,7 @@
 
 #include <onnxruntime_c_api.h>
 
+#include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,6 +34,7 @@ typedef struct EmbeddingVocab {
 
 struct EmbeddingHandle {
 	int embedding_dim;
+	int model_output_dim;
 	int num_threads;
 	int max_text_len;
 	int max_tokens;
@@ -938,6 +940,17 @@ static EmbeddingErrorCode embedding_inspect_onnx_value(
 			goto cleanup;
 		}
 	}
+	if (!is_input && rank > 0 && dims[rank - 1] > 0 &&
+	    dims[rank - 1] <= INT_MAX) {
+		int detected = (int)dims[rank - 1];
+		if (handle->model_output_dim == 0) {
+			handle->model_output_dim = detected;
+		} else if (handle->model_output_dim != detected) {
+			embedding_set_error(handle, "ONNX outputs have inconsistent embedding dimensions");
+			result = EMBEDDING_ERR_DIM_MISMATCH;
+			goto cleanup;
+		}
+	}
 
 	fprintf(
 		stderr,
@@ -1595,15 +1608,14 @@ EmbeddingErrorCode embedding_create(
 	created->max_text_len = config->max_text_len > 0 ?
 		config->max_text_len :
 		EMBEDDING_ONNX_DEFAULT_MAX_TEXT_LEN;
-	created->max_tokens = created->max_text_len > 0 ?
-		created->max_text_len :
+	created->max_tokens = config->max_tokens > 0 ?
+		config->max_tokens :
 		EMBEDDING_ONNX_DEFAULT_MAX_TEXT_LEN;
 	if (created->max_tokens > EMBEDDING_ONNX_MAX_TOKENS) {
 		created->max_tokens = EMBEDDING_ONNX_MAX_TOKENS;
 	}
 	created->normalize = config->normalize ? 1 : 0;
-	if (getenv("KVLITE_EMBEDDING_PROFILE") &&
-	    strcmp(getenv("KVLITE_EMBEDDING_PROFILE"), "0") != 0) {
+	if (g_cfg.observability_embedding_profile_enabled) {
 		created->profile_enabled = 1;
 	}
 	if (created->profile_enabled &&
@@ -1618,7 +1630,9 @@ EmbeddingErrorCode embedding_create(
 		free(created);
 		return EMBEDDING_ERR_OUT_OF_MEMORY;
 	}
-	created->vocab_path = embedding_join_dir_file(created->model_path, "vocab.txt");
+	created->vocab_path = config->vocab_path && config->vocab_path[0] != '\0' ?
+		embedding_strdup_or_null(config->vocab_path) :
+		embedding_join_dir_file(created->model_path, "vocab.txt");
 	if (!created->vocab_path) {
 		if (created->profile_mutex_initialized) {
 			pthread_mutex_destroy(&created->profile_mutex);
@@ -1785,6 +1799,19 @@ EmbeddingErrorCode embedding_create(
 
 	inspect_result = embedding_inspect_onnx_model(created);
 	if (inspect_result != EMBEDDING_OK) {
+		goto fail_inspect;
+	}
+	if (created->model_output_dim <= 0 ||
+	    created->model_output_dim != created->embedding_dim) {
+		snprintf(
+			created->last_error,
+			sizeof(created->last_error),
+			"ONNX output dimension=%d does not match configured dimension=%d",
+			created->model_output_dim,
+			created->embedding_dim
+		);
+		fprintf(stderr, "[kvlite][embedding][onnx] %s\n", created->last_error);
+		inspect_result = EMBEDDING_ERR_DIM_MISMATCH;
 		goto fail_inspect;
 	}
 
@@ -2410,6 +2437,10 @@ void embedding_runtime_get_resource_stats(
 	out->ort_run_max_us = embedding_resource_stats_load(
 		&g_onnx_resource_stats.ort_run_max_us
 	);
+}
+
+int embedding_runtime_supports_onnx(void) {
+	return 1;
 }
 
 void embedding_destroy(EmbeddingHandle *handle) {

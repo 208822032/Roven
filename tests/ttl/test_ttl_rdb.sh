@@ -165,7 +165,7 @@ rdb_filename = $rdb_file
 dump_filename = $TMP_DIR/kvstore.dat
 network_mode = reactor
 mem_backend = pool
-sync_mode = ebpf
+sync_mode = disabled
 max_value_size = 1048576
 EOF
 

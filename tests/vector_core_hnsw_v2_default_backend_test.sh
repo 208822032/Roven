@@ -127,7 +127,7 @@ def write_config(path, port, rdb, aof=None, index_type=None):
     path.write_text(f"""port = {port}
 role = master
 sync_port = {port + 1000}
-sync_mode = ebpf
+sync_mode = disabled
 network_mode = reactor
 enable_aof = {aof_enabled}
 aof_fsync_mode = always
@@ -140,6 +140,7 @@ vector_metric = ip
 vector_score_threshold = -1.0
 vector_scope_overfetch_factor = 4
 {index_line}vector_hnsw_m = 8
+vector_snapshot_enabled = false
 vector_hnsw_ef_construction = 64
 vector_hnsw_ef_search = 64
 """)
@@ -228,6 +229,20 @@ def smoke_explicit_backend(index_type, expected, tmp, name):
     finally:
         stop(proc, log)
 
+def smoke_rejected_backend(index_type, tmp, name):
+    port = pick_port()
+    conf = tmp / f"{name}.conf"
+    log_path = tmp / f"{name}.log"
+    write_config(conf, port, tmp / f"{name}.rdb", index_type=index_type)
+    proc, log = start([str(kv_bin), "--config", str(conf)], log_path)
+    try:
+        rc = proc.wait(timeout=5)
+    finally:
+        log.close()
+    assert rc != 0, f"removed backend {index_type} unexpectedly started"
+    output = log_path.read_text(errors="replace")
+    assert "removed vector backend" in output, output
+
 with tempfile.TemporaryDirectory(prefix="kvlite_hnsw_v2_default_") as td:
     tmp = Path(td)
 
@@ -290,10 +305,10 @@ with tempfile.TemporaryDirectory(prefix="kvlite_hnsw_v2_default_") as td:
         stop(proc, log)
 
     smoke_explicit_backend("flat", "core_flat", tmp, "explicit_flat")
-    smoke_explicit_backend("core_hnsw", "core_flat", tmp, "explicit_core_hnsw")
-    smoke_explicit_backend("hnswlib_hnsw", "core_flat", tmp, "explicit_hnswlib_hnsw")
-    smoke_explicit_backend("faiss_flat", "core_flat", tmp, "explicit_faiss_flat")
-    smoke_explicit_backend("faiss_hnsw", "core_flat", tmp, "explicit_faiss_hnsw")
+    smoke_rejected_backend("core_hnsw", tmp, "explicit_core_hnsw")
+    smoke_rejected_backend("hnswlib_hnsw", tmp, "explicit_hnswlib_hnsw")
+    smoke_rejected_backend("faiss_flat", tmp, "explicit_faiss_flat")
+    smoke_rejected_backend("faiss_hnsw", tmp, "explicit_faiss_hnsw")
 
 print("vector_core_hnsw_v2_default_backend_test.sh PASS")
 PY

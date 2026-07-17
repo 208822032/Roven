@@ -38,6 +38,8 @@ typedef struct kvs_vector_rebuild_context_s {
 
 	size_t delta_count;
 	size_t delta_capacity;
+	size_t delta_initial_capacity;
+	size_t delta_max_entries;
 	kvs_vector_rebuild_delta_entry_t *delta_log;
 
 	void *active_index;

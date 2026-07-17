@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <liburing.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h> 
@@ -494,7 +495,8 @@ static int proactor_session_handler(resp_parser_t* parser,
     char* cmd_name = parser->tokens[0];
 
     // 单独处理 REPLSYNC
-    if (g_cfg.sync_mode == KVS_SYNC_EBPF && strcasecmp(cmd_name, "REPLSYNC") == 0) {
+    if (g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR &&
+        strcasecmp(cmd_name, "REPLSYNC") == 0) {
         extern distributed_config_t global_dist_config;
 
         const char *ok_resp  = "+OK\r\n";
@@ -918,7 +920,7 @@ static int proactor_handle_replication_fallback(struct io_uring *ring,
     if (kind == KVS_REPL_FALLBACK_REPLSYNC) {
         extern distributed_config_t global_dist_config;
 
-        if (g_cfg.sync_mode == KVS_SYNC_EBPF &&
+        if (g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR &&
             global_dist_config.role == ROLE_SLAVE) {
             ext->is_replication = 1;
             return proactor_finish_inline_fallback_command(ext, parser, cmd_len, "+OK\r\n");
@@ -1003,11 +1005,15 @@ int set_event_recv(struct io_uring *ring, conn_extension_t *ctx) {
 
 	// 确保有足够空间接收数据
     size_t min_space = 4096;
-    if (recv_buf->size + 4096 > recv_buf->capacity) {
-        if(netbuf_reserve(recv_buf, recv_buf->size + min_space) < 0){
-            return -1;
-        }
-    }
+	    if (recv_buf->capacity - recv_buf->size < min_space &&
+	        recv_buf->capacity < recv_buf->max_capacity) {
+	        size_t target = recv_buf->size + min_space;
+	        if (target > recv_buf->max_capacity) target = recv_buf->max_capacity;
+	        if(netbuf_reserve(recv_buf, target) < 0){
+	            return -1;
+	        }
+	    }
+	    if (recv_buf->capacity == recv_buf->size) return -1;
 
     op = kvs_malloc(sizeof(io_uring_op_t));
     if(!op) return -1;
@@ -1025,7 +1031,7 @@ int set_event_recv(struct io_uring *ring, conn_extension_t *ctx) {
 	
 	io_uring_prep_recv(sqe, ctx->fd, 
                       recv_buf->data + recv_buf->size, 
-                      recv_buf->capacity - recv_buf->size - 1, 0);
+	                      recv_buf->capacity - recv_buf->size, 0);
 
     io_uring_sqe_set_data(sqe, op);
 
@@ -1148,7 +1154,11 @@ int p_init_server(unsigned short port) {
 	struct sockaddr_in serveraddr;	
 	memset(&serveraddr, 0, sizeof(struct sockaddr_in));	
 	serveraddr.sin_family = AF_INET;	
-	serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);	
+	if (inet_pton(AF_INET, g_cfg.listen_address, &serveraddr.sin_addr) != 1) {
+		KVS_LOG_ERROR("net", "invalid listen address: %s", g_cfg.listen_address);
+		close(sockfd);
+		return -1;
+	}
 	serveraddr.sin_port = htons(port);	
 
 	if (-1 == bind(sockfd, (struct sockaddr*)&serveraddr, sizeof(struct sockaddr))) {		
@@ -1160,7 +1170,7 @@ int p_init_server(unsigned short port) {
 	// 设置监听socket为非阻塞
     p_set_nonblocking(sockfd);
 
-	if(listen(sockfd, 10)){
+	if(listen(sockfd, g_cfg.network_listen_backlog)){
         KVS_LOG_ERROR_ERRNO("network", "listen failed on port %u", port);
         close(sockfd);
         return -1;

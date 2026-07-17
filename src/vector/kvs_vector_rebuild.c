@@ -100,13 +100,21 @@ static int kvs_vector_rebuild_reserve_delta(
 	if (ctx->delta_capacity >= min_capacity) {
 		return KVS_VECTOR_OK;
 	}
+	if (min_capacity > ctx->delta_max_entries) {
+		return KVS_VECTOR_ERR;
+	}
 
-	new_capacity = ctx->delta_capacity ? ctx->delta_capacity * 2 : 16;
+	new_capacity = ctx->delta_capacity ?
+		ctx->delta_capacity * 2 :
+		ctx->delta_initial_capacity;
 	while (new_capacity < min_capacity) {
 		if (new_capacity > SIZE_MAX / 2) {
 			return KVS_VECTOR_ERR;
 		}
 		new_capacity *= 2;
+	}
+	if (new_capacity > ctx->delta_max_entries) {
+		new_capacity = ctx->delta_max_entries;
 	}
 	if (new_capacity > SIZE_MAX / sizeof(*new_entries)) {
 		return KVS_VECTOR_ERR;
@@ -149,6 +157,14 @@ static int kvs_vector_rebuild_append_delta(
 
 	if (!ctx) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	if (ctx->delta_count >= ctx->delta_max_entries) {
+		kvs_vector_rebuild_set_error(
+			ctx,
+			KVS_VECTOR_ERR,
+			"rebuild delta limit reached"
+		);
+		return KVS_VECTOR_ERR;
 	}
 	if (op == KVS_VECTOR_REBUILD_DELTA_UPSERT) {
 		size_t bytes;
@@ -205,6 +221,8 @@ int kvs_vector_rebuild_context_init(kvs_vector_rebuild_context_t *ctx) {
 
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->state = KVS_VECTOR_REBUILD_IDLE;
+	ctx->delta_initial_capacity = 16;
+	ctx->delta_max_entries = SIZE_MAX;
 	return KVS_VECTOR_OK;
 }
 

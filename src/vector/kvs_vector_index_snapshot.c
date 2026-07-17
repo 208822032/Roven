@@ -1,6 +1,7 @@
 #define KVS_VECTOR_INTERNAL
 #include "vector/kvs_vector_index_snapshot.h"
 
+#include "kvs_config.h"
 #include "kvs_vector.h"
 
 #include <errno.h>
@@ -10,10 +11,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#define KVS_VECTOR_INDEX_MANIFEST_FIELD_COUNT 18u
+#define KVS_VECTOR_INDEX_MANIFEST_FIELD_COUNT 19u
 #define KVS_VECTOR_INDEX_MANIFEST_LINE_MAX 512
-#define KVS_VECTOR_INDEX_DEFAULT_MANIFEST_PATH "vector_index.manifest"
-#define KVS_VECTOR_INDEX_DEFAULT_SNAPSHOT_PATH "vector_index.snapshot"
 #define KVS_VECTOR_INDEX_SNAPSHOT_FNV_OFFSET 1469598103934665603ull
 #define KVS_VECTOR_INDEX_SNAPSHOT_FNV_PRIME 1099511628211ull
 
@@ -36,6 +35,7 @@ typedef enum kvs_vector_index_manifest_seen_e {
 	KVS_VECTOR_INDEX_MANIFEST_SEEN_SNAPSHOT_SIZE = 1u << 15,
 	KVS_VECTOR_INDEX_MANIFEST_SEEN_SNAPSHOT_CHECKSUM = 1u << 16,
 	KVS_VECTOR_INDEX_MANIFEST_SEEN_CREATED_AT_MS = 1u << 17,
+	KVS_VECTOR_INDEX_MANIFEST_SEEN_MODEL_CONTENT_IDENTITY = 1u << 18,
 } kvs_vector_index_manifest_seen_t;
 
 static const uint32_t KVS_VECTOR_INDEX_MANIFEST_SEEN_ALL =
@@ -245,7 +245,9 @@ static int kvs_vector_index_snapshot_manifest_write_stream(
 	    fprintf(fp, "snapshot_checksum=%" PRIu64 "\n",
 	            manifest->snapshot_checksum) < 0 ||
 	    fprintf(fp, "created_at_ms=%" PRIu64 "\n",
-	            manifest->created_at_ms) < 0) {
+	            manifest->created_at_ms) < 0 ||
+	    fprintf(fp, "model_content_identity=%" PRIu64 "\n",
+	            manifest->model_content_identity) < 0) {
 		return -1;
 	}
 	return 0;
@@ -426,6 +428,13 @@ static int kvs_vector_index_snapshot_manifest_parse_line(
 			return -1;
 		}
 		*seen |= KVS_VECTOR_INDEX_MANIFEST_SEEN_CREATED_AT_MS;
+	} else if (strcmp(key, "model_content_identity") == 0) {
+		if (kvs_vector_index_snapshot_parse_u64(
+			    value,
+			    &manifest->model_content_identity) != 0) {
+			return -1;
+		}
+		*seen |= KVS_VECTOR_INDEX_MANIFEST_SEEN_MODEL_CONTENT_IDENTITY;
 	}
 
 	return 0;
@@ -523,6 +532,14 @@ int kvs_vector_index_snapshot_manifest_validate(
 	}
 	if (actual->metric != expected->metric) {
 		kvs_vector_index_snapshot_set_reason(reason, reason_size, "metric mismatch");
+		return -1;
+	}
+	if (actual->model_content_identity != expected->model_content_identity) {
+		kvs_vector_index_snapshot_set_reason(
+			reason,
+			reason_size,
+			"model_content_identity mismatch"
+		);
 		return -1;
 	}
 	if (actual->hnsw_m != expected->hnsw_m ||
@@ -652,7 +669,7 @@ int kvs_vector_index_snapshot_default_manifest_path(char *buf, size_t size) {
 	return kvs_vector_index_snapshot_default_path(
 		buf,
 		size,
-		KVS_VECTOR_INDEX_DEFAULT_MANIFEST_PATH
+		g_cfg.vector_snapshot_manifest_path
 	);
 }
 
@@ -660,6 +677,6 @@ int kvs_vector_index_snapshot_default_snapshot_path(char *buf, size_t size) {
 	return kvs_vector_index_snapshot_default_path(
 		buf,
 		size,
-		KVS_VECTOR_INDEX_DEFAULT_SNAPSHOT_PATH
+		g_cfg.vector_snapshot_index_path
 	);
 }

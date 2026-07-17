@@ -26,6 +26,31 @@ static uint64_t kvs_command_task_now_us(void) {
 	return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
 }
 
+static unsigned int kvs_command_task_engine_bit(int data_structure) {
+	switch (data_structure) {
+		case DATA_STRUCTURE_ARRAY: return KVS_STORAGE_ENGINE_ARRAY;
+		case DATA_STRUCTURE_RBTREE: return KVS_STORAGE_ENGINE_RBTREE;
+		case DATA_STRUCTURE_HASH: return KVS_STORAGE_ENGINE_HASH;
+		case DATA_STRUCTURE_SKIPTABLE: return KVS_STORAGE_ENGINE_SKIPTABLE;
+		default: return 0;
+	}
+}
+
+static int kvs_command_task_default_engine(void) {
+	if (strcasecmp(g_cfg.storage_default_engine, "rbtree") == 0) return DATA_STRUCTURE_RBTREE;
+	if (strcasecmp(g_cfg.storage_default_engine, "hash") == 0) return DATA_STRUCTURE_HASH;
+	if (strcasecmp(g_cfg.storage_default_engine, "skiptable") == 0) return DATA_STRUCTURE_SKIPTABLE;
+	return DATA_STRUCTURE_ARRAY;
+}
+
+static int kvs_command_task_has_stored_value(int cmd_index) {
+	return cmd_index == KVS_CMD_SET || cmd_index == KVS_CMD_MOD ||
+	       cmd_index == KVS_CMD_RSET || cmd_index == KVS_CMD_RMOD ||
+	       cmd_index == KVS_CMD_HSET || cmd_index == KVS_CMD_HMOD ||
+	       cmd_index == KVS_CMD_SSET || cmd_index == KVS_CMD_SMOD ||
+	       cmd_index == KVS_CMD_PAPERSET || cmd_index == KVS_CMD_PAPERMOD;
+}
+
 int kvs_command_task_vector_status_to_resp(int status, char *response) {
 	switch (status) {
 		case KVS_VECTOR_OK:
@@ -370,6 +395,39 @@ int kvs_command_task_build(
 		return -1;
 	}
 
+	if (task->cmd_index >= KVS_CMD_SET && task->cmd_index <= KVS_CMD_SORT) {
+		task->ctx.data_structure = kvs_command_task_default_engine();
+	}
+	if (task->ctx.data_structure >= 0 &&
+	    !(g_cfg.storage_enabled_engine_mask &
+	      kvs_command_task_engine_bit(task->ctx.data_structure))) {
+		task->status = resp_generate_simple_string_n(response, '-',
+			"ERR storage engine disabled", sizeof("ERR storage engine disabled") - 1);
+		task->build_status = task->status;
+		return -1;
+	}
+	if (kvs_command_task_has_stored_value(task->cmd_index) &&
+	    g_cfg.max_value_size > 0 && task->ctx.value_len > g_cfg.max_value_size) {
+		task->status = resp_generate_simple_string_n(response, '-',
+			"ERR value exceeds storage.max_value_bytes",
+			sizeof("ERR value exceeds storage.max_value_bytes") - 1);
+		task->build_status = task->status;
+		return -1;
+	}
+	if (!g_cfg.ttl_enabled && task->cmd_index >= KVS_CMD_EXPIRE &&
+	    task->cmd_index <= KVS_CMD_PEXPIREAT) {
+		task->status = resp_generate_simple_string_n(response, '-',
+			"ERR TTL disabled", sizeof("ERR TTL disabled") - 1);
+		task->build_status = task->status;
+		return -1;
+	}
+	if (task->cmd_index == KVS_CMD_AOFREWRITE &&
+	    (!g_cfg.enable_aof || !g_cfg.aof_rewrite_enabled)) {
+		task->status = resp_generate_simple_string_n(response, '-',
+			"ERR AOF rewrite disabled", sizeof("ERR AOF rewrite disabled") - 1);
+		task->build_status = task->status;
+		return -1;
+	}
 	switch (task->cmd->lock_mode) {
 		case KVS_CMD_LOCK_READ:
 			task->use_read_lock = 1;
@@ -609,7 +667,8 @@ void kvs_command_task_post_commit(kvs_command_task_t *task, int ret) {
 		return;
 	}
 
-	if (global_dist_config.role == ROLE_MASTER && g_cfg.sync_mode == KVS_SYNC_TCP) {
+	if (global_dist_config.role == ROLE_MASTER &&
+	    g_cfg.replication_transport == KVS_REPLICATION_TCP) {
 		if (strcmp(task->cmd->name, "EXPIRE") == 0 ||
 		    strcmp(task->cmd->name, "PEXPIREAT") == 0) {
 			if (ret > 0) {

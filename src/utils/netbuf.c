@@ -8,19 +8,30 @@
 
 //初始化缓冲区 分配 initial_capacity 字节
 int netbuf_init(netbuf_t* buf, size_t initial_capacity){
+    return netbuf_init_limit(buf, initial_capacity, NETBUF_MAX_CAPACITY);
+}
+
+int netbuf_init_limit(netbuf_t* buf, size_t initial_capacity, size_t max_capacity){
     if(!buf) return -1;
 
     buf->data = NULL;
     buf->size = 0;
     buf->capacity = 0;
+	buf->max_capacity = max_capacity > 0 ? max_capacity : NETBUF_MAX_CAPACITY;
+	if (buf->max_capacity > NETBUF_MAX_CAPACITY) {
+		return -1;
+	}
+	if (initial_capacity > buf->max_capacity) {
+		initial_capacity = buf->max_capacity;
+	}
 
     if(initial_capacity == 0){
         return 0;//允许延迟分配
     }
 
-    if(initial_capacity > NETBUF_MAX_CAPACITY){
+    if(initial_capacity > buf->max_capacity){
         KVS_LOG_ERROR("netbuf", "netbuf_init: initial_capacity %zu exceeds NETBUF_MAX_CAPACITY %zu",
-                      initial_capacity, (size_t)NETBUF_MAX_CAPACITY);
+                      initial_capacity, buf->max_capacity);
         return -1;
     }
 
@@ -48,9 +59,9 @@ int netbuf_reserve(netbuf_t* buf, size_t min_capacity){
         new_capacity *= 2;
     }
 
-    if(new_capacity > NETBUF_MAX_CAPACITY){
+    if(new_capacity > buf->max_capacity){
         KVS_LOG_ERROR("netbuf", "netbuf_reserve: requested capacity %zu exceeds NETBUF_MAX_CAPACITY %zu",
-                      new_capacity, (size_t)NETBUF_MAX_CAPACITY);
+                      new_capacity, buf->max_capacity);
         return -1;
     }
 
@@ -87,4 +98,5 @@ void netbuf_free(netbuf_t* buf){
     }
     buf->size = 0;
     buf->capacity = 0;
+	buf->max_capacity = 0;
 }

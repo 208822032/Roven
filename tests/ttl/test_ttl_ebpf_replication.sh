@@ -50,6 +50,7 @@ SYNCD_PID=""
 MASTER_LOG=""
 SLAVE_LOG=""
 SYNCD_LOG=""
+MASTER_CONFIG=""
 
 cleanup() {
   for pid_var in SYNCD_PID SLAVE_PID MASTER_PID; do
@@ -281,26 +282,37 @@ wait_for_port_ready() {
 start_master() {
   local backend="$1"
   local port="$2"
+  local slave_port="$3"
 
   MASTER_LOG="$TMP_DIR/${backend}_master.log"
-  local config_file="$TMP_DIR/${backend}_master.conf"
+  MASTER_CONFIG="$TMP_DIR/${backend}_master.conf"
 
-  cat > "$config_file" <<EOF
+  cat > "$MASTER_CONFIG" <<EOF
+[server]
 role = master
+data_dir = $TMP_DIR
+[network]
 port = $port
-sync_port = $((port + 1000))
-enable_aof = no
-aof_fsync_mode = no
-aof_filename = $TMP_DIR/${backend}_master.aof
-rdb_filename = $TMP_DIR/${backend}_master.rdb
-dump_filename = $TMP_DIR/${backend}_master.dat
-network_mode = reactor
-mem_backend = pool
-sync_mode = ebpf
-max_value_size = 1048576
+mode = reactor
+[storage]
+memory_backend = pool
+max_value_bytes = 1048576
+[persistence]
+rdb_enabled = false
+aof_enabled = false
+[vector]
+enabled = false
+[replication]
+transport = disabled
+[ebpf]
+mode = experimental_mirror
+object_path = $ROOT_DIR/src/eBPF/ebpf_kern.o
+observe_host = 127.0.0.1
+observe_port = $port
+mirror_targets = 127.0.0.1:$slave_port
 EOF
 
-  "$KV_BIN" --config "$config_file" > "$MASTER_LOG" 2>&1 &
+  "$KV_BIN" --config "$MASTER_CONFIG" > "$MASTER_LOG" 2>&1 &
   MASTER_PID=$!
 }
 
@@ -313,20 +325,27 @@ start_slave() {
   local config_file="$TMP_DIR/${backend}_slave.conf"
 
   cat > "$config_file" <<EOF
+[server]
 role = slave
+data_dir = $TMP_DIR
+[network]
 port = $port
-master_ip = 127.0.0.1
-master_port = $master_port
-sync_port = $((master_port + 1000))
-enable_aof = no
-aof_fsync_mode = no
-aof_filename = $TMP_DIR/${backend}_slave.aof
-rdb_filename = $TMP_DIR/${backend}_slave.rdb
-dump_filename = $TMP_DIR/${backend}_slave.dat
-network_mode = reactor
-mem_backend = pool
-sync_mode = ebpf
-max_value_size = 1048576
+mode = reactor
+[storage]
+memory_backend = pool
+max_value_bytes = 1048576
+[persistence]
+rdb_enabled = false
+aof_enabled = false
+[vector]
+enabled = false
+[replication]
+transport = disabled
+[ebpf]
+mode = experimental_mirror
+object_path = $ROOT_DIR/src/eBPF/ebpf_kern.o
+observe_host = 127.0.0.1
+observe_port = $master_port
 EOF
 
   "$KV_BIN" --config "$config_file" > "$SLAVE_LOG" 2>&1 &
@@ -335,22 +354,9 @@ EOF
 
 start_syncd() {
   local backend="$1"
-  local master_port="$2"
-  local slave_port="$3"
 
   SYNCD_LOG="$TMP_DIR/${backend}_syncd.log"
-  local syncd_config="$TMP_DIR/${backend}_ebpf_sync.conf"
-
-  cat > "$syncd_config" <<EOF
-master_ip=127.0.0.1
-master_port=$master_port
-slave_count=1
-slave_ip=127.0.0.1
-slave_port=$slave_port
-max_payload=1048576
-EOF
-
-  "$EBPF_SYNCD_BIN" "$syncd_config" > "$SYNCD_LOG" 2>&1 &
+  "$EBPF_SYNCD_BIN" --config "$MASTER_CONFIG" > "$SYNCD_LOG" 2>&1 &
   SYNCD_PID=$!
   sleep 1
 }
@@ -406,7 +412,7 @@ run_backend_suite() {
 
   printf '[INFO][%s] master_port=%s slave_port=%s\n' "$backend" "$MASTER_PORT" "$SLAVE_PORT"
 
-  start_master "$backend" "$MASTER_PORT"
+  start_master "$backend" "$MASTER_PORT" "$SLAVE_PORT"
   if ! wait_for_port_ready "$MASTER_PORT" "EXIST __ebpf_master_probe__"; then
     fail_case "$backend" "master" "startup" "master did not become ready" "ready" "not-ready" "EXIST __ebpf_master_probe__"
   fi

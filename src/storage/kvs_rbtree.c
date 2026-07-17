@@ -959,6 +959,7 @@ int kvs_rbtree_mod_len(kvs_rbtree_t *inst, const char *key, size_t key_len, cons
     kvs_free(node->value);
     node->value = new_value;
     node->value_len = (uint32_t)value_len;
+    node->expire_at_ms = KV_TTL_NO_EXPIRE;
     return 0;
 }
 
@@ -967,4 +968,3 @@ int kvs_rbtree_exist_len(kvs_rbtree_t *inst, const char *key, size_t key_len) {
     rbtree_node *node = kvs_rbtree_lookup_node(inst, key, key_len);
     return (node && node != inst->nil) ? 1 : 0;
 }
-

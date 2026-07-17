@@ -11,9 +11,11 @@ typedef struct EmbeddingHandle EmbeddingHandle;
 
 typedef struct {
 	const char *model_path;
+	const char *vocab_path;
 	int embedding_dim;
 	int num_threads;
 	int max_text_len;
+	int max_tokens;
 	int normalize;
 } EmbeddingConfig;
 
@@ -74,6 +76,8 @@ const char *embedding_last_error(EmbeddingHandle *handle);
 void embedding_runtime_get_resource_stats(
 	EmbeddingRuntimeResourceStats *out
 );
+
+int embedding_runtime_supports_onnx(void);
 
 void embedding_destroy(EmbeddingHandle *handle);
 

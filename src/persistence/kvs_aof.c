@@ -302,9 +302,10 @@ void aof_append(int argc, char **argv, size_t *arg_lens){
     //有无重写 对加载的时间
     int should_rewrite = 0;
     off_t growth = aof_state.current_size - aof_state.rewrite_base_size;
-    if(!aof_state.loading && !aof_state.pause_rewrite && aof_state.current_size >= AOF_REWRITE_MIN_SIZE &&
-        growth >= AOF_REWRITE_MIN_GROWTH &&
-        growth >= (aof_state.rewrite_base_size * AOF_REWRITE_PERCENTAGE/100)&&
+    if(g_cfg.aof_rewrite_enabled && !aof_state.loading && !aof_state.pause_rewrite &&
+        aof_state.current_size >= (off_t)g_cfg.aof_rewrite_min_bytes &&
+        growth >= (off_t)g_cfg.aof_rewrite_min_growth_bytes &&
+        growth >= (aof_state.rewrite_base_size * g_cfg.aof_rewrite_growth_percent / 100) &&
         !aof_state.rewrite_in_progress){
             //aof_rewrite_background();//开始重写
             should_rewrite = 1;

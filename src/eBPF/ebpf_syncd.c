@@ -38,7 +38,6 @@ typedef struct ebpf_sync_msg {
     unsigned char data[];
 } ebpf_sync_msg_t;
 
-#define EBPFSYNC_QUEUE_CAPACITY 65535
 #define MAX_SLAVES   10
 
 typedef struct slave_conf {
@@ -50,13 +49,9 @@ typedef struct slave_conf {
 gcc -O2 -g ebpf_syncd.c ../utils/msg_queue.c  -o ebpf_syncd -lbpf -lelf -lz -lpthread -I ../../include
 */
 
-#define MAX_PAYLOAD 65535 //1MB
 #define CHUNK_SIZE 4096
 
 #define TX_BUF_SIZE (128 * 1024)
-// #define FLUSH_NS (300ull * 1000ull)
-#define FLUSH_NS (10ull * 1000ull * 1000ull)   // 10ms
-
 struct event {
     __u32 pid;
     __u32 len;
@@ -79,8 +74,6 @@ static volatile sig_atomic_t stop = 0;
 typedef struct daemon_conf{
     char master_ip[64];
     int master_port;
-    char slave_ip[64];
-    int slave_port;
     int max_payload;
 
     int slave_count;
@@ -112,6 +105,7 @@ static int g_slave_count = 0;
 static unsigned char *g_rx_stream = NULL;
 static size_t g_rx_stream_len = 0;
 static size_t g_rx_stream_cap = 0;
+static kvs_ebpf_mode_t g_ebpf_mode = KVS_EBPF_DISABLED;
 
 static void broadcast_to_all_slaves(const void *data, size_t len);
 
@@ -154,7 +148,7 @@ static ebpf_sync_msg_t* ebpf_sync_msg_create(const void* data, size_t len,int re
 
 static inline void ebpf_sync_msg_put(ebpf_sync_msg_t* msg){
     if(!msg) return;
-    if(atomic_fetch_sub_explicit(&msg->refcnt, 1, memory_order_acq_rel));
+	if(atomic_fetch_sub_explicit(&msg->refcnt, 1, memory_order_acq_rel) == 1)
         kvs_free(msg);
 }
 
@@ -186,83 +180,6 @@ static void* stats_printer_thread(void* arg) {
         );
     }
     return NULL;
-}
-
-
-static int load_daemon_conf(const char* path, daemon_conf_t* conf){
-    
-    FILE* fp = fopen(path, "r");
-    if(!fp){
-        perror("fopen");
-        return -1;
-    }
-
-    memset(conf, 0, sizeof(*conf));
-    conf->max_payload = 4096;
-
-    char line[256];
-    while(fgets(line, sizeof(line), fp)){
-        char key[64], val[128];
-        if(sscanf(line, " %63[^=]=%127s ", key, val) != 2){
-            continue;
-        }
-        if(strcmp(key, "master_ip") == 0){
-            strncpy(conf->master_ip, val, sizeof(conf->master_ip));
-        }else if(strcmp(key, "master_port") == 0){
-            conf->master_port = atoi(val);
-        }else if(strcmp(key, "max_payload") == 0){
-            conf->max_payload = atoi(val);
-        } else if(strcmp(key , "slave_count") == 0){
-            conf->slave_count = atoi(val);
-            if(conf->slave_count < 0) conf->slave_count = 0;
-            if(conf->slave_count > MAX_SLAVES) conf->slave_count = MAX_SLAVES;
-        }else if(strcmp(key, "slave_ip") == 0 ){
-            if(conf->slave_count == 0) conf->slave_count = 1;
-            strncpy(conf->slaves[0].ip, val, sizeof(conf->slaves[0].ip));
-        }else if(strcmp(key, "slave_port") == 0){
-            if(conf->slave_count == 0) conf->slave_count = 1;
-            conf->slaves[0].port = atoi(val);
-        }else{
-            int idx = 0;
-            if(sscanf(key, "slave%d_ip", &idx) == 1){
-                if(idx >= 1 && idx <= MAX_SLAVES){
-                    int i = idx - 1;
-                    strncpy(conf->slaves[i].ip, val, sizeof(conf->slaves[i].ip));
-                    if(conf->slave_count < idx) conf->slave_count = idx;
-                }
-            }else if(sscanf(key, "slave%d_port", &idx) == 1){
-                if(idx >= 1 && idx <= MAX_SLAVES){
-                    int i = idx - 1;
-                    conf->slaves[i].port = atoi(val);
-                    if(conf->slave_count < idx) conf->slave_count = idx;
-                }
-            }
-        }
-    }
-
-    fclose(fp);
-    if(conf->max_payload <= 0){
-        conf->max_payload = 4096; //默认4096
-    }
-
-    if(conf->master_ip[0] == '\0' || conf->master_port == 0){
-        fprintf(stderr, "Incomplete daemon configuration\n");
-        return -1;
-    }
-
-    if(conf->slave_count == 0){
-        fprintf(stderr, "No slave configured\n");
-        return -1;
-    }
-
-    for(int i = 0;i < conf->slave_count; i++){
-        if(conf->slaves[i].ip[0] == '\0' || conf->slaves[i].port == 0){
-            fprintf(stderr, "Incomplete slave %d configuration\n", i+1);
-            return -1;
-        }
-    }
-
-    return 0;
 }
 
 
@@ -640,7 +557,7 @@ static void* slave_sender_worker(void* arg){
     // 初始化 batcher（buf 由 ctx 提供，无 malloc）
     tx_batcher_init(&ctx->txb,
                     ctx->tx_buf, sizeof(ctx->tx_buf),
-                    FLUSH_NS,
+                    (uint64_t)g_cfg.ebpf_flush_interval_us * 1000ull,
                     txb_send_fn, ctx);
     
     int idle = 0;
@@ -857,9 +774,17 @@ static int handle_event(void* ctx, void* data, size_t data_sz){
     size_t len = (size_t)e->len;
     if (len > payload_sz)
         len = payload_sz;
+	if (len > g_cfg.ebpf_max_event_bytes) {
+		fprintf(stderr, "[ebpf_syncd] event exceeds configured max_event_bytes: %zu > %zu\n",
+			len, g_cfg.ebpf_max_event_bytes);
+		return 0;
+	}
 
     if (len == 0)
         return 0;
+	if (g_ebpf_mode == KVS_EBPF_OBSERVE) {
+		return 0;
+	}
 
     if (rx_stream_reserve(g_rx_stream_len + len) != 0) {
         fprintf(stderr, "[ebpf_syncd] rx stream allocation failed\n");
@@ -946,7 +871,7 @@ static int do_fullsync_from_master(const daemon_conf_t* conf){
     }
 
     //接收数据并广播
-    int buf_size = conf->max_payload > 0 ? conf->max_payload : MAX_PAYLOAD;
+    int buf_size = conf->max_payload > 0 ? conf->max_payload : CHUNK_SIZE;
     unsigned char *buffer = (unsigned char *)kvs_malloc(buf_size);
     if (!buffer) {
         fprintf(stderr, "[fullsync] malloc(%d) failed\n", buf_size);
@@ -1001,26 +926,42 @@ static int do_fullsync_from_master(const daemon_conf_t* conf){
 }
 
 int main(int argc, char** argv){
-    // 初始化全局配置为默认值（g_cfg 在 kvs_globals.c 中定义）
-	kvs_config_init_default(&g_cfg);
-    mem_init();
-
-    const char* conf_path = "../../config/ebpf_sync.conf";
-    if(argc > 1) conf_path = argv[1];
-
-    // printf("[ebpf_syncd] start, conf_path=%s\n", conf_path); // DEBUG
-
+	kvs_config_error_t config_error;
     struct daemon_conf conf = {0};
-    if(load_daemon_conf(conf_path, &conf) != 0){
-        fprintf(stderr, "Failed to load daemon config\n");
+	struct bpf_object* obj = NULL;
+	struct bpf_link* link_entry = NULL;
+	struct bpf_link* link_ret = NULL;
+	struct ring_buffer* ringbuf = NULL;
+	struct bpf_map* events_map;
+	int events_map_fd;
+	int err;
+
+	if (kvs_config_load(&g_cfg, argc, argv, "config/kvstore.conf", stderr,
+		&config_error) != 0) {
+		fprintf(stderr, "ebpf_syncd configuration error: %s\n", config_error.message);
         return 1;
     }
-
-    printf("[ebpf_syncd] conf loaded: master=%s:%d, slave=%s:%d\n",
-           conf.master_ip, conf.master_port, conf.slave_ip, conf.slave_port); // DEBUG
-    for(int i = 0;i < conf.slave_count;i ++){
-        printf("  slave %d: %s:%d\n", i+1, conf.slaves[i].ip, conf.slaves[i].port);
+	if (g_cfg.ebpf_mode == KVS_EBPF_DISABLED) {
+		printf("[ebpf_syncd] ebpf.mode=disabled; nothing to run\n");
+		return 0;
+	}
+	g_ebpf_mode = g_cfg.ebpf_mode;
+	snprintf(conf.master_ip, sizeof(conf.master_ip), "%s", g_cfg.ebpf_observe_host);
+	conf.master_port = g_cfg.ebpf_observe_port;
+	conf.max_payload = (int)g_cfg.ebpf_max_event_bytes;
+	if (g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR) {
+		conf.slave_count = (int)g_cfg.ebpf_mirror_target_count;
+		for (int i = 0; i < conf.slave_count; ++i) {
+			snprintf(conf.slaves[i].ip, sizeof(conf.slaves[i].ip), "%s",
+				g_cfg.ebpf_mirror_endpoints[i].host);
+			conf.slaves[i].port = g_cfg.ebpf_mirror_endpoints[i].port;
+		}
     }
+
+	mem_init();
+	printf("[ebpf_syncd] effective config: mode=%s observe=%s:%d targets=%d object=%s\n",
+		g_cfg.ebpf_mode == KVS_EBPF_OBSERVE ? "observe" : "experimental_mirror",
+		conf.master_ip, conf.master_port, conf.slave_count, g_cfg.ebpf_object_path);
 
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
     signal(SIGINT, handle_sigint);
@@ -1028,11 +969,8 @@ int main(int argc, char** argv){
 
     // printf("[ebpf_syncd] before ebpf_kern__open_and_load\n"); // DEBUG
 
-    //初始化 slave_ctx + sender 线程
-    g_slave_count = conf.slave_count;
-    if(g_slave_count > MAX_SLAVES){
-        g_slave_count = MAX_SLAVES;
-    }
+    // observe模式不创建sender，也不执行FULLDUMP。
+    g_slave_count = g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR ? conf.slave_count : 0;
 
     for(int i = 0;i < g_slave_count;i++){
         slave_ctx_t* slave = &g_slaves[i];
@@ -1044,7 +982,7 @@ int main(int argc, char** argv){
         slave->ip[sizeof(slave->ip)-1] = '\0';
         slave->running = 1;
 
-        if(msg_queue_init(&slave->queue, EBPFSYNC_QUEUE_CAPACITY) != 0){
+        if(msg_queue_init(&slave->queue, g_cfg.ebpf_user_queue_capacity) != 0){
             fprintf(stderr, "msg_queue_init failed for slave %d\n", i);
             slave->running = 0;
 
@@ -1064,35 +1002,35 @@ int main(int argc, char** argv){
         }
     }
 
-    //先做一次全量同步
-    if(do_fullsync_from_master(&conf) != 0){
+    if(g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR &&
+	   do_fullsync_from_master(&conf) != 0){
         fprintf(stderr, "do_fullsync_from_master failed\n");
         g_running = 0;
         goto cleanup;
     }
 
-    printf("[ebpf_syncd] Fullsync from master completed\n"); // DEBUG
+	if (g_cfg.ebpf_mode == KVS_EBPF_EXPERIMENTAL_MIRROR) {
+		printf("[ebpf_syncd] Fullsync from master completed\n");
+	}
 
-
-    const char* obj_path = "ebpf_kern.o";
-
-    // 增加路径自动查找逻辑：
-    // 如果当前目录下找不到，尝试去 src/eBPF 下找（适配从项目根目录运行的情况）
-    if (access(obj_path, F_OK) != 0) {
-        if (access("src/eBPF/ebpf_kern.o", F_OK) == 0) {
-            obj_path = "src/eBPF/ebpf_kern.o";
-        }
-    }
-
-    struct bpf_object* obj = bpf_object__open_file(obj_path, NULL);
+    obj = bpf_object__open_file(g_cfg.ebpf_object_path, NULL);
     if(libbpf_get_error(obj)){
         int err = -libbpf_get_error(obj);
-        fprintf(stderr, "Failed to open BPF object file: %s, err=%d\n", obj_path, err);
+        fprintf(stderr, "Failed to open BPF object file: %s, err=%d\n",
+			g_cfg.ebpf_object_path, err);
         return 1;
     }
+	events_map = bpf_object__find_map_by_name(obj, "events");
+	if (!events_map || bpf_map__set_max_entries(events_map,
+		(__u32)g_cfg.ebpf_ring_buffer_bytes) != 0) {
+		fprintf(stderr, "Failed to configure events ring buffer size=%zu\n",
+			g_cfg.ebpf_ring_buffer_bytes);
+		bpf_object__close(obj);
+		return 1;
+	}
 
     //加载BPF对象
-    int err = bpf_object__load(obj);
+	err = bpf_object__load(obj);
     if(err){
         fprintf(stderr, "Failed to load BPF object: %d\n", err);
         bpf_object__close(obj);
@@ -1137,22 +1075,18 @@ int main(int argc, char** argv){
     // printf("[ebpf_syncd] config_map updated: master_ip=0x%x, master_port=%d\n",
     //        cfg.master_ip, cfg.master_port); // DEBUG
         
-    struct bpf_map* events_map = bpf_object__find_map_by_name(obj, "events");
     if(!events_map){
         fprintf(stderr, "Failed to find events map\n");
         bpf_object__close(obj);
         return 1;
     }
-    int events_map_fd = bpf_map__fd(events_map);
+	events_map_fd = bpf_map__fd(events_map);
     if(events_map_fd < 0){
         fprintf(stderr, "Invalid events map fd\n");
         bpf_object__close(obj);
         return 1;
     }
     // printf("[ebpf_syncd] events map fd=%d\n", events_map_fd); // DEBUG
-
-    struct bpf_link* link_entry = NULL;
-    struct bpf_link* link_ret   = NULL;
 
     struct bpf_program* prog_entry = 
         bpf_object__find_program_by_name(obj, "kprobe_tcp_recvmsg");
@@ -1193,8 +1127,7 @@ int main(int argc, char** argv){
     // pthread_detach(tid_stats);
 
     //创建ringbuffer
-    struct ring_buffer* ringbuf = 
-        ring_buffer__new(events_map_fd, handle_event, NULL, NULL);
+	ringbuf = ring_buffer__new(events_map_fd, handle_event, NULL, NULL);
     if(libbpf_get_error(ringbuf)){
         int err = -libbpf_get_error(ringbuf);
         fprintf(stderr, "Failed to create ring buffer: %d\n", err);
@@ -1252,6 +1185,9 @@ cleanup:
 
     bpf_link__destroy(link_ret);
     bpf_link__destroy(link_entry);
+	if (obj && !libbpf_get_error(obj)) {
+		bpf_object__close(obj);
+	}
     mem_destroy();
 
     printf("[ebpf_syncd] Exited cleanly\n");

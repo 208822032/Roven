@@ -92,6 +92,7 @@ int kvs_filter_protocol(char **tokens, int count, size_t *token_lens, char *resp
 	ret = kvs_command_task_execute_sync(&task);
 	kvs_command_task_post_commit(&task, ret);
 	kvs_response_task_finalize(&response_task, ret);
+	ret = kvs_response_task_status(&response_task);
 	kvs_command_task_destroy(&task);
 	kvs_response_task_destroy(&response_task);
 	return ret;
@@ -104,25 +105,33 @@ int init_kvengine(void) {
 
 #if ENABLE_ARRAY
 	memset(&global_array, 0, sizeof(kvs_array_t));
-	kvs_array_create(&global_array);
+	if (kvs_array_create_with_capacity(&global_array, g_cfg.storage_array_initial_capacity) != 0) {
+		return -1;
+	}
 #endif
 
 #if ENABLE_RBTREE
 	memset(&global_rbtree, 0, sizeof(kvs_rbtree_t));
-	kvs_rbtree_create(&global_rbtree);
+	if (kvs_rbtree_create(&global_rbtree) != 0) {
+		return -1;
+	}
 #endif
 
 #if ENABLE_HASH
 	memset(&global_hash, 0, sizeof(kvs_hash_t));
-	kvs_hash_create(&global_hash);
+	if (kvs_hash_create_with_capacity(&global_hash, g_cfg.storage_hash_initial_capacity) != 0) {
+		return -1;
+	}
 #endif
 
 #if ENABLE_SKIPTABLE
 	memset(&global_skiptable, 0, sizeof(kvs_skiptable_t));
-	kvs_skiptable_create(&global_skiptable);
+	if (kvs_skiptable_create(&global_skiptable) != 0) {
+		return -1;
+	}
 #endif
 
-	if(kvs_vector_init() != KVS_VECTOR_OK) return -1;
+	if (g_cfg.vector_enabled && kvs_vector_init() != KVS_VECTOR_OK) return -1;
 
 	return 0;
 }
@@ -130,7 +139,7 @@ int init_kvengine(void) {
 void dest_kvengine(void) {
 
 	// 1. 先停止所有后台线程/使用者，确保不再访问全局数据结构
-	if (g_cfg.sync_mode == KVS_SYNC_TCP) {
+	if (g_cfg.replication_transport == KVS_REPLICATION_TCP) {
 		distributed_shutdown();
 	}
 
@@ -189,37 +198,35 @@ void handle_signal(int sig) {
 
 #if 1
 int main(int argc, char *argv[]) {
+	kvs_config_error_t config_error;
+	int network_status = 0;
+
 	kvs_shutdown_reset_for_init();
 
-	// 初始化全局配置为默认值（g_cfg 在 kvs_globals.c 中定义）
-	kvs_config_init_default(&g_cfg);
-
-	// 先从命令行解析 --config 等，获取配置文件路径和覆盖项
-	const char *config_path = NULL;
-	kvs_config_apply_cmdline(&g_cfg, argc, argv, &config_path);
-	int config_load_failed = 0;
-
-	// 如果指定了配置文件，则尝试加载
-	if (config_path) {
-		if (kvs_config_load_file(&g_cfg, config_path) != 0) {
-			config_load_failed = 1;
+	if (kvs_config_load(
+			&g_cfg,
+			argc,
+			argv,
+			"config/kvstore.conf",
+			stderr,
+			&config_error) != 0) {
+		if (config_error.path[0] && config_error.line) {
+			fprintf(stderr, "configuration error: %s:%u: %s\n",
+				config_error.path, config_error.line, config_error.message);
+		} else if (config_error.path[0]) {
+			fprintf(stderr, "configuration error: %s: %s\n",
+				config_error.path, config_error.message);
+		} else {
+			fprintf(stderr, "configuration error: %s\n", config_error.message);
 		}
-	} else {
-		// 默认配置文件名：config/kvstore.conf
-		kvs_config_load_file(&g_cfg, "config/kvstore.conf");
+		return 1;
 	}
-
-	// 再次应用命令行，保证命令行优先级最高
-	kvs_config_apply_cmdline(&g_cfg, argc, argv, NULL);
 
 	int log_level_valid = 1;
 	kvs_log_level_t log_level = kvs_parse_log_level_value(g_cfg.log_level, &log_level_valid);
 	const char *log_path = (g_cfg.log_file[0] != '\0') ? g_cfg.log_file : NULL;
 	if (kvs_log_init(log_path, log_level, g_cfg.log_async) != 0 && log_path) {
 		KVS_LOG_ERROR("core", "failed to open log file %s, falling back to stderr", log_path);
-	}
-	if (config_load_failed) {
-		KVS_LOG_ERROR("core", "failed to load config file %s, using defaults/CLI overrides", config_path);
 	}
 	if (!log_level_valid) {
 		KVS_LOG_ERROR("core", "invalid log_level=%s, using info", g_cfg.log_level);
@@ -228,6 +235,67 @@ int main(int argc, char *argv[]) {
 		kvs_log_is_async() ? "async" : "sync",
 		kvs_log_level_name(log_level),
 		log_path ? log_path : "stderr");
+	{
+		char rdb_source[KVS_CONFIG_PATH_MAX + 64] = "unknown";
+		char aof_source[KVS_CONFIG_PATH_MAX + 64] = "unknown";
+		char index_source[KVS_CONFIG_PATH_MAX + 64] = "unknown";
+		char model_source[KVS_CONFIG_PATH_MAX + 64] = "unknown";
+		char snapshot_source[KVS_CONFIG_PATH_MAX + 64] = "unknown";
+		const kvs_config_source_t *source;
+		source = kvs_config_source_get(&g_cfg, "persistence.rdb_path");
+		if (source) (void)kvs_config_source_format(source, rdb_source, sizeof(rdb_source));
+		source = kvs_config_source_get(&g_cfg, "persistence.aof_path");
+		if (source) (void)kvs_config_source_format(source, aof_source, sizeof(aof_source));
+		source = kvs_config_source_get(&g_cfg, "vector.index_type");
+		if (source) (void)kvs_config_source_format(source, index_source, sizeof(index_source));
+		source = kvs_config_source_get(&g_cfg, "embedding.model_path");
+		if (source) (void)kvs_config_source_format(source, model_source, sizeof(model_source));
+		source = kvs_config_source_get(&g_cfg, "vector_snapshot.index_path");
+		if (source) (void)kvs_config_source_format(source, snapshot_source, sizeof(snapshot_source));
+		KVS_LOG_INFO("config",
+			"effective server role=%s test_mode=%d listen=%s:%d network_mode=%d worker_threads=%d max_connections=%d backlog=%d request_bytes=%zu response_bytes=%zu commands_per_read=%d",
+			g_cfg.role == KVS_ROLE_MASTER ? "master" : "slave",
+			g_cfg.test_mode,
+			g_cfg.listen_address,
+			g_cfg.port,
+			g_cfg.network_mode,
+			g_cfg.network_worker_threads,
+			g_cfg.network_max_connections,
+			g_cfg.network_listen_backlog,
+			g_cfg.network_max_request_bytes,
+			g_cfg.network_max_response_bytes,
+			g_cfg.network_max_commands_per_read);
+		KVS_LOG_INFO("config",
+			"effective persistence rdb_enabled=%d rdb_path=%s rdb_source=%s aof_enabled=%d aof_path=%s aof_source=%s rewrite_enabled=%d",
+			g_cfg.enable_rdb, g_cfg.rdb_filename, rdb_source,
+			g_cfg.enable_aof, g_cfg.aof_filename, aof_source,
+			g_cfg.aof_rewrite_enabled);
+		KVS_LOG_INFO("config",
+			"effective replication transport=%s master=%s service_port=%d master_sync_port=%d sync_listen_port=%d full_sync=%s not_ready_query=%s ebpf_mode=%d ebpf_object=%s mirror_targets=%zu",
+			g_cfg.replication_transport == KVS_REPLICATION_TCP ? "tcp" : "disabled",
+			g_cfg.replication_master_host,
+			g_cfg.replication_master_service_port,
+			g_cfg.replication_master_sync_port,
+			g_cfg.replication_sync_listen_port,
+			g_cfg.replication_full_sync_policy,
+			g_cfg.replication_not_ready_query_policy,
+			(int)g_cfg.ebpf_mode,
+			g_cfg.ebpf_object_path,
+			g_cfg.ebpf_mirror_target_count);
+		KVS_LOG_INFO("config",
+			"effective vector enabled=%d index=%s index_source=%s dimension=%d metric=%s normalize=%d M=%d M0=%d efConstruction=%d efSearch=%d initial_capacity=%d provider=%s model_path=%s model_source=%s model_identity=%016llx snapshot_enabled=%d snapshot_path=%s snapshot_source=%s rebuild_async=%d delta_initial=%d delta_max=%d",
+			g_cfg.vector_enabled, g_cfg.vector_index_type, index_source,
+			g_cfg.vector_dimension, g_cfg.vector_metric, g_cfg.vector_normalize,
+			g_cfg.vector_hnsw_m, g_cfg.vector_hnsw_m0,
+			g_cfg.vector_hnsw_ef_construction, g_cfg.vector_hnsw_ef_search,
+			g_cfg.vector_hnsw_initial_capacity, g_cfg.embedding_provider,
+			g_cfg.embedding_model_path, model_source,
+			(unsigned long long)g_cfg.embedding_model_identity,
+			g_cfg.vector_snapshot_enabled, g_cfg.vector_snapshot_index_path,
+			snapshot_source, g_cfg.vector_rebuild_async_enabled,
+			g_cfg.vector_rebuild_delta_initial_capacity,
+			g_cfg.vector_rebuild_delta_max_entries);
+	}
 
 	//根据 kvs_config role 初始化global_dist_config.role
 	memset(&global_dist_config, 0, sizeof(global_dist_config));
@@ -269,7 +337,9 @@ int main(int argc, char *argv[]) {
 
 	//先加载RDB文件
 	#if ENABLE_RDB
+	if (g_cfg.enable_rdb) {
 		kvs_rdb_load(g_cfg.rdb_filename);
+	}
 	#endif
 
 	
@@ -283,36 +353,40 @@ int main(int argc, char *argv[]) {
 		aof_load(g_cfg.aof_filename);
 	}
 
-	if (kvs_vector_rebuild_after_load() != KVS_VECTOR_OK) {
+	if (g_cfg.vector_enabled &&
+	    kvs_vector_rebuild_after_load() != KVS_VECTOR_OK) {
 		KVS_LOG_ERROR("vector", "vector rebuild after load failed");
+		dest_kvengine();
+		return 1;
 	}
 
 	#if 1
 	// 分布式初始化
 	//仅在 TCP 同步模式下启用分布式功能
-	if (g_cfg.sync_mode == KVS_SYNC_TCP) {
-		if (g_cfg.role == KVS_ROLE_SLAVE) {
-			if (g_cfg.master_ip[0] == '\0' || g_cfg.master_port == 0) {
-				KVS_LOG_ERROR("core", "slave mode requires master IP and port");
-				return 1;
-			}
+		if (g_cfg.replication_transport == KVS_REPLICATION_TCP) {
+			if (g_cfg.role == KVS_ROLE_SLAVE) {
+				if (g_cfg.replication_master_host[0] == '\0' ||
+				    g_cfg.replication_master_sync_port == 0) {
+					KVS_LOG_ERROR("core", "TCP slave requires master host and sync port");
+					return 1;
+				}
 
-			// 主节点的同步端口已经在 g_cfg.sync_port 里计算好（默认 master_port+1000）
-			distributed_init(ROLE_SLAVE, g_cfg.master_ip, g_cfg.sync_port, g_cfg.port);
-			KVS_LOG_INFO("core", "starting as SLAVE on port %d, connecting to master %s:%d",
-				g_cfg.port, g_cfg.master_ip, g_cfg.sync_port);
-		} else {
-			// 主节点同步端口 = 服务端口 + 1000（或配置文件提供）
-			int sync_port = g_cfg.sync_port;
-			if (sync_port == 0) sync_port = g_cfg.port + 1000;
-			distributed_init(ROLE_MASTER, NULL, 0, sync_port);
+				distributed_init(ROLE_SLAVE, g_cfg.replication_master_host,
+					g_cfg.replication_master_sync_port, g_cfg.port);
+				KVS_LOG_INFO("core", "starting as SLAVE on port %d, connecting to master %s:%d",
+					g_cfg.port, g_cfg.replication_master_host,
+					g_cfg.replication_master_sync_port);
+			} else {
+				int sync_port = g_cfg.replication_sync_listen_port;
+				distributed_init(ROLE_MASTER, NULL, 0, sync_port);
 			KVS_LOG_INFO("core", "starting as MASTER on port %d, sync port %d", g_cfg.port, sync_port);
 			KVS_LOG_INFO("core", "AOF enabled: %s (%d), fsync mode: %d",
 				g_cfg.aof_filename, g_cfg.enable_aof, g_cfg.aof_fsync_mode);
 		}
-	}else{
-		// eBPF 模式：不启动 TCP 分布式模块，仅保留 role 用于“slave 只读”判断
-		KVS_LOG_INFO("core", "Distributed sync disabled (sync_mode = eBPF). Slave role is still enforced as read-only.");
+		}else{
+			KVS_LOG_INFO("core",
+				"TCP replication disabled; role enforcement remains active, ebpf_mode=%d",
+				(int)g_cfg.ebpf_mode);
 	}
 	#endif
 
@@ -332,36 +406,41 @@ int main(int argc, char *argv[]) {
 		KVS_LOG_INFO("core",
 			"network_mode=ntyco routes commands through single command executor.");
 		KVS_LOG_INFO("core", "starting in NTYCO mode on port %d", g_cfg.port);
-        ntyco_start(g_cfg.port, kvs_filter_protocol);
+        network_status = ntyco_start(g_cfg.port, kvs_filter_protocol);
     } else if (mode == NETWORK_PROACTOR) {
 		KVS_LOG_INFO("core", "starting in PROACTOR mode on port %d", g_cfg.port);
-        proactor_start(g_cfg.port, kvs_filter_protocol);
+        network_status = proactor_start(g_cfg.port, kvs_filter_protocol);
     } else if(mode == NETWORK_REACTOR){
 		KVS_LOG_INFO("core", "starting in REACTOR mode on port %d", g_cfg.port);
-        reactor_start(g_cfg.port, kvs_filter_protocol);
+        network_status = reactor_start(g_cfg.port, kvs_filter_protocol);
     }else {
 		KVS_LOG_INFO("core", "network_mode=%d, no network listener started (offline mode)", mode);
+		network_status = -1;
+	}
+	if (network_status < 0) {
+		KVS_LOG_ERROR("core", "network listener failed to start or terminated with an error");
 	}
        
     // 保存数据并退出
-	KVS_LOG_INFO("core", "shutdown requested, saving data...");
+	KVS_LOG_INFO("core", "shutdown requested%s",
+		network_status < 0 ? " after network failure; persistence save skipped" : ", saving data...");
 
 	kvs_ttl_background_stop();
 
 	#if ENABLE_AOF
-	aof_fsync(1);
+	if (network_status >= 0 && g_cfg.enable_aof) aof_fsync(1);
 	#endif
 
 #if ENABLE_RDB
-	kvs_rdb_save(g_cfg.rdb_filename);
+	if (network_status >= 0 && g_cfg.enable_rdb) kvs_rdb_save(g_cfg.rdb_filename);
 #endif
 	kvs_command_executor_stop();
-	KVS_LOG_INFO("core", "data saved. exiting.");
+	KVS_LOG_INFO("core", "shutdown complete");
     dest_kvengine();
 	pthread_rwlock_destroy(&g_kv_data_rwlock);
 	kvs_log_shutdown();
 
-    return 0;    
+    return network_status < 0 ? 1 : 0;
     
 }
 #endif

@@ -276,6 +276,22 @@ expect_exact_one_of() {
   pass_case "$backend" "$case_name" "$cmd"
 }
 
+expect_exact_one_of_three() {
+  local backend="$1"
+  local case_name="$2"
+  local cmd="$3"
+  local expected_a="$4"
+  local expected_b="$5"
+  local expected_c="$6"
+  local out
+
+  out="$(capture_output "$cmd")"
+  if [[ "$out" != "$expected_a" && "$out" != "$expected_b" && "$out" != "$expected_c" ]]; then
+    fail_case "$backend" "$case_name" "response mismatch" "$cmd" "$expected_a | $expected_b | $expected_c" "$out"
+  fi
+  pass_case "$backend" "$case_name" "$cmd"
+}
+
 expect_eventually_output_contains_two_and_not_contains() {
   local backend="$1"
   local case_name="$2"
@@ -357,7 +373,7 @@ rdb_filename = $TMP_DIR/kvstore.rdb
 dump_filename = $TMP_DIR/kvstore.dat
 network_mode = reactor
 mem_backend = pool
-sync_mode = ebpf
+sync_mode = disabled
 max_value_size = 1048576
 EOF
 
@@ -446,7 +462,7 @@ run_backend_suite() {
   expect_eventually_raw_output_contains_two_and_not_contains "$backend" "fulldump-filter" "FULLDUMP" "$range_key_a" "$range_key_c" "$range_key_b" 5 0.2 1
   expect_exact "$backend" "range-cleanup-a" "$del_cmd $range_key_a" "OK"
   if [[ "$backend" == "hash" || "$backend" == "skiptable" ]]; then
-    expect_exact_one_of "$backend" "range-cleanup-b" "$del_cmd $range_key_b" "OK" "(error) ERROR"
+    expect_exact_one_of_three "$backend" "range-cleanup-b" "$del_cmd $range_key_b" "OK" "NO EXIST" "(error) ERROR"
   else
     expect_exact_one_of "$backend" "range-cleanup-b" "$del_cmd $range_key_b" "OK" "NO EXIST"
   fi

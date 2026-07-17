@@ -44,7 +44,8 @@ KVLite 是一个使用 C 语言实现的轻量级键值存储服务，面向服�
 - AOF 追加写，支持 `no` / `everysec` / `always` 三种 fsync 策略
 - AOF 重写
 - RDB 快照保存与加载
-- 通过 RDB 加载和 AOF 重放恢复产品记录
+- RDB 保存产品记录及已生成的向量；AOF 保存并重放公开写命令
+- 启动时按 RDB、AOF、派生索引校验/重建的顺序恢复
 - TCP 全量/增量同步和 eBPF 流量同步基础设施
 
 ### 2.4 向量检索
@@ -244,7 +245,9 @@ HNSW 向量索引采用当前索引、影子索引和待回收索引的发布模
 
 ```mermaid
 flowchart TD
-    P[RDB / AOF 持久化记录] --> M[恢复记录存储与编号映射]
+    RDB[RDB: 产品记录和 embedding] --> M[恢复记录存储与编号映射]
+    AOF[AOF: VSET / VDEL 命令] --> REPLAY[按公开命令语义重放]
+    REPLAY --> M
     M --> CHECK{索引快照是否有效}
     CHECK -->|有效| LOAD[加载并校验索引快照]
     CHECK -->|缺失、损坏或不兼容| BUILD[根据有效记录重建索引]
@@ -252,11 +255,15 @@ flowchart TD
     BUILD --> READY
 ```
 
-- KVLite 持久化的是产品记录，而不是将 HNSW 图作为用户数据真相。
+- RDB 向量段保存产品记录及其 embedding；AOF 追加保存 `VSET` / `VDEL`，AOF 重写将当前有效记录写成 `VSET` 文本命令；两者都不保存 HNSW 图。
+- AOF 重放会重新经过 `VSET` 的 embedding prepare/commit 路径。使用 `local_c` provider 时会重新执行 tokenizer/ONNX 推理，并不复用 RDB 中冻结的 embedding。
+- 同时存在 RDB 与 AOF 时，启动流程先加载 RDB，再重放 AOF，最后校验或重建派生索引。
+- 产品记录是数据真相，HNSW 图不是用户数据真相。
 - HNSW 图和索引快照用于加速检索与启动，可以由有效记录重新构建。
 - 快照清单会校验来源、版本和索引结构；快照缺失、损坏或不兼容时，仅根据记录进行索引重建。
 - 同步重建与异步发布后复用现有快照写入能力；快照采用尽力写入策略。
 - RDB 加载、AOF 重放和索引重建都必须从有效记录恢复运行时编号映射与向量索引。
+- 对应证据见 [`tests/vector_command_persistence_recovery_test.sh`](tests/vector_command_persistence_recovery_test.sh)、[`tests/vector_index_snapshot_load_after_records_test.sh`](tests/vector_index_snapshot_load_after_records_test.sh) 和 [`docs/vector_command_functionality_audit.md`](docs/vector_command_functionality_audit.md)。
 
 ---
 

@@ -1,0 +1,181 @@
+# Unified Configuration Stage 4 schema example.
+#
+# INI sections and the uncommented fields below are accepted by the Stage 4
+# parser. Commented unsupported/future fields document later stages;
+# explicitly configuring them fails until their owning module is migrated.
+# Do not replace config/kvstore.conf with this design example.
+# Relative runtime-data paths resolve from server.data_dir. Relative asset paths
+# resolve from server.config_root, which defaults to this file's directory.
+#
+# Active profile below: vector-enabled standalone service. The model and vocab
+# paths are resolved from config_root; runtime data paths use data_dir.
+
+[server]
+role = master
+config_root = .
+data_dir = ../../data
+test_mode = false
+
+[network]
+port = 8080
+mode = reactor
+listen_address = 0.0.0.0
+worker_threads = 1
+max_connections = 1024
+listen_backlog = 1024
+max_request_bytes = 10485760
+max_response_bytes = 2097152
+max_commands_per_read = 1024
+
+[storage]
+memory_backend = pool
+default_engine = array
+enabled_engines = array,rbtree,hash,skiptable
+array_initial_capacity = 2048
+hash_initial_capacity = 1048576
+max_value_bytes = 10485760
+
+[ttl]
+enabled = true
+scan_enabled = true
+scan_interval_ms = 1000
+scan_budget = 32
+
+[persistence]
+rdb_enabled = true
+rdb_path = kvstore.rdb
+aof_enabled = false
+aof_path = kvstore.aof
+aof_fsync = everysec
+aof_rewrite_enabled = true
+aof_rewrite_min_bytes = 29360128
+aof_rewrite_min_growth_bytes = 67108864
+aof_rewrite_growth_percent = 50
+legacy_dump_path = kvstore.dat
+startup_recovery_order = rdb_then_aof_then_index
+
+[vector]
+enabled = true
+index_type = core_hnsw_v2
+dimension = 512
+metric = ip
+normalize = true
+hnsw_m = 48
+hnsw_m0 = 96
+hnsw_ef_construction = 512
+hnsw_ef_search = 1024
+initial_capacity = 100000
+default_topk = 1
+default_threshold = 0.85
+scope_overfetch_factor = 4
+distance_backend = auto
+
+[embedding]
+provider = local_c
+model_path = ../../models/bge-small-zh-v1.5/model.onnx
+vocab_path = ../../models/bge-small-zh-v1.5/vocab.txt
+output_dimension = 512
+model_version = auto
+intra_op_threads = 1
+inter_op_threads = 0
+ort_graph_optimization = basic
+ort_execution_mode = sequential
+worker_pool_enabled = true
+worker_threads = 1
+worker_queue_capacity = 1024
+max_text_bytes = 4096
+max_tokens = 512
+cache_enabled = true
+cache_capacity = 10000
+cache_ttl_ms = 3600000
+cache_policy = lru
+# All embedding.batch_* fields are unsupported and rejected rather than ignored.
+
+[vector_snapshot]
+enabled = true
+manifest_path = vector_index.manifest
+index_path = vector_index.snapshot
+load_on_start = true
+invalid_action = rebuild
+write_after_rebuild = best_effort
+cross_node_reuse = false
+
+[vector_rebuild]
+async_enabled = true
+delta_initial_capacity = 16
+delta_max_entries = 1000000
+retry_policy = manual
+cancel_enabled = true
+write_snapshot_after_publish = true
+
+[replication]
+transport = disabled
+# Slave source metadata. TCP slaves require master_host and master_sync_port.
+master_service_port = 0
+master_sync_port = 0
+# TCP masters listen here; 0 is inactive while transport is disabled.
+sync_listen_port = 0
+full_sync_policy = required
+not_ready_query_policy = reject
+
+# Reserved for Replication Stage 3. These keys must be rejected as unsupported
+# until offsets, ACK and backlog are implemented.
+# backlog_bytes = 67108864
+# ack_interval_ms = 1000
+# reconnect_backoff_ms = 1000
+
+[ebpf]
+mode = disabled
+object_path = ../../src/eBPF/ebpf_kern.o
+observe_host = 127.0.0.1
+observe_port = 8080
+# experimental_mirror only; comma-separated IPv4:port endpoints.
+# mirror_targets = 127.0.0.1:8081
+ring_buffer_bytes = 16777216
+max_event_bytes = 4096
+user_queue_capacity = 65535
+flush_interval_us = 10000
+
+[observability]
+log_level = info
+log_path = kvstore.log
+log_async = false
+vsearch_stage_stats_enabled = false
+embedding_profile_enabled = false
+hnsw_build_profile_enabled = false
+hnsw_search_profile_enabled = false
+# Replication stats and log_queue_capacity remain unsupported.
+
+# ---------------------------------------------------------------------------
+# Deployment profile overrides
+# ---------------------------------------------------------------------------
+#
+# Ordinary standalone KV target: vector.enabled=false,
+# embedding.provider=hash, replication.transport=disabled, ebpf.mode=disabled.
+#
+# Vector standalone:
+#   Use the active values in this file.
+#
+# TCP master:
+#   [server]      role = master
+#   [replication] transport = tcp
+#                 sync_listen_port = 9080
+#
+# TCP slave:
+#   [server]      role = slave
+#   [network]     port = 8081
+#   [replication] transport = tcp
+#                 master_host = 127.0.0.1
+#                 master_service_port = 8080
+#                 master_sync_port = 9080
+# The slave's vector/embedding/model/metric settings must match the master's
+# compatibility manifest before the node may enter READY.
+#
+# eBPF observe (may coexist with TCP):
+#   [ebpf] mode = observe
+#          object_path = ../../src/eBPF/ebpf_kern.o
+#          observe_host = 127.0.0.1
+#          observe_port = 8080
+#
+# experimental_mirror requires replication.transport=disabled and explicit
+# mirror_targets. It has no offset, ACK, backlog, READY or reliability claim.

@@ -126,7 +126,7 @@ def write_config(path, port, rdb, aof=None, v2=True):
     path.write_text(f"""port = {port}
 role = master
 sync_port = {port + 1000}
-sync_mode = ebpf
+sync_mode = disabled
 network_mode = reactor
 enable_aof = {aof_enabled}
 aof_fsync_mode = always
@@ -139,6 +139,7 @@ vector_metric = ip
 vector_score_threshold = -1.0
 vector_scope_overfetch_factor = 4
 vector_index_type = core_hnsw_v2
+vector_snapshot_enabled = false
 vector_hnsw_v2_experimental_enabled = {'yes' if v2 else 'no'}
 vector_hnsw_m = 8
 vector_hnsw_ef_construction = 64

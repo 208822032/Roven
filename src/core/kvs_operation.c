@@ -200,7 +200,7 @@ static int ttl_lookup_any(const char *key, size_t key_len, ttl_target_ref_t *ref
 static void ttl_sync_delete_if_needed(const char *key, size_t key_len) {
     if (!key) return;
     if (global_dist_config.role != ROLE_MASTER) return;
-    if (g_cfg.sync_mode != KVS_SYNC_TCP) return;
+    if (g_cfg.replication_transport != KVS_REPLICATION_TCP) return;
     if (get_sync_context() == 2) return;
     master_sync_command("DEL", key, key_len, NULL, 0);
 }
@@ -764,7 +764,7 @@ int parse_command_argument(int cmd, char **tokens, int count, size_t *token_lens
     ctx->scope_len = 0;
     ctx->subcommand = NULL;
     ctx->subcommand_len = 0;
-    ctx->topk = 1;
+    ctx->topk = g_cfg.vector_default_topk;
     ctx->threshold = 0.0f;
     ctx->has_threshold = 0;
     ctx->query_text = NULL;
@@ -3067,6 +3067,10 @@ int handle_vset_command(command_context_t *ctx, char *response) {
     int status;
     kvs_vector_set_prepared_t prepared;
 
+    if (!g_cfg.vector_enabled) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_NOT_INITIALIZED, response);
+    }
+
     if (!ctx || !ctx->query_text || !ctx->value) {
         return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
     }
@@ -3100,6 +3104,10 @@ int handle_vset_command(command_context_t *ctx, char *response) {
 int handle_vget_command(command_context_t *ctx, char *response) {
     int status;
     kvs_vector_search_result_t result;
+
+    if (!g_cfg.vector_enabled) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_NOT_INITIALIZED, response);
+    }
 
     if (!ctx || !ctx->query_text) {
         return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
@@ -3144,6 +3152,10 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 	uint64_t response_start_us;
 	uint64_t response_end_us;
 	uint64_t total_start_us;
+
+	if (!g_cfg.vector_enabled) {
+		return handle_vector_status_response(KVS_VECTOR_ERR_NOT_INITIALIZED, response);
+	}
 
 	if (!ctx) {
 		return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
@@ -3308,6 +3320,10 @@ int handle_vsearch_command(command_context_t *ctx, char *response) {
 int handle_vdel_command(command_context_t *ctx, char *response) {
     int status;
 
+    if (!g_cfg.vector_enabled) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_NOT_INITIALIZED, response);
+    }
+
     if (!ctx || !ctx->query_text) {
         return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
     }
@@ -3324,6 +3340,10 @@ int handle_vdel_command(command_context_t *ctx, char *response) {
 
 int handle_vindex_command(command_context_t *ctx, char *response) {
     int status;
+
+    if (!g_cfg.vector_enabled) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_NOT_INITIALIZED, response);
+    }
 
     if (!ctx || !ctx->subcommand) {
         return handle_vector_status_response(KVS_VECTOR_ERR_INVALID_ARG, response);
@@ -3392,6 +3412,10 @@ int handle_vinfo_command(command_context_t *ctx, char *response) {
     kvs_vector_info_t info;
     kvs_embedding_worker_pool_stats_t wp_stats;
     kvs_command_executor_stats_t exec_stats;
+
+    if (!g_cfg.vector_enabled) {
+        return handle_vector_status_response(KVS_VECTOR_ERR_NOT_INITIALIZED, response);
+    }
 
     (void)ctx;
 

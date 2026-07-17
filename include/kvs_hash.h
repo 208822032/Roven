@@ -44,6 +44,7 @@ typedef hashtable_t kvs_hash_t;
 unsigned int kvs_hash_key_hash(const char *key);
 unsigned int kvs_hash_key_hash_len(const char *key, size_t key_len);
 int kvs_hash_create(kvs_hash_t *hash);
+int kvs_hash_create_with_capacity(kvs_hash_t *hash, int initial_capacity);
 void kvs_hash_destory(kvs_hash_t *hash);
 int kvs_hash_set(kvs_hash_t *hash, char *key, char *value);
 char* kvs_hash_get(kvs_hash_t *hash, char *key);
@@ -63,4 +64,3 @@ int kvs_hash_exist_len(kvs_hash_t *inst, const char *key, size_t key_len);
 
 int kvs_hash_sort(kvs_hash_t *inst, int order, int limit, char *response, int max_len);
 int kvs_hash_range(kvs_hash_t *inst, char *start_key, char *end_key, char *response, int max_len);
-

@@ -10,6 +10,7 @@
 #include "kvs_memory.h"
 
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -276,9 +277,11 @@ static int kvs_vector_rebuild_async_run_once(void) {
 		goto out;
 	}
 
-	kvs_vector_index_snapshot_write_best_effort_after_rebuild(
-		"async_rebuild_publish"
-	);
+	if (g_cfg.vector_rebuild_write_snapshot_after_publish) {
+		kvs_vector_index_snapshot_write_best_effort_after_rebuild(
+			"async_rebuild_publish"
+		);
+	}
 
 	ret = kvs_vector_rebuild_retire_cleanup_safe();
 
@@ -354,7 +357,6 @@ int kvs_vector_index_rebuild_async_status(
 	    !g_vector_state.rebuild_worker_mu_initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
 	}
-
 	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
 	status->worker_running = g_vector_state.rebuild_worker_running;
 	status->cancel_requested = g_vector_state.rebuild_worker_cancel_requested;
@@ -388,6 +390,9 @@ int kvs_vector_index_rebuild_async_start(void) {
 	if (!g_vector_state.initialized ||
 	    !g_vector_state.rebuild_worker_mu_initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	if (!g_cfg.vector_rebuild_async_enabled) {
+		return KVS_VECTOR_ERR_NOT_IMPLEMENTED;
 	}
 
 	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
@@ -449,6 +454,10 @@ int kvs_vector_index_rebuild_async_cancel(void) {
 	    !g_vector_state.rebuild_worker_mu_initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
 	}
+	if (!g_cfg.vector_rebuild_async_enabled ||
+	    !g_cfg.vector_rebuild_cancel_enabled) {
+		return KVS_VECTOR_ERR_NOT_IMPLEMENTED;
+	}
 
 	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
 	if (!g_vector_state.rebuild_worker_running) {
@@ -473,6 +482,10 @@ int kvs_vector_index_rebuild_async_retry(void) {
 	if (!g_vector_state.initialized ||
 	    !g_vector_state.rebuild_worker_mu_initialized) {
 		return KVS_VECTOR_ERR_NOT_INITIALIZED;
+	}
+	if (!g_cfg.vector_rebuild_async_enabled ||
+	    strcmp(g_cfg.vector_rebuild_retry_policy, "manual") != 0) {
+		return KVS_VECTOR_ERR_NOT_IMPLEMENTED;
 	}
 
 	pthread_mutex_lock(&g_vector_state.rebuild_worker_mu);
@@ -580,6 +593,7 @@ static void kvs_vector_record_timing(
 }
 
 void kvs_vector_vsearch_record_search(uint64_t elapsed_us) {
+	if (!g_cfg.observability_vsearch_stage_stats_enabled) return;
 	kvs_vector_record_timing(
 		&g_vector_profile_stats.vsearch_search_count,
 		&g_vector_profile_stats.vsearch_search_total_us,
@@ -589,6 +603,7 @@ void kvs_vector_vsearch_record_search(uint64_t elapsed_us) {
 }
 
 void kvs_vector_vsearch_record_backend_search(uint64_t elapsed_us) {
+	if (!g_cfg.observability_vsearch_stage_stats_enabled) return;
 	kvs_vector_record_timing(
 		&g_vector_profile_stats.vsearch_backend_search_count,
 		&g_vector_profile_stats.vsearch_backend_search_total_us,
@@ -602,6 +617,7 @@ void kvs_vector_vsearch_record_manager_resolve(
 	size_t raw_hit_count,
 	size_t resolved_hit_count
 ) {
+	if (!g_cfg.observability_vsearch_stage_stats_enabled) return;
 	kvs_vector_record_timing(
 		&g_vector_profile_stats.vsearch_manager_resolve_count,
 		&g_vector_profile_stats.vsearch_manager_resolve_total_us,
@@ -619,6 +635,7 @@ void kvs_vector_vsearch_record_manager_resolve(
 }
 
 void kvs_vector_vsearch_record_response_build(uint64_t elapsed_us) {
+	if (!g_cfg.observability_vsearch_stage_stats_enabled) return;
 	kvs_vector_record_timing(
 		&g_vector_profile_stats.vsearch_response_build_count,
 		&g_vector_profile_stats.vsearch_response_build_total_us,
@@ -796,29 +813,7 @@ static size_t kvs_vector_provider_dimension_or_default(void) {
 }
 
 static size_t kvs_vector_initial_record_capacity(void) {
-	size_t capacity = KVS_VECTOR_INITIAL_RECORD_CAPACITY;
-
-	if (g_cfg.vector_hnsw_initial_capacity > 0 &&
-	    (size_t)g_cfg.vector_hnsw_initial_capacity > capacity) {
-		capacity = (size_t)g_cfg.vector_hnsw_initial_capacity;
-	}
-	return capacity;
-}
-
-static size_t kvs_vector_hnsw_param_or_default(int value, size_t def) {
-	if (value <= 0) {
-		return def;
-	}
-
-	return (size_t)value;
-}
-
-static size_t kvs_vector_hnsw_param_or_min_default(int value, size_t def) {
-	if (value <= 0 || (size_t)value < def) {
-		return def;
-	}
-
-	return (size_t)value;
+	return (size_t)g_cfg.vector_hnsw_initial_capacity;
 }
 
 static void kvs_vector_configure_core_hnsw_v2(kvs_hnsw_v2_index_t *index) {
@@ -826,21 +821,17 @@ static void kvs_vector_configure_core_hnsw_v2(kvs_hnsw_v2_index_t *index) {
 		return;
 	}
 
-	index->M = kvs_vector_hnsw_param_or_min_default(
-		g_cfg.vector_hnsw_m,
-		KVS_HNSW_V2_DEFAULT_M
+	index->M = (size_t)g_cfg.vector_hnsw_m;
+	index->M0 = (size_t)g_cfg.vector_hnsw_m0;
+	index->ef_construction = (size_t)g_cfg.vector_hnsw_ef_construction;
+	index->ef_search = (size_t)g_cfg.vector_hnsw_ef_search;
+	kvs_hnsw_v2_index_set_build_profiling(
+		index,
+		g_cfg.observability_hnsw_build_profile_enabled
 	);
-	index->M0 = index->M * 2;
-	if (index->M0 < KVS_HNSW_V2_DEFAULT_M0) {
-		index->M0 = KVS_HNSW_V2_DEFAULT_M0;
-	}
-	index->ef_construction = kvs_vector_hnsw_param_or_min_default(
-		g_cfg.vector_hnsw_ef_construction,
-		KVS_HNSW_V2_DEFAULT_EF_CONSTRUCTION
-	);
-	index->ef_search = kvs_vector_hnsw_param_or_min_default(
-		g_cfg.vector_hnsw_ef_search,
-		KVS_HNSW_V2_DEFAULT_EF_SEARCH
+	kvs_hnsw_v2_index_set_search_profiling(
+		index,
+		g_cfg.observability_hnsw_search_profile_enabled
 	);
 }
 
@@ -1496,7 +1487,8 @@ int kvs_vector_index_search_current(
 	params.threshold = threshold;
 
 	g_vsearch_current_resolve_us = 0;
-	start_us = kvs_vector_now_us();
+	start_us = g_cfg.observability_vsearch_stage_stats_enabled ?
+		kvs_vector_now_us() : 0;
 	ret = index->ops->search(
         index,
         query_embedding,
@@ -1506,12 +1498,15 @@ int kvs_vector_index_search_current(
         results_capacity,
         results_count
     );
-	end_us = kvs_vector_now_us();
+	end_us = g_cfg.observability_vsearch_stage_stats_enabled ?
+		kvs_vector_now_us() : 0;
 	elapsed_us = end_us >= start_us ? end_us - start_us : 0;
 	resolve_us = g_vsearch_current_resolve_us;
-	kvs_vector_vsearch_record_backend_search(
-		elapsed_us >= resolve_us ? elapsed_us - resolve_us : 0
-	);
+	if (g_cfg.observability_vsearch_stage_stats_enabled) {
+		kvs_vector_vsearch_record_backend_search(
+			elapsed_us >= resolve_us ? elapsed_us - resolve_us : 0
+		);
+	}
 	g_vsearch_current_resolve_us = 0;
 	kvs_vector_active_index_release_read(&guard);
 	return ret;
@@ -1681,6 +1676,7 @@ static void kvs_vector_info_from_state(
 	info->rebuild_shadow_present = state->rebuild.shadow_index ? 1 : 0;
 	info->rebuild_retired_present = state->rebuild.retired_index ? 1 : 0;
 	info->snapshot_supported =
+		g_cfg.vector_snapshot_enabled &&
 		state->index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2 ? 1 : 0;
 	if (info->snapshot_supported) {
 		const kvs_vector_snapshot_status_t *snapshot =
@@ -1934,6 +1930,10 @@ int kvs_vector_init(void) {
 	if (ret != KVS_VECTOR_OK) {
 		goto fail;
 	}
+	g_vector_state.rebuild.delta_initial_capacity =
+		(size_t)g_cfg.vector_rebuild_delta_initial_capacity;
+	g_vector_state.rebuild.delta_max_entries =
+		(size_t)g_cfg.vector_rebuild_delta_max_entries;
 
 	ret = kvs_vector_embedding_provider_init(&g_vector_state.embedding_provider);
 	if (ret != KVS_VECTOR_OK) {
@@ -1990,14 +1990,17 @@ int kvs_vector_init(void) {
 
 	KVS_LOG_INFO(
 		KVS_VECTOR_LOG_MODULE,
-		"vector module initialized provider=%s distance_backend=%s dimension=%zu capacity=%zu index_type=%s metric=%s hnsw_m=%zu ef_construction=%zu ef_search=%zu hnsw_initial_capacity=%d",
+		"vector module initialized provider=%s model_identity=%016llx distance_backend=%s dimension=%zu normalize=%d capacity=%zu index_type=%s metric=%s hnsw_m=%zu hnsw_m0=%zu ef_construction=%zu ef_search=%zu hnsw_initial_capacity=%d",
 			kvs_vector_embedding_provider_name(),
+			(unsigned long long)g_cfg.embedding_model_identity,
 			kvs_vector_distance_backend_name(),
 			dimension,
+			g_cfg.vector_normalize,
 			g_vector_state.store.capacity,
 			kvs_vector_backend_type_name(g_vector_state.index_type),
 			kvs_vector_metric_name(g_vector_state.metric_type),
 			g_vector_state.core_hnsw_v2_index.M,
+			g_vector_state.core_hnsw_v2_index.M0,
 			g_vector_state.core_hnsw_v2_index.ef_construction,
 			g_vector_state.core_hnsw_v2_index.ef_search,
 			g_cfg.vector_hnsw_initial_capacity
@@ -2606,6 +2609,7 @@ static int kvs_vector_index_snapshot_build_expected_manifest_for_hnsw(
 	manifest->backend = (uint32_t)KVS_VECTOR_INDEX_CORE_HNSW_V2;
 	manifest->dim = (uint32_t)hnsw->dim;
 	manifest->metric = (uint32_t)state->metric_type;
+	manifest->model_content_identity = g_cfg.embedding_model_identity;
 	manifest->hnsw_m = (uint32_t)hnsw->M;
 	manifest->hnsw_m0 = (uint32_t)hnsw->M0;
 	manifest->hnsw_ef_construction = (uint32_t)hnsw->ef_construction;
@@ -2916,6 +2920,10 @@ int kvs_vector_index_snapshot_write_hnsw_v2_index(
 		kvs_vector_snapshot_set_reason(reason, reason_size, "invalid state");
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
+	if (!g_cfg.vector_snapshot_enabled) {
+		kvs_vector_snapshot_set_reason(reason, reason_size, "snapshot disabled");
+		return KVS_VECTOR_ERR_NOT_IMPLEMENTED;
+	}
 	if (kvs_vector_index_snapshot_default_manifest_path(
 		    manifest_path,
 		    sizeof(manifest_path)
@@ -2949,6 +2957,10 @@ int kvs_vector_index_snapshot_write_current(
 		kvs_vector_snapshot_set_reason(reason, reason_size, "invalid state");
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
+	if (!g_cfg.vector_snapshot_enabled) {
+		kvs_vector_snapshot_set_reason(reason, reason_size, "snapshot disabled");
+		return KVS_VECTOR_ERR_NOT_IMPLEMENTED;
+	}
 	if (kvs_vector_index_snapshot_default_manifest_path(
 		    manifest_path,
 		    sizeof(manifest_path)
@@ -2976,7 +2988,9 @@ static void kvs_vector_index_snapshot_write_best_effort_after_rebuild(
 	char reason[128];
 	int ret;
 
-	if (g_vector_state.index_type != KVS_VECTOR_INDEX_CORE_HNSW_V2) {
+	if (!g_cfg.vector_snapshot_enabled ||
+	    strcmp(g_cfg.vector_snapshot_write_after_rebuild, "off") == 0 ||
+	    g_vector_state.index_type != KVS_VECTOR_INDEX_CORE_HNSW_V2) {
 		return;
 	}
 
@@ -3022,6 +3036,20 @@ int kvs_vector_index_snapshot_try_load_after_records(
 	if (!state) {
 		kvs_vector_snapshot_set_reason(reason, reason_size, "invalid state");
 		return KVS_VECTOR_ERR_INVALID_ARG;
+	}
+	if (!g_cfg.vector_snapshot_enabled || !g_cfg.vector_snapshot_load_on_start) {
+		kvs_vector_snapshot_status_reset(&state->snapshot_status);
+		kvs_vector_snapshot_status_set_text(
+			state->snapshot_status.last_snapshot_error,
+			sizeof(state->snapshot_status.last_snapshot_error),
+			!g_cfg.vector_snapshot_enabled ? "snapshot disabled" : "startup load disabled"
+		);
+		kvs_vector_snapshot_set_reason(
+			reason,
+			reason_size,
+			!g_cfg.vector_snapshot_enabled ? "snapshot disabled" : "startup load disabled"
+		);
+		return KVS_VECTOR_ERR_NOT_FOUND;
 	}
 
 	status = &state->snapshot_status;
@@ -3174,6 +3202,79 @@ int kvs_vector_index_snapshot_try_load_after_records(
 	return KVS_VECTOR_OK;
 }
 
+static int kvs_vector_validate_recovered_record_contract(void) {
+	kvs_vector_store_t *store = &g_vector_state.store;
+	uint32_t current_model = kvs_vector_embedding_current_model_version();
+	size_t legacy_count = 0;
+	size_t i;
+
+	for (i = 0; i < store->capacity; ++i) {
+		kvs_vector_record_t *record = &store->records[i];
+		double norm_sq = 0.0;
+		int j;
+		if (record->state != KVS_VECTOR_RECORD_ACTIVE || record->deleted) {
+			continue;
+		}
+		if (!record->embedding ||
+		    record->embedding_dim != g_cfg.vector_dimension) {
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"recovered vector record contract mismatch record_id=%llu dim=%d expected_dim=%d",
+				(unsigned long long)record->id,
+				record->embedding_dim,
+				g_cfg.vector_dimension
+			);
+			return KVS_VECTOR_ERR;
+		}
+		for (j = 0; j < record->embedding_dim; ++j) {
+			double value = (double)record->embedding[j];
+			if (!isfinite(value)) {
+				KVS_LOG_ERROR(
+					KVS_VECTOR_LOG_MODULE,
+					"recovered vector record contains nonfinite value record_id=%llu",
+					(unsigned long long)record->id
+				);
+				return KVS_VECTOR_ERR;
+			}
+			norm_sq += value * value;
+		}
+		if (g_cfg.vector_normalize && fabs(norm_sq - 1.0) > 1e-3) {
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"recovered vector record normalization mismatch record_id=%llu norm_sq=%.9f",
+				(unsigned long long)record->id,
+				norm_sq
+			);
+			return KVS_VECTOR_ERR;
+		}
+		if (record->embedding_model_version == current_model) {
+			continue;
+		}
+		if (g_cfg.embedding_legacy_model_identity != 0 &&
+		    record->embedding_model_version ==
+			g_cfg.embedding_legacy_model_identity) {
+			legacy_count++;
+			continue;
+		}
+		KVS_LOG_ERROR(
+			KVS_VECTOR_LOG_MODULE,
+			"recovered vector record model mismatch record_id=%llu record_model=%u current_model=%u",
+			(unsigned long long)record->id,
+			record->embedding_model_version,
+			current_model
+		);
+		return KVS_VECTOR_ERR;
+	}
+	if (legacy_count > 0) {
+		KVS_LOG_WARN(
+			KVS_VECTOR_LOG_MODULE,
+			"accepted %zu recovered records with legacy embedding model identity; rewrite through the current format to refresh identity",
+			legacy_count
+		);
+	}
+	return KVS_VECTOR_OK;
+}
+
 int kvs_vector_rebuild_after_load(void) {
 	int ret;
 	char snapshot_reason[128];
@@ -3186,11 +3287,15 @@ int kvs_vector_rebuild_after_load(void) {
 
 	ret = kvs_vector_id_map_rebuild_from_store();
 	if (ret != KVS_VECTOR_OK) return ret;
+	ret = kvs_vector_validate_recovered_record_contract();
+	if (ret != KVS_VECTOR_OK) return ret;
 
 	ret = kvs_vector_index_bind_current();
 	if (ret != KVS_VECTOR_OK) return ret;
 
-	if (g_vector_state.index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2) {
+	if (g_vector_state.index_type == KVS_VECTOR_INDEX_CORE_HNSW_V2 &&
+	    g_cfg.vector_snapshot_enabled &&
+	    g_cfg.vector_snapshot_load_on_start) {
 		snapshot_reason[0] = '\0';
 		ret = kvs_vector_index_snapshot_try_load_after_records(
 			&g_vector_state,
@@ -3204,6 +3309,16 @@ int kvs_vector_rebuild_after_load(void) {
 				g_vector_state.snapshot_status.last_snapshot_path
 			);
 			return KVS_VECTOR_OK;
+		}
+		if (g_cfg.vector_snapshot_enabled &&
+		    g_cfg.vector_snapshot_load_on_start &&
+		    strcmp(g_cfg.vector_snapshot_invalid_action, "fail") == 0) {
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"vector snapshot rejected by invalid_action=fail reason=%s",
+				snapshot_reason[0] ? snapshot_reason : "unknown"
+			);
+			return ret == KVS_VECTOR_ERR_NOT_FOUND ? KVS_VECTOR_ERR : ret;
 		}
 		g_vector_state.snapshot_status.fallback_rebuild_count++;
 		KVS_LOG_INFO(
@@ -4578,7 +4693,8 @@ int kvs_vector_manager_resolve_hits(
 	}
 
 	*results_count = 0;
-	start_us = kvs_vector_now_us();
+	start_us = g_cfg.observability_vsearch_stage_stats_enabled ?
+		kvs_vector_now_us() : 0;
 
 	for (i = 0; i < hit_count && out_count < results_capacity; i++) {
 		const kvs_vector_hit_t *hit = &hits[i];
@@ -4602,10 +4718,13 @@ int kvs_vector_manager_resolve_hits(
 	}
 
 	*results_count = out_count;
-	end_us = kvs_vector_now_us();
+	end_us = g_cfg.observability_vsearch_stage_stats_enabled ?
+		kvs_vector_now_us() : 0;
 	elapsed_us = end_us >= start_us ? end_us - start_us : 0;
-	g_vsearch_current_resolve_us += elapsed_us;
-	kvs_vector_vsearch_record_manager_resolve(elapsed_us, hit_count, out_count);
+	if (g_cfg.observability_vsearch_stage_stats_enabled) {
+		g_vsearch_current_resolve_us += elapsed_us;
+		kvs_vector_vsearch_record_manager_resolve(elapsed_us, hit_count, out_count);
+	}
 	return KVS_VECTOR_OK;
 }
 

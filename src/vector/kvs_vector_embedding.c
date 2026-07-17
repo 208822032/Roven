@@ -634,24 +634,15 @@ static void embedding_cache_insert(
 }
 
 static uint32_t embedding_provider_model_id(const char *provider_name) {
-	char buffer[512];
-	int written;
+	uint64_t identity = g_cfg.embedding_model_identity;
+	uint32_t folded = (uint32_t)identity ^ (uint32_t)(identity >> 32);
 
-	written = snprintf(
-		buffer,
-		sizeof(buffer),
-		"%s|%s|%d",
-		provider_name ? provider_name : "unknown",
-		g_cfg.embedding_model_path[0] != '\0' ? g_cfg.embedding_model_path : "",
-		g_cfg.embedding_dim
-	);
-	if (written < 0) {
-		return 0;
+	if (folded != 0) {
+		return folded;
 	}
-
 	return embedding_hash_bytes32(
-		buffer,
-		(size_t)((written < (int)sizeof(buffer)) ? written : (int)(sizeof(buffer) - 1))
+		provider_name ? provider_name : "unknown",
+		strlen(provider_name ? provider_name : "unknown")
 	);
 }
 
@@ -661,11 +652,13 @@ uint32_t kvs_vector_embedding_current_model_version(void) {
 }
 
 static void embedding_record_encode_time(uint64_t elapsed_us) {
+	if (!g_cfg.observability_embedding_profile_enabled) return;
 	embedding_stats_add(&g_embedding_runtime_stats.encode_total_us, elapsed_us);
 	embedding_stats_update_max(&g_embedding_runtime_stats.encode_max_us, elapsed_us);
 }
 
 static uint64_t embedding_encode_enter(void) {
+	if (!g_cfg.observability_embedding_profile_enabled) return 0;
 	uint64_t inflight = embedding_stats_add(
 		&g_embedding_runtime_stats.encode_current_inflight,
 		1
@@ -675,6 +668,7 @@ static uint64_t embedding_encode_enter(void) {
 }
 
 static void embedding_encode_leave(uint64_t start_us) {
+	if (!g_cfg.observability_embedding_profile_enabled) return;
 	uint64_t end_us = embedding_now_us();
 
 	if (end_us >= start_us) {
@@ -760,9 +754,13 @@ static void kvs_vector_embedding_build_config(EmbeddingConfig *config) {
 	config->model_path = g_cfg.embedding_model_path[0] != '\0' ?
 		g_cfg.embedding_model_path :
 		NULL;
+	config->vocab_path = g_cfg.embedding_vocab_path[0] != '\0' ?
+		g_cfg.embedding_vocab_path :
+		NULL;
 	config->embedding_dim = g_cfg.embedding_dim;
 	config->num_threads = g_cfg.embedding_num_threads;
 	config->max_text_len = g_cfg.embedding_max_text_len;
+	config->max_tokens = g_cfg.embedding_max_tokens;
 	config->normalize = 0;
 }
 
@@ -1020,6 +1018,14 @@ int kvs_vector_embedding_provider_init(
 		size_t dimension;
 		int ret;
 
+		if (!embedding_runtime_supports_onnx()) {
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"local_c embedding provider requires an ONNX-enabled binary"
+			);
+			return KVS_VECTOR_ERR_NOT_IMPLEMENTED;
+		}
+
 		ret = kvs_vector_embedding_create_runtime_handle(
 			&provider->runtime_handle,
 			&dimension
@@ -1036,6 +1042,19 @@ int kvs_vector_embedding_provider_init(
 		provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C;
 		provider->name = "local_c";
 		provider->dimension = dimension;
+		if (provider->dimension != (size_t)g_cfg.vector_dimension ||
+		    provider->dimension != (size_t)g_cfg.embedding_dim) {
+			embedding_destroy(provider->runtime_handle);
+			provider->runtime_handle = NULL;
+			KVS_LOG_ERROR(
+				KVS_VECTOR_LOG_MODULE,
+				"ONNX output dimension=%zu does not match vector.dimension=%d and embedding.output_dimension=%d",
+				provider->dimension,
+				g_cfg.vector_dimension,
+				g_cfg.embedding_dim
+			);
+			return KVS_VECTOR_ERR_INVALID_ARG;
+		}
 		provider->model_id = embedding_provider_model_id(provider->name);
 		provider->initialized = 1;
 
@@ -1074,15 +1093,16 @@ int kvs_vector_embedding_provider_init(
 
 	provider->type = KVS_VECTOR_EMBEDDING_PROVIDER_HASH;
 	provider->name = "hash";
-	provider->dimension = KVS_VECTOR_DEFAULT_DIMENSION;
+	provider->dimension = (size_t)g_cfg.vector_dimension;
 	provider->model_id = embedding_provider_model_id(provider->name);
 	provider->initialized = 1;
 	embedding_stats_store(&g_embedding_runtime_stats.embedding_cache_enabled, 0);
 
 	KVS_LOG_INFO(
 		KVS_VECTOR_LOG_MODULE,
-		"hash embedding provider ready dimension=%d",
-		KVS_VECTOR_DEFAULT_DIMENSION
+		"hash embedding provider ready dimension=%d model_identity=%016llx",
+		g_cfg.vector_dimension,
+		(unsigned long long)g_cfg.embedding_model_identity
 	);
 
 	return KVS_VECTOR_OK;
@@ -1201,7 +1221,8 @@ int kvs_vector_hash_embedding_generate(
 		return KVS_VECTOR_ERR;
 	}
 
-	start_us = embedding_now_us();
+	start_us = g_cfg.observability_embedding_profile_enabled ?
+		embedding_now_us() : 0;
 	memset(embedding, 0, dim * sizeof(float));
 
 	for (i = 0; i < text_len; ++i) {
@@ -1214,11 +1235,14 @@ int kvs_vector_hash_embedding_generate(
 		embedding[bucket1] += 1.0f;
 		embedding[bucket2] += 0.5f;
 	}
-	end_us = embedding_now_us();
+	end_us = g_cfg.observability_embedding_profile_enabled ?
+		embedding_now_us() : 0;
 	elapsed_us = end_us >= start_us ? end_us - start_us : 0;
-	embedding_stats_add(&g_embedding_runtime_stats.encode_count, 1);
-	embedding_stats_add(&g_embedding_runtime_stats.embedding_encode_total_us, elapsed_us);
-	embedding_stats_update_max(&g_embedding_runtime_stats.embedding_encode_max_us, elapsed_us);
+	if (g_cfg.observability_embedding_profile_enabled) {
+		embedding_stats_add(&g_embedding_runtime_stats.encode_count, 1);
+		embedding_stats_add(&g_embedding_runtime_stats.embedding_encode_total_us, elapsed_us);
+		embedding_stats_update_max(&g_embedding_runtime_stats.embedding_encode_max_us, elapsed_us);
+	}
 
 	*out_embedding = embedding;
 	*out_dim = (int)dim;
@@ -1447,13 +1471,15 @@ int kvs_vector_embedding_generate(
 		return ret;
 	}
 
-	normalize_start_us = embedding_now_us();
-	ret = kvs_vector_embedding_l2_normalize(embedding, dim);
-	normalize_elapsed_us = embedding_now_us() - normalize_start_us;
-	(void)normalize_elapsed_us;
-	if (ret != KVS_VECTOR_OK) {
-		kvs_free(embedding);
-		return ret;
+	if (g_cfg.vector_normalize) {
+		normalize_start_us = embedding_now_us();
+		ret = kvs_vector_embedding_l2_normalize(embedding, dim);
+		normalize_elapsed_us = embedding_now_us() - normalize_start_us;
+		(void)normalize_elapsed_us;
+		if (ret != KVS_VECTOR_OK) {
+			kvs_free(embedding);
+			return ret;
+		}
 	}
 
 	if (provider->type == KVS_VECTOR_EMBEDDING_PROVIDER_LOCAL_C) {
@@ -1581,10 +1607,12 @@ int kvs_vector_embedding_generate_batch(
 		}
 	}
 
-	ret = kvs_vector_embedding_l2_normalize_batch(embeddings, text_count, dim);
-	if (ret != KVS_VECTOR_OK) {
-		kvs_free(embeddings);
-		return ret;
+	if (g_cfg.vector_normalize) {
+		ret = kvs_vector_embedding_l2_normalize_batch(embeddings, text_count, dim);
+		if (ret != KVS_VECTOR_OK) {
+			kvs_free(embeddings);
+			return ret;
+		}
 	}
 
 	*out_embeddings = embeddings;

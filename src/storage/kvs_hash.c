@@ -268,9 +268,13 @@ static int kvs_hash_maybe_compact(kvs_hash_t *hash) {
 
 /* 创建哈希表：分配 max_slots 个槽位并清零 */
 int kvs_hash_create(kvs_hash_t *hash) {
-    if (!hash) return -1;
+	return kvs_hash_create_with_capacity(hash, MAX_TABLE_SIZE);
+}
 
-    hash->max_slots = MAX_TABLE_SIZE;
+int kvs_hash_create_with_capacity(kvs_hash_t *hash, int initial_capacity) {
+    if (!hash || initial_capacity <= 0) return -1;
+
+    hash->max_slots = initial_capacity;
     hash->count     = 0;
     hash->tombstones = 0;
 
@@ -641,6 +645,7 @@ int kvs_hash_set_len(kvs_hash_t *hash, const char *key, size_t key_len, const ch
             if (slot->value) kvs_free(slot->value);
             slot->value = new_val;
             slot->value_len = (unsigned int)value_len;
+            slot->expire_at_ms = KV_TTL_NO_EXPIRE;
             return 1;
         }
         idx = (idx + 1) % cap;
@@ -673,6 +678,7 @@ int kvs_hash_mod_len(kvs_hash_t *hash, const char *key, size_t key_len, const ch
     if (hash->nodes[idx].value) kvs_free(hash->nodes[idx].value);
     hash->nodes[idx].value = new_val;
     hash->nodes[idx].value_len = (unsigned int)value_len;
+    hash->nodes[idx].expire_at_ms = KV_TTL_NO_EXPIRE;
     return 0;
 }
 

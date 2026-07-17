@@ -272,6 +272,10 @@ void embedding_runtime_get_resource_stats(
 		embedding_stats_load(&g_hash_runtime_stats.embedding_encode_max_us);
 }
 
+int embedding_runtime_supports_onnx(void) {
+	return 0;
+}
+
 void embedding_destroy(EmbeddingHandle *handle) {
 	if (!handle) {
 		return;

@@ -302,18 +302,22 @@ start_master() {
   local config_file="$TMP_DIR/${backend}_master.conf"
 
   cat > "$config_file" <<EOF
+[server]
 role = master
+[network]
 port = $port
-sync_port = $sync_port
-enable_aof = no
-aof_fsync_mode = no
-aof_filename = $TMP_DIR/${backend}_master.aof
-rdb_filename = $TMP_DIR/${backend}_master.rdb
-dump_filename = $TMP_DIR/${backend}_master.dat
-network_mode = reactor
-mem_backend = pool
-sync_mode = tcp
-max_value_size = 1048576
+mode = reactor
+[storage]
+memory_backend = pool
+max_value_bytes = 1048576
+[persistence]
+rdb_enabled = false
+aof_enabled = false
+[vector]
+enabled = false
+[replication]
+transport = tcp
+sync_listen_port = $sync_port
 EOF
 
   "$KV_BIN" --config "$config_file" > "$MASTER_LOG" 2>&1 &
@@ -330,20 +334,24 @@ start_slave() {
   local config_file="$TMP_DIR/${backend}_slave.conf"
 
   cat > "$config_file" <<EOF
+[server]
 role = slave
+[network]
 port = $port
-master_ip = 127.0.0.1
-master_port = $master_port
-sync_port = $sync_port
-enable_aof = no
-aof_fsync_mode = no
-aof_filename = $TMP_DIR/${backend}_slave.aof
-rdb_filename = $TMP_DIR/${backend}_slave.rdb
-dump_filename = $TMP_DIR/${backend}_slave.dat
-network_mode = reactor
-mem_backend = pool
-sync_mode = tcp
-max_value_size = 1048576
+mode = reactor
+[storage]
+memory_backend = pool
+max_value_bytes = 1048576
+[persistence]
+rdb_enabled = false
+aof_enabled = false
+[vector]
+enabled = false
+[replication]
+transport = tcp
+master_host = 127.0.0.1
+master_service_port = $master_port
+master_sync_port = $sync_port
 EOF
 
   "$KV_BIN" --config "$config_file" > "$SLAVE_LOG" 2>&1 &

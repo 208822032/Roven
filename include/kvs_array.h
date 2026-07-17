@@ -52,6 +52,7 @@ typedef struct kvs_array_s {
 } kvs_array_t;
 
 int kvs_array_create(kvs_array_t *inst);
+int kvs_array_create_with_capacity(kvs_array_t *inst, int initial_capacity);
 void kvs_array_destory(kvs_array_t *inst);
 int kvs_array_reserve(kvs_array_t *inst, int new_cap);
 
@@ -74,4 +75,3 @@ int kvs_array_exist_len(kvs_array_t *inst, const char *key, size_t key_len);
 
 int kvs_array_sort(kvs_array_t *inst, int order, int limit, char *response, int max_len);
 int kvs_array_range(kvs_array_t *inst, char *start_key, char *end_key, char *response, int max_len);
-

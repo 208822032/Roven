@@ -411,26 +411,30 @@ static void kvs_array_reap_expired(kvs_array_t *inst, int64_t now_ms) {
 }
 
 int kvs_array_create(kvs_array_t *inst) {
+	return kvs_array_create_with_capacity(inst, KVS_ARRAY_SIZE);
+}
 
-	if (!inst) return -1;
+int kvs_array_create_with_capacity(kvs_array_t *inst, int initial_capacity) {
+
+	if (!inst || initial_capacity <= 0) return -1;
 	if (inst->table) {
 		printf("table has alloc\n");
 		return -1;
 	}	
-	inst->table = kvs_malloc(KVS_ARRAY_SIZE * sizeof(kvs_array_item_t));
+	inst->table = kvs_malloc((size_t)initial_capacity * sizeof(kvs_array_item_t));
 	if (!inst->table) {
 		return -1;
 	}
-    memset(inst->table, 0, KVS_ARRAY_SIZE * sizeof(kvs_array_item_t));
+    memset(inst->table, 0, (size_t)initial_capacity * sizeof(kvs_array_item_t));
 
     inst->side_index = NULL;
-    if (kvs_array_index_rehash(inst, KVS_ARRAY_INDEX_INITIAL_CAPACITY) != 0) {
+    if (kvs_array_index_rehash(inst, initial_capacity * 2) != 0) {
         kvs_free(inst->table);
         inst->table = NULL;
         return -1;
     }
 
-    inst->capacity = KVS_ARRAY_SIZE;
+    inst->capacity = initial_capacity;
     inst->min_capacity = inst->capacity;
     inst->len = 0;
 	inst->total = 0;
@@ -984,6 +988,7 @@ int kvs_array_mod_len(kvs_array_t *inst, const char *key, size_t key_len, const 
     if (inst->table[idx].value) kvs_free(inst->table[idx].value);
     inst->table[idx].value = kvalue;
     inst->table[idx].value_len = (uint32_t)value_len;
+    inst->table[idx].expire_at_ms = KV_TTL_NO_EXPIRE;
     return 0;
 }
 

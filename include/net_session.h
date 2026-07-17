@@ -28,6 +28,7 @@ typedef struct net_session_s {
     int owner_poller_id;
     uint64_t next_request_seq;
     int single_inflight;
+    int connection_counted;
 } net_session_t;
 
 //上层回调 给一条完整命令 生成响应

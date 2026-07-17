@@ -25,6 +25,7 @@ static kvs_vector_index_snapshot_manifest_t make_manifest(void) {
 	manifest.backend = (uint32_t)KVS_VECTOR_INDEX_CORE_HNSW_V2;
 	manifest.dim = 512;
 	manifest.metric = (uint32_t)KVS_VECTOR_METRIC_IP;
+	manifest.model_content_identity = 0x123456789abcdef0ull;
 	manifest.hnsw_m = KVS_HNSW_V2_DEFAULT_M;
 	manifest.hnsw_m0 = KVS_HNSW_V2_DEFAULT_M0;
 	manifest.hnsw_ef_construction = KVS_HNSW_V2_DEFAULT_EF_CONSTRUCTION;
@@ -50,6 +51,7 @@ static int manifests_equal(
 	       lhs->backend == rhs->backend &&
 	       lhs->dim == rhs->dim &&
 	       lhs->metric == rhs->metric &&
+	       lhs->model_content_identity == rhs->model_content_identity &&
 	       lhs->hnsw_m == rhs->hnsw_m &&
 	       lhs->hnsw_m0 == rhs->hnsw_m0 &&
 	       lhs->hnsw_ef_construction == rhs->hnsw_ef_construction &&
@@ -176,6 +178,10 @@ static void mutate_dim(kvs_vector_index_snapshot_manifest_t *m) {
 
 static void mutate_metric(kvs_vector_index_snapshot_manifest_t *m) {
 	m->metric = (uint32_t)KVS_VECTOR_METRIC_L2;
+}
+
+static void mutate_model_content_identity(kvs_vector_index_snapshot_manifest_t *m) {
+	m->model_content_identity++;
 }
 
 static void mutate_hnsw(kvs_vector_index_snapshot_manifest_t *m) {
@@ -306,6 +312,11 @@ int main(void) {
 	failed |= test_mismatch("backend mismatch", mutate_backend, "backend mismatch");
 	failed |= test_mismatch("dim mismatch", mutate_dim, "dim mismatch");
 	failed |= test_mismatch("metric mismatch", mutate_metric, "metric mismatch");
+	failed |= test_mismatch(
+		"model content identity mismatch",
+		mutate_model_content_identity,
+		"model_content_identity mismatch"
+	);
 	failed |= test_mismatch("HNSW params mismatch", mutate_hnsw, "HNSW parameter mismatch");
 	failed |= test_mismatch("active_count mismatch", mutate_active_count, "active_count mismatch");
 	failed |= test_mismatch("deleted_count mismatch", mutate_deleted_count, "deleted_count mismatch");

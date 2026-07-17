@@ -355,7 +355,7 @@ rdb_filename = $TMP_DIR/${backend}.rdb
 dump_filename = $TMP_DIR/${backend}.dat
 network_mode = reactor
 mem_backend = pool
-sync_mode = ebpf
+sync_mode = disabled
 max_value_size = 134217728
 EOF
 

@@ -10,6 +10,7 @@ typedef struct {
     char* data;
     size_t size; //已用字节
     size_t capacity; //总容量
+    size_t max_capacity; //当前会话的有效上限
 } netbuf_t;
 
 //容量上限 防止被单连接打爆内存
@@ -19,6 +20,7 @@ typedef struct {
 
 //初始化缓冲区 分配 initial_capacity 字节
 int netbuf_init(netbuf_t* buf, size_t initial_capacity);
+int netbuf_init_limit(netbuf_t* buf, size_t initial_capacity, size_t max_capacity);
 
 //确保容量至少为 min_capacity 按照2倍扩展
 //若容量超过 NETBUF_MAX_CAPACITY 则返回错误

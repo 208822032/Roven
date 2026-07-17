@@ -147,7 +147,7 @@ def write_config(path, port, rdb, backend):
     path.write_text(f"""port = {port}
 role = master
 sync_port = {port + 1000}
-sync_mode = ebpf
+sync_mode = disabled
 network_mode = reactor
 enable_aof = false
 rdb_filename = {rdb}
@@ -159,6 +159,8 @@ vector_metric = ip
 vector_score_threshold = -1.0
 vector_scope_overfetch_factor = 8
 vector_index_type = {backend}
+vector_snapshot_enabled = false
+vsearch_stage_stats_enabled = true
 vector_hnsw_m = 8
 vector_hnsw_ef_construction = 64
 vector_hnsw_ef_search = 64

@@ -643,7 +643,7 @@ char* kvs_skiptable_get_len(kvs_skiptable_t *table, const char *key, size_t key_
 int kvs_skiptable_del_len(kvs_skiptable_t *table, const char *key, size_t key_len) {
     if (!table || !table->header || !key) return -1;
     Node* update[MAX_LEVEL + 1];
-    Node *current = skiptable_find_with_update_or_exact(table, key, key_len, update);
+    Node *current = skiptable_find_with_update(table, key, key_len, update);
     unsigned int key_hash = skiptable_key_hash_len(key, key_len);
     if (!current || !skiptable_key_equals(current, key, key_len, key_hash)) return 1;
     for (int i = 0; i <= table->level; i++) {
@@ -660,7 +660,9 @@ int kvs_skiptable_mod_len(kvs_skiptable_t *table, const char *key, size_t key_le
     if (!table || !table->header || !key || !value) return -1;
     Node *node = skiptable_find_exact(table, key, key_len);
     if (!node) return 1;
-    return skiptable_update_value_with_len(node, value, value_len);
+    if (skiptable_update_value_with_len(node, value, value_len) != 0) return -1;
+    node->expire_at_ms = KV_TTL_NO_EXPIRE;
+    return 0;
 }
 
 int kvs_skiptable_exist_len(kvs_skiptable_t *table, const char *key, size_t key_len) {
