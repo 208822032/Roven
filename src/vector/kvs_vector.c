@@ -8,6 +8,7 @@
 #include "vector/kvs_vector_rebuild_shadow.h"
 
 #include "kvs_memory.h"
+#include "kvs_owner_lock.h"
 
 #include <stdint.h>
 #include <math.h>
@@ -111,6 +112,8 @@ int kvs_vector_manager_capture_upsert_delta(
 ) {
 	int ret;
 
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("vector.rebuild_delta.upsert");
+
 	if (!kvs_vector_rebuild_is_capture_active(&g_vector_state.rebuild)) {
 		return KVS_VECTOR_OK;
 	}
@@ -141,6 +144,8 @@ int kvs_vector_manager_capture_delete_delta(
 	uint64_t record_id
 ) {
 	int ret;
+
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("vector.rebuild_delta.delete");
 
 	if (!kvs_vector_rebuild_is_capture_active(&g_vector_state.rebuild)) {
 		return KVS_VECTOR_OK;
@@ -272,6 +277,9 @@ static int kvs_vector_rebuild_async_run_once(void) {
 		goto out;
 	}
 
+	KVS_COMMAND_OWNER_ASSERT_LEGACY_ASYNC_REBUILD(
+		"vector.async_rebuild.publish_ready_shadow"
+	);
 	ret = kvs_vector_rebuild_publish_ready_shadow();
 	if (ret != KVS_VECTOR_OK) {
 		goto out;
@@ -324,9 +332,14 @@ static void *kvs_vector_rebuild_async_worker_main(void *arg) {
 	int ret;
 
 	(void)arg;
+	kvs_command_owner_register_legacy_async_rebuild_thread();
+	KVS_COMMAND_OWNER_ASSERT_LEGACY_ASYNC_REBUILD(
+		"vector.async_rebuild.worker"
+	);
 	started_at_ms = (int64_t)kv_now_ms();
 	ret = kvs_vector_rebuild_async_run_once();
 	kvs_vector_rebuild_async_finish(ret, started_at_ms);
+	kvs_command_owner_unregister_legacy_async_rebuild_thread();
 	return NULL;
 }
 
@@ -1434,6 +1447,8 @@ int kvs_vector_index_add_current(
 ) {
     kvs_vector_index_t *index = &g_vector_state.current_index;
 	int ret;
+
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("vector.active_index.add");
 
 	ret = kvs_vector_active_index_acquire_write();
 	if (ret != KVS_VECTOR_OK) {
@@ -3660,6 +3675,8 @@ static int kvs_vector_record_take_prepared_fields(
 	char *normalized_copy = NULL;
 	int64_t now_ms;
 
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("vector.record_id.allocate");
+
 	if (!record || !prepared || !prepared->question ||
 	    prepared->question_len == 0 || !prepared->answer ||
 	    !prepared->embedding || prepared->embedding_dim <= 0) {
@@ -3724,6 +3741,7 @@ static int kvs_vector_core_hnsw_v2_update_existing_record(
 	if (!record || !prepared || record_index >= store->capacity) {
 		return KVS_VECTOR_ERR_INVALID_ARG;
 	}
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("vector.active_index.update_delete");
 
 	ret = kvs_vector_active_index_acquire_write();
 	if (ret != KVS_VECTOR_OK) {
@@ -3983,6 +4001,8 @@ int kvs_vector_set_commit_prepared(kvs_vector_set_prepared_t *prepared) {
 	size_t record_index;
 	int was_deleted = 0;
 	int ret;
+
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("vector.vset.commit");
 
 	ret = kvs_vector_validate_initialized();
 	if (ret != KVS_VECTOR_OK) {
@@ -4413,6 +4433,8 @@ int kvs_vector_del(
 	int active_locked = 0;
 	int ret;
 
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("vector.vdel.commit");
+
 	ret = kvs_vector_validate_initialized();
 	if (ret != KVS_VECTOR_OK) {
 		return ret;
@@ -4437,6 +4459,7 @@ int kvs_vector_del(
 		goto out;
 	}
 	record_id = record->id;
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("vector.active_index.delete");
 
 	ret = kvs_vector_active_index_acquire_write();
 	if (ret != KVS_VECTOR_OK) {

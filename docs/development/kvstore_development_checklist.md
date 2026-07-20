@@ -561,6 +561,14 @@ Replication Stage 1A - HNSW 写入与容量安全前置门禁
 
 进入门禁：只解决向量复制所必需的失败原子性和 destructive reserve 风险；不实现复制协议，不修改 HNSW 算法参数，完成后立即进入向量增量复制。
 
+审计状态：Replication Stage 1A 前置审计已完成，实施尚未开始。容量安全、失败原子性和向量复制条目保持原状态；实施范围与门禁见 `docs/replication/replication_stage1a_preimplementation_audit.md`。
+
+主路径审计状态：路线 C 主路径去锁实施顺序审计完成；command owner contract 已冻结并由 debug/test 断言执行；correctness lock 删除和 Replication Stage 1A 实现尚未开始。目标限定为“单 command owner 串行执行下移除数据库主状态锁”，replication、队列、AOF、allocator 和控制面内部锁不在本阶段强制删除。详见 `docs/replication/route_c_main_path_lock_elimination_audit.md` 和 `docs/replication/route_c_command_owner_contract_freeze_report.md`。
+
+- [x] `route_c.command_owner.identity`：冻结 startup、runtime executor、executor drain 后 shutdown 的具体线程身份；debug/test 非 owner mutation fail-fast。
+- [x] `route_c.command_owner.runtime_boundaries`：普通 KV、TTL apply、VSET/VDEL、record ID、active index、rebuild delta 和普通 TCP slave apply 已设置 owner 断言边界。
+- [~] `route_c.database.single_owner`：普通 runtime mutation 已受约束；async rebuild 仍是登记的唯一 legacy second-publisher，因此尚不能宣称整个数据库 single-owner，也未删除 correctness lock。
+
 每个阶段结束后在本节追加或更新一条记录：
 
 ```text

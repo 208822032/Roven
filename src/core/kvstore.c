@@ -202,6 +202,7 @@ int main(int argc, char *argv[]) {
 	int network_status = 0;
 
 	kvs_shutdown_reset_for_init();
+	kvs_command_owner_register_startup_thread();
 
 	if (kvs_config_load(
 			&g_cfg,
@@ -435,6 +436,7 @@ int main(int argc, char *argv[]) {
 	if (network_status >= 0 && g_cfg.enable_rdb) kvs_rdb_save(g_cfg.rdb_filename);
 #endif
 	kvs_command_executor_stop();
+	kvs_command_owner_register_shutdown_thread_after_drain();
 	KVS_LOG_INFO("core", "shutdown complete");
     dest_kvengine();
 	pthread_rwlock_destroy(&g_kv_data_rwlock);

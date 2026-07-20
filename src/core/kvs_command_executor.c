@@ -2276,6 +2276,7 @@ static void kvs_command_executor_execute_repl(kvs_replicated_command_task_t *tas
 	if (!task) {
 		return;
 	}
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("executor.replicated.apply");
 	if (task->enqueue_us > 0) {
 		now_us = executor_now_us();
 		wait_us = now_us >= task->enqueue_us ? now_us - task->enqueue_us : 0;
@@ -2320,6 +2321,7 @@ static void kvs_command_executor_execute_ttl(kvs_ttl_expire_task_t *task) {
 	if (!task) {
 		return;
 	}
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("executor.ttl_expire.apply");
 	if (task->enqueue_us > 0) {
 		now_us = executor_now_us();
 		wait_us = now_us >= task->enqueue_us ? now_us - task->enqueue_us : 0;
@@ -2611,6 +2613,7 @@ static void kvs_command_executor_execute_ttl_scan(kvs_ttl_scan_task_t *task) {
 	if (!task) {
 		return;
 	}
+	KVS_COMMAND_OWNER_ASSERT_MUTATION("executor.ttl_scan.apply");
 	if (task->enqueue_us > 0) {
 		now_us = executor_now_us();
 		wait_us = now_us >= task->enqueue_us ? now_us - task->enqueue_us : 0;

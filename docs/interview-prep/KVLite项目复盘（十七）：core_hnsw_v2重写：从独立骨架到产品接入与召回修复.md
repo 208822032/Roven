@@ -1,4 +1,4 @@
-# 第十七章 core_hnsw_v2 重写：从独立骨架到产品接入与召回修复
+# 第十七章 core_hnsw_v2：从独立 ANN 内核到可验证默认 Backend
 
 ## 17.1 第一版 core_hnsw 已经独立，为什么还要重写
 
@@ -25,6 +25,8 @@
 重做一套可独立构图、搜索、归因和调参的 HNSW core，
 再通过产品 adapter 验证它能否接住 V 族命令。
 ```
+
+本章唯一要回答的问题是：如何把进入局部优化低收益区的第一版 `core_hnsw`，替换为一个可独立验证、可接入产品，并在规模召回门禁下成为默认 ANN backend 的 `core_hnsw_v2`。
 
 本章只复盘这条闭环。`2f1fc7f` 中虽然已经混入 manager rebuild skeleton、delta capture、shadow replay 和 pointer lifecycle 的阶段文件，但这些控制面尚未成为产品在线重建；快照缓存从下一提交 `15deef1` 才开始。本章不展开它们。
 
@@ -264,9 +266,11 @@ efConstruction=512 -> recall@10 0.9840
 
 所以阶段决策是把当时默认 efConstruction 提到 256，而不是声称“参数越大一定越正确”。
 
-### 堆优化有效，较大 score cache 被否决
+### 堆优化有效，reverse prune 归因后对 cache 止损
 
-[`Stage 9E2 report`](../vector_core_reset/stage9e2_core_hnsw_v2_bounded_heap_optimization.md) 用 candidate max-heap 与 bounded top min-heap 代替 `O(ef)` 数组维护，保持 10K ef=256 recall@10 `0.9860`。[`Stage 9E3c report`](../vector_core_reset/stage9e3c_core_hnsw_v2_reverse_prune_score_reuse.md) 又复用 direct known score，但 local pair cache 命中率只有约 `0.29%`；扩大 cache 的变体让 build 变慢，因此被否决。
+[`Stage 9E2 report`](../vector_core_reset/stage9e2_core_hnsw_v2_bounded_heap_optimization.md) 用 candidate max-heap 与 bounded top min-heap 代替 `O(ef)` 数组维护，保持 10K ef=256 recall@10 `0.9860`。随后 [`Stage 9E3 distance attribution`](../vector_core_reset/stage9e3_core_hnsw_v2_distance_simd_attribution.md) 把 residual build cost 收敛到 reverse prune 中反复执行的距离计算；[`Stage 9E3b gate`](../vector_core_reset/stage9e3b_reverse_prune_attribution_rebuild_strategy_gate.md) 的 sampled attribution 只证明“存在复用机会”，同时把 background shadow rebuild 留作设计方向，它本身没有实现产品在线 rebuild。
+
+[`Stage 9E3c report`](../vector_core_reset/stage9e3c_core_hnsw_v2_reverse_prune_score_reuse.md) 随后复用 direct known score，但 local pair cache 命中率只有约 `0.29%`；扩大 cache 的变体虽然保存了更多 score，却让 build 变慢，因此未保留。这个阶段留下的是窄范围 score reuse 和明确止损，不是继续扩大 graph-side cache。
 
 这条真实路线是：
 
@@ -357,6 +361,8 @@ VINFO
 
 [`kvs_vector_index_bind_current()`](https://gitlab.0voice.com/zhengpan/9.1-kvstore/-/blob/07fdc6c/src/vector/kvs_vector.c#L1939-L1962) 让 `current_index` 真正绑定 v2 ops。`core_flat` 仍可显式选择；在本章历史终点，v1 `core_hnsw` 也仍是显式 fallback/reference。这里的“fallback”是可配置替代路径，不是默认 v2 失败后静默切换。
 
+中间的 [`Stage 9G1 cleanup`](../vector_core_reset/stage9g1_cleanup_codebase_consolidation.md) 只清理过时 profile harness、整理 gate，并把 v1 降为 legacy reference；它没有切默认，也没有新增 ANN 语义。默认切换属于随后 [`Stage 9G2`](../vector_core_reset/stage9g2_default_backend_switch_hardening.md)，不能把 cleanup 写成独立产品能力。
+
 RDB/AOF 没有保存 v2 graph。产品测试启动真实 server，经 RESP 执行 VSET/VDEL/VSEARCH/VINDEX/VINFO，再做 RDB reload 和 AOF replay；恢复后从 records 重建 v2。[`product integration script`](../../tests/vector_core_hnsw_v2_product_integration_test.sh) 是脚本资产，[`Stage 9G0 report`](../vector_core_reset/stage9g0_experimental_core_hnsw_v2_product_integration.md) 记录其当时提权后通过。graph 仍是 derived runtime state。
 
 ## 17.12 召回问题如何暴露：先确认跑的真是 v2
@@ -380,6 +386,8 @@ RDB/AOF 没有保存 v2 graph。产品测试启动真实 server，经 RESP 执�
 5. **ef sensitivity 是否合理。** recall 随 efSearch 单调上升，说明搜索探索不足至少是一个有效因素。
 
 所以问题被收敛成：默认 M/M0/efConstruction/efSearch 是否覆盖目标规模，以及同参下 v2 graph quality 是否明显落后成熟实现。
+
+[`HNSW-P0 attribution review`](../hnsw_productization/hnsw_p0_recall_attribution_report.md) 在这里承担的是“先停手、再归因”：它没有修改生产代码，而是把 50K/100K 结果降级为风险证据，明确结构合法不等于导航质量足够，并要求先统一 exact oracle、query 数和成熟库 parity，再决定调参还是改图。这一步避免了在证据不足时继续做 SIMD、layout 或 cache 优化。
 
 ## 17.13 参数归因与 FAISS parity：召回修复证明了什么
 
@@ -426,7 +434,7 @@ duplicate_edge=0
 degree_overflow=0
 ```
 
-因此 `7e89a93` 把 [`v2 defaults`](https://gitlab.0voice.com/zhengpan/9.1-kvstore/-/blob/7e89a93/include/vector/kvs_vector_hnsw_v2.h#L10-L16) 从 `32/64/256/256` 固化到 `48/96/512/1024`。产品 configure path 会把低于 v2 default 的 shared config 值提升到这个下限，参数确实进入运行时。
+因此 `7e89a93` 把 [`v2 defaults`](https://gitlab.0voice.com/zhengpan/9.1-kvstore/-/blob/7e89a93/include/vector/kvs_vector_hnsw_v2.h#L10-L16) 从 `32/64/256/256` 固化到 `48/96/512/1024`。产品 configure path 会把低于 v2 default 的 shared config 值提升到这个下限，参数确实进入运行时。这里的 balanced defaults 是当前 100K synthetic gate 下的阶段性取舍，不是所有规模、数据分布和延迟目标下的全场景最优参数。
 
 但同一报告记录 build 约 50.2 分钟、memory 约 851MB。它证明的是：
 
@@ -441,7 +449,7 @@ degree_overflow=0
 
 ## 17.14 测试、benchmark 与证据边界
 
-本章没有在当前环境重跑历史长测。原因是任务要求只读审计，当前 worktree 还存在用户的 v2 源码、benchmark 和 Makefile 修改；重编译或重跑会混入当前未提交状态。以下“PASS”都来自对应阶段报告，不是本次执行结果。
+本章修订没有在当前环境重跑历史长测。本次只允许修改现有文章，而重新执行 50K/100K benchmark 既会生成新产物，也不能替代目标提交当时的历史证据。以下“PASS”都来自对应阶段报告，不是本次执行结果。
 
 | 证据 | 资产状态 | 历史执行证据 | 能证明 | 不能证明 |
 | --- | --- | --- | --- | --- |
@@ -453,7 +461,7 @@ degree_overflow=0
 | [`default backend test`](../../tests/vector_core_hnsw_v2_default_backend_test.sh) | 当前存在 | [`Stage 9G2`](../vector_core_reset/stage9g2_default_backend_switch_hardening.md) 记录 PASS | 默认 v2、显式 flat/v1 路径 | init failure 的所有注入点 |
 | [`scale stability test`](../../tests/vector_core_hnsw_v2_scale_stability_test.sh) | 当前存在 | [`Stage 9G3`](../vector_core_reset/stage9g3_scale_stability_final_consolidation.md) 记录 PASS | 10K full、50K sampled、100K smoke 风险 | 50K/100K SLA |
 | [`P1 parity test`](../../tests/vector_core_hnsw_v2_parity_baseline_test.sh) | 当前存在 | [`P1 report`](../hnsw_productization/hnsw_p1_parity_baseline_report.md) 记录 PASS | direct exact/core_flat 对齐、参数敏感性 | 完整 hnswlib parity |
-| [`e016678` 时的 FAISS parity test](https://gitlab.0voice.com/zhengpan/9.1-kvstore/-/blob/e016678/tests/vector_core_hnsw_faiss_parity_test.sh) | 历史树存在，当前已清理 | P1b/P1b-B 报告记录 PASS | 同 dataset/query 与显式 FAISS 参数 | 参数语义完全等价、产品 endpoint 对比 |
+| [`e016678` 时的 FAISS parity test](https://gitlab.0voice.com/zhengpan/9.1-kvstore/-/blob/e016678/tests/vector_core_hnsw_faiss_parity_test.sh) | 历史树存在，当前已清理 | [`P1b`](../hnsw_productization/hnsw_p1b_faiss_parity_report.md) / [`P1b balanced`](../hnsw_productization/hnsw_p1b_balanced_faiss_parity_report.md) 报告记录 PASS | 同 dataset/query 与显式 FAISS 参数 | 参数语义完全等价、产品 endpoint 对比 |
 | [`100K balanced gate`](../../tests/vector_core_hnsw_v2_100k_balanced_gate_test.sh) | 当前存在 | [`P2 report`](../hnsw_productization/hnsw_p2_100k_balanced_default_report.md) 记录 PASS | 单次 100K synthetic recall 下限 | 多 seed、真实文本、真实 ONNX、SLA |
 
 Git 树中没有找到这四个候选提交对应的独立 `results/*.json`、`*.log` 或 `*.csv`。所以本章所有历史数字都链接到明确记录执行口径的阶段报告；没有把测试文件存在本身写成“本次通过”，也没有构造不存在的原始结果链接。
@@ -506,7 +514,7 @@ product integration
 9. **hnswlib parity 未闭环。** 有 harness 尝试，没有可采纳的同口径长跑结果。
 10. **真实语义证据缺失。** 本章没有真实 ONNX/text dataset、qrels 或真实 endpoint 10K/100K。
 
-第 8 项正是下一阶段触发条件，但本章不展开 active/shadow/retired、delta replay、reader publication、snapshot 或后台 worker。
+第 8 项是后续路线的触发条件，但仍要服从真实 Git 顺序：`15deef1^..26ebf99` 先处理 snapshot、校验和冷启动，`74ec6af` 才进入在线 rebuild、active/shadow/retired、delta replay、reader publication 和后台 worker。本章两者都不展开。
 
 ### 方案比较
 
@@ -575,27 +583,27 @@ manager record_index
 
 ### 1 分钟版本
 
-“第十六章已经把 vector manager 和 core 拆开，但第一版 `core_hnsw` 继续演进的收益开始下降：upper graph 固定预分配，构建热点集中在 layer search、neighbor select 和双向连接，两个 locality prototype 没有效果；10K/512d recall 只有 0.624，修掉 forward edge 依赖 reverse acceptance 后也只有 0.638。
+“第十六章已经把 vector manager 和 core 拆开，但第一版 `core_hnsw` 继续演进的收益开始下降：upper graph 固定预分配，构建热点集中在 layer search、neighbor select 和双向连接，两个 locality prototype 没有效果；[`Stage 9A1`](../vector_core_reset/stage9a1_core_hnsw_bidirectional_link_acceptance_audit.md) 记录的 10K/512d recall 只有 0.624，修掉 forward edge 依赖 reverse acceptance 后也只有 0.638。
 
 所以我冻结 v1，旁路做 `core_hnsw_v2`。v2 先只做 index-only skeleton，再补随机层、entry point、upper greedy、level0 ef search、neighbor selection、forward/reverse link 和两个堆。它用 stable record_id 对外，internal slot 只属于 graph；删除是 tombstone，更新是 tombstone 后 append re-add。
 
-接入产品时先做 experimental adapter，验证 VSET/VDEL/VSEARCH/VINDEX/VINFO 和 RDB/AOF records-only 恢复，随后同一个聚合提交切成默认 backend。50K/100K scale gate 又暴露低召回，我们没有直接重写算法，而是用 direct exact + core_flat oracle、FAISS direct 同参 parity 做归因。结果表明主要是默认参数覆盖不足；balanced 参数让单次 100K synthetic recall@10 达到 0.974，但 build 约 50 分钟，所以这只是可用下限，不是生产 SLA，在线 rebuild 和冷启动仍要下一阶段解决。”
+接入产品时先做 experimental adapter，验证 VSET/VDEL/VSEARCH/VINDEX/VINFO 和 RDB/AOF records-only 恢复，随后同一个聚合提交切成默认 backend。50K/100K scale gate 又暴露低召回，我们没有直接重写算法，而是用 direct exact + core_flat oracle、FAISS direct 同参 parity 做归因。结果表明主要是默认参数覆盖不足；[`P2 gate`](../hnsw_productization/hnsw_p2_100k_balanced_default_report.md) 中 balanced 参数让单次 100K synthetic recall@10 达到 0.974，但 build 约 50 分钟，所以这只是可用下限，不是生产 SLA；snapshot/cold start 与在线 rebuild/safe publication 要由后续两章分别解决。”
 
 ### 3～5 分钟版本
 
-“这次重写不是因为第一版 core 没有分层。v1 已经符合 `record_id + vector -> record_id + score`，问题是它的实现进入低收益区：fixed upper arrays、dense level0 expansion、visited pressure 和复杂的双向连接维护。Stage 7E/7G 去掉明显重复开销后，Stage 7I/7J 的 locality prototype 仍失败；Stage 9A1 又证明 forward/reverse coupling 是 bug，但解除后 10K recall 只从 0.624 到 0.638。继续原地改 v1 很难区分结构变化和回归，所以我把它冻结为 reference，另起 v2。
+“这次重写不是因为第一版 core 没有分层。v1 已经符合 `record_id + vector -> record_id + score`，问题是它的实现进入低收益区：fixed upper arrays、dense level0 expansion、visited pressure 和复杂的双向连接维护。Stage 7E/7G 去掉明显重复开销后，Stage 7I/7J 的 locality prototype 仍失败；[`Stage 9A1`](../vector_core_reset/stage9a1_core_hnsw_bidirectional_link_acceptance_audit.md) 又证明 forward/reverse coupling 是 bug，但解除后 10K recall 只从 0.624 到 0.638。继续原地改 v1 很难区分结构变化和回归，所以我把它冻结为 reference，另起 v2。
 
 v2 第一步只是 skeleton：init/reserve/reset/destroy、aligned vector、record-id/slot map、level/deleted/visited、graph storage 和 memory info。接口存在不代表可以搜索。9C 才补构图，9D 才补搜索。插入时先生成随机层；空图设置 entry point；非空图从 upper level greedy descent，再逐层用 efConstruction 搜候选、用 diversity heuristic 选邻居，先写新节点 forward edge，再 best-effort 维护 reverse edge和 prune。搜索时 upper greedy 到 level0，candidate max-heap 负责拿最好扩展点，top min-heap 负责维护最差入选下界，visited tag 去重，满足 lower-bound 条件后停止。
 
 身份边界上，manager record slot 和 graph slot 完全不同。manager slot 可以复用；v2 slot 是 append-only 下标。两边只用 stable record_id 对接。search 返回 id+score 后，manager 还要校验 id、active、deleted、scope、threshold，再组响应。删除只 mark tombstone，节点还能导航但不能导出；更新是 old tombstone + new slot，不是原位 reconnect。
 
-性能演进也有返工。9D 的 full-candidate build 10K 接近 130 秒；改成 bounded layer search 后约 48 秒，但 recall 从 0.984 掉到 0.978。诊断显示 exact-best 能访问，neighbor heuristic overlap 也高，主要问题更像 entry quality 和 efConstruction。提到 256 后 recall 回到 0.986；后面用两个堆降低 `O(ef)` 维护，score reuse 保留，但命中率只有 0.29% 的大 cache 被否决。
+性能演进也有返工。[`Stage 9D`](../vector_core_reset/stage9d_core_hnsw_v2_search_recall_gate.md) 的 full-candidate build 10K 接近 130 秒；[`Stage 9E1`](../vector_core_reset/stage9e1_core_hnsw_v2_add_time_layer_search.md) 改成 bounded layer search 后约 48 秒，但 recall 从 0.984 掉到 0.978。诊断显示 exact-best 能访问，neighbor heuristic overlap 也高，主要问题更像 entry quality 和 efConstruction。提到 256 后 recall 回到 0.986；后面用两个堆降低 `O(ef)` 维护，[`Stage 9E3c`](../vector_core_reset/stage9e3c_core_hnsw_v2_reverse_prune_score_reuse.md) 保留窄范围 score reuse；低开销 local pair cache 的命中率只有 0.29%，扩大 cache 的变体反而让 build 变慢，因此止损。
 
 产品接入先用 experimental flag，adapter 把旧 ops 的 record_index 转 stable record_id，VSEARCH raw hit 再交 manager resolve。VINDEX 同步从 active records 重建，RDB/AOF 不保存 graph。9G2 后 v2 成为默认；这说明 experimental 是中间态，不是最终状态。
 
-随后 50K/100K synthetic gate 暴露低 recall。我们先验证 default backend 真选中 v2，再用 direct exact 和 core_flat 交叉验证 oracle，确保 metric、normalization、topK 一致；由于 index-only 路径不经过 manager，也排除了 scope/resolve。P1 看到 efSearch 和 M/M0/efConstruction 提升能恢复召回，P1b 又直接设置 FAISS `efConstruction/efSearch`，同参下 FAISS 没有显著领先 v2。最后 100K balanced 单次 gate recall@10=0.974，默认参数据此固化。
+随后 50K/100K synthetic gate 暴露低 recall。我们先验证 default backend 真选中 v2，再用 direct exact 和 core_flat 交叉验证 oracle，确保 metric、normalization、topK 一致；由于 index-only 路径不经过 manager，也排除了 scope/resolve。P1 看到 efSearch 和 M/M0/efConstruction 提升能恢复召回，P1b 又直接设置 FAISS `efConstruction/efSearch`，同参下 FAISS 没有显著领先 v2。最后 [`P2 report`](../hnsw_productization/hnsw_p2_100k_balanced_default_report.md) 的 100K balanced 单次 gate recall@10=0.974，默认参数据此固化。
 
-我不会把它讲成生产级完成。数据是 synthetic normalized IP，不是语义 qrels；原始 result 文件没有入库，数字来自阶段报告；100K 是单 seed gate；build 约 50 分钟，memory 约 851MB；upper storage、reserve growth、partial rollback、tombstone 累积和并发 context 仍有缺口。下一阶段才处理 snapshot、后台 rebuild 和安全发布。”
+我不会把它讲成生产级完成。数据是 synthetic normalized IP，不是语义 qrels；原始 result 文件没有入库，数字来自阶段报告；[`P2 report`](../hnsw_productization/hnsw_p2_100k_balanced_default_report.md) 的 100K 是单 seed gate，build 约 50 分钟、memory 约 851MB；upper storage、reserve growth、partial rollback、tombstone 累积和并发 context 仍有缺口。下一章先处理 snapshot、校验和冷启动，再后一章才处理在线 rebuild、delta replay 和安全发布。”
 
 ### 常见追问与回答要点
 
@@ -676,4 +684,4 @@ v1 局部优化收益下降
 
 仍未解决的是：compact upper layout、增长式 reserve、强失败回滚、长期 tombstone、并发 search context、真实 embedding/语义 benchmark，以及大规模同步 rebuild/cold-start 的产品可用性。
 
-因此第十七章的终点不是“生产级 HNSW 完成”，而是“可验证的 v2 内核进入产品并达到召回可用下限”。从 `15deef1` 开始，问题才转向快照缓存、后台重建和安全发布；那是下一章的边界。
+因此第十七章的终点不是“生产级 HNSW 完成”，而是“可验证的 v2 内核进入产品并达到召回可用下限”。下一篇是“第十八章：HNSW snapshot、校验与冷启动”，候选范围 `15deef1^..26ebf99`；从 `74ec6af` 才开始的在线 rebuild、delta replay 与安全发布属于第十九章，不在下一篇提前展开。

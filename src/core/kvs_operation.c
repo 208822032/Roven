@@ -7,6 +7,7 @@
 #include "kvs_vector_distance.h"
 #include "kvs_embedding_worker_pool.h"
 #include "kvs_command_executor.h"
+#include "kvs_owner_lock.h"
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
@@ -250,6 +251,7 @@ int ttl_expire_observed_key(const char *key, size_t key_len, int64_t observed_ex
     int64_t current_expire_at_ms;
     int64_t now_ms;
 
+    KVS_COMMAND_OWNER_ASSERT_MUTATION("ttl.expire_observed_key");
     if (!key || key_len == 0 || observed_expire_at_ms < 0) {
         return -1;
     }

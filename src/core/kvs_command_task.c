@@ -600,6 +600,10 @@ int kvs_command_task_execute_sync(kvs_command_task_t *task) {
 	int ret;
 	int old_sync_context;
 
+	if (task && task->use_write_lock) {
+		KVS_COMMAND_OWNER_ASSERT_MUTATION("command_task.execute.write");
+	}
+
 	if (kvs_command_task_lock(task) < 0) {
 		return task->status;
 	}
@@ -608,6 +612,7 @@ int kvs_command_task_execute_sync(kvs_command_task_t *task) {
 	set_sync_context(task->sync_context);
 	ret = kvs_command_task_execute_handler(task);
 	if (task->use_read_lock && ret == KVS_CMD_RETRY_WITH_WRITE_LOCK) {
+		KVS_COMMAND_OWNER_ASSERT_MUTATION("command_task.lazy_expire.retry");
 		kvs_command_task_unlock(task);
 		task->use_read_lock = 0;
 		task->use_write_lock = 1;
