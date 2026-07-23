@@ -2716,12 +2716,33 @@ static int kvs_command_executor_should_async_prepare(kvs_command_task_t *task) {
 	       !task->prepare_completed;
 }
 
+/*
+ * 在 executor 线程中完成一个 command task 的最后执行阶段。
+ *
+ * 这一步把“准备好的 task”或“普通 task”统一走到数据库操作、post-commit、
+ * 响应生成和响应入队。它不直接操作 socket；网络发送由 owner 网络线程负责。
+ *
+ * 主要顺序：
+ * 1. 从 task 取出 response_task，并把 fd、session 身份和 owner 信息交给 response；
+ * 2. 已完成 prepare 的 task 直接执行同步提交，普通 task 先做 prepare 再执行；
+ * 3. 执行后处理 TTL/AOF/复制等 post-commit 工作；
+ * 4. finalize response，解除 task 与 response 的关联；
+ * 5. 销毁 task，把仍需网络层处理的 response 放入响应队列并唤醒 owner。
+ *
+ * task 的所有权在本函数中由 executor 独占。response_task 在 task 销毁后继续存活，
+ * 直到网络层取出、发送或因连接身份失效而丢弃。
+ */
 static void kvs_command_executor_execute(kvs_command_task_t *task) {
+	/* 最终响应对象；task 销毁后它还要进入 response queue。 */
 	kvs_response_task_t *resp;
+	/* 命令执行或 prepare 的返回值，最终会写入 response status。 */
 	int ret;
+	/* 标记 task 是否已经由 embedding worker 完成 prepare。 */
 	int prepared_task;
+	/* 用于分别统计 VSET/VSEARCH 的 prepared 路径耗时。 */
 	int is_vset_prepared;
 	int is_vsearch_prepared;
+	/* prepared task 的总耗时统计起点，以及各阶段的临时计时点。 */
 	uint64_t total_start_us = 0;
 	uint64_t start_us = 0;
 	uint64_t end_us = 0;
@@ -2729,6 +2750,7 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 	if (!task) {
 		return;
 	}
+	/* 先记录 task 类型，后续决定走 prepared 还是普通执行路径。 */
 	prepared_task = task->prepare_completed;
 	is_vset_prepared = prepared_task &&
 		task->prepared_kind == KVS_COMMAND_TASK_PREPARED_VSET;
@@ -2739,10 +2761,15 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 	}
 	resp = task->response_task;
 	if (!resp) {
+		/* 没有响应对象时无法完成异步回包，直接释放 task，避免泄漏。 */
 		kvs_command_executor_destroy_task(task);
 		return;
 	}
 
+	/*
+	 * response 需要带着连接身份回到网络 owner。这里转移的是引用和元数据，
+	 * executor 不会解引用 session_owner，也不会直接调用 send/epoll_ctl。
+	 */
 	resp->session = task->session;
 	resp->session_owner = task->session_owner;
 	resp->session_release = task->session_release;
@@ -2753,13 +2780,16 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 	resp->owner_type = task->owner_type;
 	resp->owner_poller_id = task->owner_poller_id;
 
+	/*转移session所有权*/
 	task->session = NULL;
 	task->session_owner = NULL;
 	task->session_release = NULL;
 
+	/* build 阶段已经生成错误响应时，不再执行 handler，直接使用该错误状态。 */
 	if (task->build_status > 0) {
 		ret = task->build_status;
 	} else if (task->prepare_completed) {
+		/* worker prepare 已完成，先检查 prepare 结果，再进入同步提交。 */
 		ret = task->prepare_status;
 		if (ret == 0) {
 			start_us = executor_now_us();
@@ -2816,6 +2846,7 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 			executor_stats_add(&g_executor.stats.prepared_task_failed, 1);
 		}
 	} else {
+		/* 普通 task 没有异步准备阶段，在 executor 内完成 prepare 和执行。 */
 		executor_stats_add(&g_executor.stats.normal_task_executed, 1);
 		ret = kvs_command_task_prepare(task);
 		if (ret == 0) {
@@ -2824,6 +2855,7 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 		}
 	}
 
+	/* 将执行结果写入 RESP 缓冲区；此时仍由 executor 持有 resp。 */
 	start_us = prepared_task ? executor_now_us() : 0;
 	kvs_response_task_finalize(resp, ret);
 	if (prepared_task) {
@@ -2843,10 +2875,12 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 			);
 		}
 	}
+	/* 先断开 task 与 response 的关联，再销毁 task，避免悬空关联。 */
 	task->response_task = NULL;
 	kvs_command_task_destroy(task);
 	kvs_free(task);
 	executor_stats_add(&g_executor.stats.completed_tasks, 1);
+	/* response 独立进入队列，网络 owner 会通过 eventfd 被唤醒。 */
 	start_us = is_vset_prepared ? executor_now_us() : 0;
 	kvs_command_executor_push_response(resp);
 	if (is_vset_prepared) {
@@ -2869,21 +2903,47 @@ static void kvs_command_executor_execute(kvs_command_task_t *task) {
 	}
 }
 
+/*
+ * 决定一个 command task 是交给 Embedding worker 做准备，还是直接在
+ * 当前 executor 线程完成执行。
+ *
+ * 分流规则：
+ * - 启用了 embedding worker pool；
+ * - 当前命令需要 embedding prepare（例如 VSET/VSEARCH）；
+ * - task 还没有被派发，也没有完成 prepare。
+ * 满足这三个条件时，task 的所有权暂时交给 worker pool。worker 完成 prepare
+ * 后会把同一个 task 重新提交回 executor，最终仍由 executor 执行数据库提交、
+ * post-commit 和响应生成。
+ *
+ * 如果 worker pool 未启用、命令不需要 prepare，或者 worker 提交失败，则回退到
+ * kvs_command_executor_execute。回退时 task 仍然有效，不能提前释放；无论走哪条
+ * 路径，成功返回后都由后续 worker/executor 负责 task 的最终销毁。
+ *
+ * 返回 1 表示 task 已被接收（异步派发或同步执行）；传入 NULL 时返回 0。
+ */
 static int kvs_command_executor_dispatch_or_execute(kvs_command_task_t *task) {
+	/* 没有 task 时没有可调度的工作，调用者无需释放 NULL。 */
 	if (!task) {
 		return 0;
 	}
+
+	/* 判断是否可以把耗时的 embedding 准备阶段移到 worker pool。 */
 	if (kvs_command_executor_should_async_prepare(task)) {
+		/* 先标记为已派发，防止同一个 task 被重复送入 worker 队列。 */
 		task->prepare_dispatched = 1;
+		/* 成功后 worker 拥有 task；本函数不能再直接执行或释放它。 */
 		if (kvs_embedding_worker_pool_submit(task) == 0) {
 			executor_stats_add(&g_executor.stats.embedding_prepare_dispatched, 1);
 			executor_stats_add(&g_executor.stats.prepare_task_submitted, 1);
 			return 1;
 		}
+		/* 提交失败时收回派发标记，下面在 executor 线程内直接完成 prepare。 */
 		task->prepare_dispatched = 0;
 		executor_stats_add(&g_executor.stats.embedding_prepare_submit_failed, 1);
 		executor_stats_add(&g_executor.stats.embedding_prepare_inline, 1);
 	}
+
+	/* 普通命令或异步派发失败的命令，走当前 executor 的完整执行路径。 */
 	kvs_command_executor_execute(task);
 	return 1;
 }
@@ -3578,35 +3638,77 @@ int kvs_command_executor_build_aof_rewrite_snapshot(kvs_aof_rewrite_snapshot_t *
 	return status;
 }
 
+/*
+ * 把一个普通 command task 放入 executor 的命令队列。
+ *
+ * 调用方在进入本函数前应已经完成 task build、必要的 argv 深拷贝、连接身份
+ * 绑定和 single_inflight 设置。本函数不执行命令，也不等待命令完成；它只做
+ * 队列交接并唤醒 executor 线程。成功后，task 的生命周期由 executor 接管，
+ * 调用方不能再修改或释放它；失败时 task 没有进入队列，仍由调用方负责清理。
+ *
+ * 当前命令队列是带头尾指针的无界单链表，没有按配置限制长度或提供背压。
+ * 因此高并发提交时需要关注队列深度和内存增长。
+ *
+ * 返回值：0 表示已入队；-1 表示 task 为空、executor 未运行或正在停止。
+ */
 int kvs_command_executor_submit(kvs_command_task_t *task) {
+	/* 入队后用于记录命令队列当前深度。 */
 	uint64_t depth;
 
+	/* 没有 task 就没有可交给 executor 的工作。 */
 	if (!task) {
 		return -1;
 	}
+
+	/* 队列链表只保存 next 指针，防止 task 带着旧队列关系进入新队列。 */
 	task->queue_next = NULL;
 
+	/*
+	 * cmd_mu 同时保护 running/stopping 状态以及 cmd_head/cmd_tail 链表。
+	 * 生产者在锁内完成“检查状态 + 追加节点”，executor 不会看到半入队 task。
+	 */
 	pthread_mutex_lock(&g_executor.cmd_mu);
 	if (!g_executor.running || g_executor.stopping) {
+		/* executor 已退出或正在停止，不能再接收新任务。 */
 		pthread_mutex_unlock(&g_executor.cmd_mu);
+		/* 统计一次提交失败；task 仍归调用方所有。 */
 		executor_stats_add(&g_executor.stats.submit_failed, 1);
 		return -1;
 	}
+
+	/*
+	 * 尾插保持同一队列内的 FIFO 顺序。
+	 * 空队列时 head 和 tail 都指向当前 task；非空时只连接旧 tail。
+	 */
 	if (g_executor.cmd_tail) {
 		g_executor.cmd_tail->queue_next = task;
 	} else {
 		g_executor.cmd_head = task;
 	}
 	g_executor.cmd_tail = task;
+
+	/* 更新当前深度、历史最大深度和累计提交数，供 VINFO/日志观察。 */
 	depth = executor_stats_add(&g_executor.stats.command_queue_depth, 1);
 	executor_stats_update_max(&g_executor.stats.command_queue_max_depth, depth);
 	executor_stats_add(&g_executor.stats.submitted_tasks, 1);
+
+	/* 唤醒正在 cmd_cv 上睡眠的 executor 线程，让它重新检查所有任务队列。 */
 	pthread_cond_signal(&g_executor.cmd_cv);
 	pthread_mutex_unlock(&g_executor.cmd_mu);
 	return 0;
 }
 
+/*
+ * 从响应队列头部取出任意一个 response task。
+ *
+ * 本函数不检查 owner，适合只有一个响应消费者或调用方已经确定队列归属的
+ * 场景。resp_mu 保护 head/tail 和 queue_next；摘链并解锁后，response 的
+ * 所有权转给 *out，调用者负责把它交给网络层处理，最后销毁它。
+ *
+ * 返回值：1 表示取到响应，0 表示队列为空，-1 表示 out 为空。
+ */
 int kvs_command_executor_poll_response(kvs_response_task_t **out) {
+	/* 从队列摘下来的响应；初始值由队头决定。 */
 	kvs_response_task_t *resp;
 
 	if (!out) {
@@ -3614,31 +3716,48 @@ int kvs_command_executor_poll_response(kvs_response_task_t **out) {
 	}
 	*out = NULL;
 
+	/* 队头、队尾和 next 必须在同一把锁下读取和修改。 */
 	pthread_mutex_lock(&g_executor.resp_mu);
 	resp = g_executor.resp_head;
 	if (!resp) {
+		/* 空队列不算错误，调用方稍后可再次轮询。 */
 		pthread_mutex_unlock(&g_executor.resp_mu);
 		return 0;
 	}
 	g_executor.resp_head = resp->queue_next;
 	if (!g_executor.resp_head) {
+		/* 摘掉最后一个节点时同步清空 tail。 */
 		g_executor.resp_tail = NULL;
 	}
+	/* 切断节点与队列的链接，避免调用方误遍历到队列中的其他响应。 */
 	resp->queue_next = NULL;
 	executor_stats_sub(&g_executor.stats.response_queue_depth, 1);
 	executor_stats_add(&g_executor.stats.polled_responses, 1);
 	pthread_mutex_unlock(&g_executor.resp_mu);
 
+	/* 解锁后 response 独立交给调用方，后续释放不再需要 resp_mu。 */
 	*out = resp;
 	return 1;
 }
 
+/*
+ * 在响应队列中查找并取出指定 owner 的第一个 response task。
+ *
+ * 一个 executor 响应队列可能同时保存 Reactor、Proactor 或不同 poller 的
+ * 响应，因此不能无条件取队头。函数在 resp_mu 内遍历单链表，只摘除第一个
+ * owner_type 和 owner_poller_id 都匹配的节点；其他节点保持原有顺序。
+ *
+ * 返回值：1 表示取到匹配响应，0 表示当前没有匹配项，-1 表示 out 为空。
+ * 成功后 *out 获得 response 所有权，调用者负责验证连接、发送或丢弃并销毁。
+ */
 int kvs_command_executor_poll_response_for(
 	int owner_type,
 	int owner_poller_id,
 	kvs_response_task_t **out
 ) {
+	/* prev 用于把匹配节点从中间位置摘除。 */
 	kvs_response_task_t *prev = NULL;
+	/* 当前遍历到的响应节点。 */
 	kvs_response_task_t *resp;
 
 	if (!out) {
@@ -3646,23 +3765,30 @@ int kvs_command_executor_poll_response_for(
 	}
 	*out = NULL;
 
+	/* 遍历和摘链必须保持在锁内，防止其他线程同时修改响应队列。 */
 	pthread_mutex_lock(&g_executor.resp_mu);
 	resp = g_executor.resp_head;
 	while (resp) {
+		/* 两个 owner 字段都匹配，才允许当前网络线程取走该响应。 */
 		if (resp->owner_type == owner_type &&
 		    resp->owner_poller_id == owner_poller_id) {
 			if (prev) {
+				/* 匹配节点在中间或尾部：由前一个节点跳过它。 */
 				prev->queue_next = resp->queue_next;
 			} else {
+				/* 匹配节点就是队头，直接移动 head。 */
 				g_executor.resp_head = resp->queue_next;
 			}
 			if (g_executor.resp_tail == resp) {
+				/* 匹配节点是 tail 时，tail 应回退到 prev。 */
 				g_executor.resp_tail = prev;
 			}
+			/* 脱离队列后再交给调用方，避免重复摘链。 */
 			resp->queue_next = NULL;
 			executor_stats_sub(&g_executor.stats.response_queue_depth, 1);
 			executor_stats_add(&g_executor.stats.polled_responses, 1);
 			pthread_mutex_unlock(&g_executor.resp_mu);
+			/* response 的生命周期从此由调用方负责。 */
 			*out = resp;
 			return 1;
 		}
@@ -3673,6 +3799,13 @@ int kvs_command_executor_poll_response_for(
 	return 0;
 }
 
+/*
+ * owner 语义的便捷入口。
+ *
+ * 网络模型只需要表达“我要取属于这个 owner/poller 的响应”，具体的链表扫描
+ * 和加锁逻辑统一放在 kvs_command_executor_poll_response_for，避免两个实现
+ * 分叉。返回值和 response 所有权规则与底层函数完全相同。
+ */
 int kvs_command_executor_poll_response_for_owner(
 	int owner_type,
 	int owner_poller_id,
