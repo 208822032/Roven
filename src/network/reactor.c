@@ -1007,9 +1007,11 @@ static int reactor_submit_async_command(int fd, conn_extension_t *ext) {
  * 直到返回 EAGAIN/EWOULDBLOCK，表示“当前已经读空”。如果提前返回，内核中剩余
  * 的旧数据未必会再次触发 EPOLLIN，连接可能永久卡住。
  *
- * 读空后，本函数最多调用一次 reactor_submit_async_command：它只解析并提交一条
- * 完整 RESP 命令。single_inflight 为 1 时不继续提交 Pipeline 后续命令，等 executor
- * 响应回到网络线程、结束在途状态后再处理下一条，借此保持同连接响应顺序。
+ * 读空后，本函数持续提交 recv_buf 开头已完整的 RESP 帧。普通命令提交后会设置
+ * single_inflight，因此仍会等待 executor 响应回到网络线程后才处理下一条；复制
+ * fallback 不设置 single_inflight，必须在本轮排空已缓冲帧，否则 ET 不会为已经
+ * 搬入 recv_buf 的剩余字节再触发 EPOLLIN。每次解析都会按
+ * network.max_commands_per_read 预验证本批完整帧数，限制单轮工作量。
  *
  * 返回 0 表示本次读事件处理完成；返回 -1 表示连接或缓冲区出现错误，调用方会
  * 注销连接。fd 只能由 Reactor 所属线程调用。
@@ -1094,15 +1096,18 @@ int recv_cb(int fd) {
     }
 
     /*
-     * 用户态缓冲有数据且没有旧命令在 executor 中时，尝试解析一条完整命令。
-     * 半包时 reactor_submit_async_command 返回 0，数据会继续留在 recv_buf。
+     * 处理当前用户态缓冲中的完整帧。普通命令会在提交后设置 single_inflight，
+     * 因而保持一次仅一条在途；复制 fallback 则在同一 ET 读事件内排空同批帧。
+     * 半包返回 0 并保留在 recv_buf，等待后续网络数据。
      */
-    if (recv_buf->size > 0 && !ext->session.single_inflight) {
-        /* processed 表示解析/提交结果，而非已处理的 Pipeline 命令总数。 */
+    while (recv_buf->size > 0 && !ext->session.single_inflight) {
         int processed = reactor_submit_async_command(fd, ext);
         if (processed < 0) {
             event_unregister(fd);
             return -1;
+        }
+        if (processed == 0) {
+            break;
         }
     }
 

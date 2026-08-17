@@ -1,5 +1,6 @@
 #include "embedding_c_api.h"
 #include "kvs_config.h"
+#include "kvs_log.h"
 
 #include <onnxruntime_c_api.h>
 
@@ -438,9 +439,9 @@ static EmbeddingErrorCode embedding_load_vocab(EmbeddingHandle *handle) {
 		return EMBEDDING_ERR_MODEL_LOAD_FAILED;
 	}
 
-	fprintf(
-		stderr,
-		"[kvlite][embedding][onnx] vocab loaded path=%s size=%zu pad=%lld unk=%lld cls=%lld sep=%lld\n",
+KVS_LOG_DEBUG(
+"embedding",
+"ONNX vocab loaded path=%s size=%zu pad=%lld unk=%lld cls=%lld sep=%lld",
 		handle->vocab_path,
 		handle->vocab.count,
 		(long long)handle->pad_id,
@@ -791,22 +792,43 @@ static const char *embedding_onnx_element_type_name(
 	}
 }
 
-static void embedding_print_shape(const int64_t *dims, size_t rank) {
-	size_t i;
+static void embedding_format_shape(
+char *output,
+size_t output_size,
+const int64_t *dims,
+size_t rank
+) {
+size_t i;
+size_t offset = 0;
+int written;
 
-	fprintf(stderr, "[");
-	for (i = 0; i < rank; ++i) {
-		if (i > 0) {
-			fprintf(stderr, ", ");
-		}
+if (!output || output_size == 0) {
+return;
+}
 
-		if (dims[i] < 0) {
-			fprintf(stderr, "-1");
-		} else {
-			fprintf(stderr, "%lld", (long long)dims[i]);
-		}
-	}
-	fprintf(stderr, "]");
+written = snprintf(output + offset, output_size - offset, "[");
+if (written < 0 || (size_t)written >= output_size - offset) {
+output[output_size - 1] = '\0';
+return;
+}
+offset += (size_t)written;
+
+for (i = 0; i < rank; ++i) {
+written = snprintf(
+output + offset,
+output_size - offset,
+"%s%lld",
+i == 0 ? "" : ", ",
+(long long)dims[i]
+);
+if (written < 0 || (size_t)written >= output_size - offset) {
+output[output_size - 1] = '\0';
+return;
+}
+offset += (size_t)written;
+}
+
+(void)snprintf(output + offset, output_size - offset, "]");
 }
 
 static EmbeddingErrorCode embedding_inspect_onnx_value(
@@ -952,17 +974,20 @@ static EmbeddingErrorCode embedding_inspect_onnx_value(
 		}
 	}
 
-	fprintf(
-		stderr,
-		"[kvlite][embedding][onnx] %s[%zu] name=%s type=%s(%d) shape=",
-		kind,
-		index,
-		name ? name : "",
-		embedding_onnx_element_type_name(element_type),
-		(int)element_type
-	);
-	embedding_print_shape(dims, rank);
-	fprintf(stderr, "\n");
+if (kvs_log_get_level() >= KVS_LOG_LEVEL_DEBUG) {
+char shape[256];
+embedding_format_shape(shape, sizeof(shape), dims, rank);
+KVS_LOG_DEBUG(
+"embedding",
+"ONNX %s[%zu] name=%s type=%s(%d) shape=%s",
+kind,
+index,
+name ? name : "",
+embedding_onnx_element_type_name(element_type),
+(int)element_type,
+shape
+);
+}
 
 cleanup:
 	free(dims);
@@ -1008,9 +1033,9 @@ static EmbeddingErrorCode embedding_inspect_onnx_model(
 		);
 	}
 
-	fprintf(
-		stderr,
-		"[kvlite][embedding][onnx] model=%s inputs=%zu\n",
+KVS_LOG_DEBUG(
+"embedding",
+"ONNX model=%s inputs=%zu",
 		handle->model_path,
 		input_count
 	);
@@ -1034,9 +1059,9 @@ static EmbeddingErrorCode embedding_inspect_onnx_model(
 		);
 	}
 
-	fprintf(
-		stderr,
-		"[kvlite][embedding][onnx] model=%s outputs=%zu\n",
+KVS_LOG_DEBUG(
+"embedding",
+"ONNX model=%s outputs=%zu",
 		handle->model_path,
 		output_count
 	);
@@ -1768,9 +1793,9 @@ EmbeddingErrorCode embedding_create(
 		goto fail_model_load;
 	}
 
-	fprintf(
-		stderr,
-		"[kvlite][embedding][onnx] ort config: intra_threads=%d inter_threads=%d graph_opt=%s execution_mode=%s\n",
+KVS_LOG_DEBUG(
+"embedding",
+"ONNX config: intra_threads=%d inter_threads=%d graph_opt=%s execution_mode=%s",
 		created->num_threads,
 		g_cfg.embedding_inter_threads,
 		g_cfg.embedding_ort_graph_opt_level,
@@ -1810,7 +1835,7 @@ EmbeddingErrorCode embedding_create(
 			created->model_output_dim,
 			created->embedding_dim
 		);
-		fprintf(stderr, "[kvlite][embedding][onnx] %s\n", created->last_error);
+KVS_LOG_ERROR("embedding", "%s", created->last_error);
 		inspect_result = EMBEDDING_ERR_DIM_MISMATCH;
 		goto fail_inspect;
 	}

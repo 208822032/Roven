@@ -51,8 +51,8 @@ struct config_t {
 // kprobe 入口缓存：避免 tcp_recvmsg 返回时 iov_iter 被推进导致拿不到原始 base
 struct recv_args_t {
     struct sock* sk;
-    void* base;    // iov[0].iov_base (user pointer)
-    __u64 seg_len; // iov[0].iov_len
+    void* base;    // first user segment base
+    __u64 seg_len; // first user segment length
 };
 
 struct {
@@ -99,8 +99,8 @@ int BPF_KPROBE(kprobe_tcp_recvmsg, struct sock *sk, struct msghdr *msg, size_t l
     if (bpf_core_read(&iter, sizeof(iter), &msg->msg_iter) < 0)
         return 0;
 
-    struct iovec *iov = NULL;
-    if (bpf_core_read(&iov, sizeof(iov), &iter.iov) < 0 || !iov)
+    __u8 iter_type = 0;
+    if (bpf_core_read(&iter_type, sizeof(iter_type), &iter.iter_type) < 0)
         return 0;
 
     __u64 off64 = 0;
@@ -110,8 +110,21 @@ int BPF_KPROBE(kprobe_tcp_recvmsg, struct sock *sk, struct msghdr *msg, size_t l
     if (off64 != 0) return 0;
 
     struct iovec seg0 = {};
-    if (bpf_core_read(&seg0, sizeof(seg0), &iov[0]) < 0)
+    if (iter_type == ITER_UBUF) {
+        /* Linux 6.8 stores a single user buffer inline in the iterator. */
+        if (bpf_core_read(&seg0, sizeof(seg0), &iter.__ubuf_iovec) < 0)
+            return 0;
+    } else if (iter_type == ITER_IOVEC) {
+        /* The vector pointer is named __iov in current kernel BTF. */
+        const struct iovec *iov = NULL;
+        if (bpf_core_read(&iov, sizeof(iov), &iter.__iov) < 0 || !iov)
+            return 0;
+        if (bpf_core_read(&seg0, sizeof(seg0), &iov[0]) < 0)
+            return 0;
+    } else {
+        /* Only user-backed receive buffers are safe for bpf_probe_read_user. */
         return 0;
+    }
 
     void *base = NULL;
     __u64 seg_len64 = 0;
