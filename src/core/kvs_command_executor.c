@@ -2298,7 +2298,14 @@ static void kvs_command_executor_execute_repl(kvs_replicated_command_task_t *tas
 	ret = kvs_command_executor_apply_repl_store(task);
 	kvs_owner_rwlock_unlock(&g_kv_data_rwlock, "executor.replicated.write");
 
-	if (ret == 0) {
+	/*
+	 * Storage SET/MOD APIs use a non-negative result to indicate success:
+	 * zero means a new entry was inserted and one means an existing entry
+	 * was updated in place. Replicated apply must preserve that contract;
+	 * treating only zero as success makes a valid overwrite look like a
+	 * failed replication and inflates repl_task_failed.
+	 */
+	if (ret >= 0) {
 #if ENABLE_AOF
 		if (!aof_is_loading()) {
 			kvs_command_executor_repl_append_aof(task);

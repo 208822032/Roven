@@ -98,7 +98,5 @@ git_iteration_data/
 .codex/
 
 # Benchmark results and generated outputs
-/results/
 /output/
 
-/result/
