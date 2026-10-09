@@ -96,3 +96,9 @@ git_iteration_data/
 .claude/
 .agents/
 .codex/
+
+# Benchmark results and generated outputs
+/results/
+/output/
+
+/result/
