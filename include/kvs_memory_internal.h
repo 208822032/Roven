@@ -32,12 +32,14 @@ typedef struct large_block_record {
 typedef struct mem_block_header {
     mem_pool_t *pool;
     size_t block_size;
+    size_t requested_size;
     unsigned char is_large;
+    unsigned char is_allocated;
     large_block_record_t *large_record;
 } mem_block_header_t;
 
 typedef struct {
-    mem_pool_t* pools;
+    mem_pool_t* pools[13];
     size_t pool_sizes[13];
     size_t large_threshold;
     int is_initialized;

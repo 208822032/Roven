@@ -8,6 +8,11 @@
 #include <sys/time.h>
 
 #include "kvstore.h"  // kvs_malloc/kvs_free & mem_init/mem_destroy
+#include "jemalloc_wrapper.h"
+
+extern void mem_set_jemalloc_funcs(void *(*fn_alloc)(size_t),
+                                   void (*fn_free)(void *),
+                                   void *(*fn_realloc)(void *, size_t));
 
 #define ALLOC_TIMES      200000
 #define SMALL_SIZE       24
@@ -285,14 +290,24 @@ static void custom_pattern_qps_vm(const char *tag, size_t size, int n)
 
 int main(int argc, char **argv)
 {
-    // 仅测试内存分配：显式选择内存池后端并初始化
+    // Compare the same workload with an explicitly selected allocator backend.
     printf("mempool_test: ALLOC_TIMES=%d\n", ALLOC_TIMES);
 
-    // 为 mem_init 提供最小 g_cfg，并强制使用内存池后端
     extern kvs_config_t g_cfg;
     memset(&g_cfg, 0, sizeof(g_cfg));
-    //KVS_MEM_BACKEND_POOL||KVS_MEM_BACKEND_SYSTEM||KVS_MEM_BACKEND_JEMALLOC
-    g_cfg.mem_backend = KVS_MEM_BACKEND_JEMALLOC;
+    const char *backend_arg = argc > 1 ? argv[1] : "jemalloc";
+    if (strcmp(backend_arg, "pool") == 0) {
+        g_cfg.mem_backend = KVS_MEM_BACKEND_POOL;
+    } else if (strcmp(backend_arg, "system") == 0) {
+        g_cfg.mem_backend = KVS_MEM_BACKEND_SYSTEM;
+    } else if (strcmp(backend_arg, "jemalloc") == 0) {
+        g_cfg.mem_backend = KVS_MEM_BACKEND_JEMALLOC;
+        mem_set_jemalloc_funcs(jemalloc_alloc_impl, jemalloc_free_impl,
+                               jemalloc_realloc_impl);
+    } else {
+        fprintf(stderr, "usage: %s [pool|system|jemalloc]\n", argv[0]);
+        return 2;
+    }
 
     // 初始化汇总结构中的 backend 名称
     switch (g_cfg.mem_backend) {

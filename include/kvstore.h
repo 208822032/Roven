@@ -432,7 +432,9 @@ typedef struct large_block_record {
 typedef struct mem_block_header {
     mem_pool_t *pool;       // 所属内存池
     size_t block_size;      // 实际块大小
+    size_t requested_size;  // 用户申请大小
     unsigned char is_large; // 是否为大内存
+    unsigned char is_allocated; // 当前是否处于分配状态
 	// struct mem_block_header *next_large; // 大内存块链表指针
 	large_block_record_t *large_record; //指向大内存记录
 } mem_block_header_t;
@@ -440,7 +442,7 @@ typedef struct mem_block_header {
 
 // 内存池全局管理结构
 typedef struct {
-    mem_pool_t* pools;      // 不同大小的内存池链表
+    mem_pool_t* pools[13];  // 按 Size Class 升序排列的内存池
     size_t pool_sizes[13];   // 预定义的内存块大小
     size_t large_threshold; // 大内存阈值
 	int is_initialized;           // 内存池是否已初始化

@@ -30,6 +30,10 @@ static void *(*jemalloc_alloc_impl)(size_t) = NULL;
 static void (*jemalloc_free_impl)(void *) = NULL;
 static void *(*jemalloc_realloc_impl)(void *, size_t) = NULL;
 
+static int jemalloc_callbacks_complete(void) {
+    return jemalloc_alloc_impl && jemalloc_free_impl && jemalloc_realloc_impl;
+}
+
 void mem_set_backend(kvs_mem_backend_t backend) {
     g_mem_backend = backend;
 }
@@ -57,7 +61,6 @@ void mem_init() {
     // 初始化内存池配置（即使当前不选择 pool，也先准备好，方便后续切换或测试）
     size_t sizes[] = {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024};
     g_mem_manager = (mem_manager_t){
-        .pools = NULL,
         .pool_sizes = {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024},
         .large_threshold = 1024,
         .is_initialized = 1  // 标记为已初始化
@@ -80,11 +83,11 @@ void mem_init() {
             .block_size = g_mem_manager.pool_sizes[i],
             .free_count = 0,
             .free_list = NULL,
-            .next = g_mem_manager.pools,
+            .next = NULL,
             .chunks = NULL //初始化大块内存链表
         };
         pthread_mutex_init(&pool->lock, NULL);
-        g_mem_manager.pools = pool;
+        g_mem_manager.pools[i] = pool;
     }
 }
 
@@ -173,16 +176,10 @@ void* mem_alloc(size_t size) {
         return p;
     }
     case KVS_MEM_BACKEND_JEMALLOC:
-        if (jemalloc_alloc_impl) {
-            void *p = jemalloc_alloc_impl(size);
-            if (p) ;
-            return p;
+        if (jemalloc_callbacks_complete()) {
+            return jemalloc_alloc_impl(size);
         }
-        {
-            void *p = malloc(size);
-            if (p) ;
-            return p;
-        }
+        return malloc(size);
     case KVS_MEM_BACKEND_POOL:
     default:
         break;
@@ -197,8 +194,8 @@ void* mem_alloc(size_t size) {
     
     
     // 寻找合适的内存池
-    mem_pool_t* pool = g_mem_manager.pools;
-    while (pool) {
+    for (int i = 0; i < 13; i++) {
+        mem_pool_t* pool = g_mem_manager.pools[i];
         if (aligned_size <= pool->block_size) {
             pthread_mutex_lock(&pool->lock);
             if (pool->free_list) {
@@ -206,6 +203,10 @@ void* mem_alloc(size_t size) {
                 mem_block_t* block = pool->free_list;
                 pool->free_list = block->next;
                 pool->free_count--;
+                mem_block_header_t *header = (mem_block_header_t *)
+                    ((char *)block - sizeof(mem_block_header_t));
+                header->requested_size = size;
+                header->is_allocated = 1;
                 pthread_mutex_unlock(&pool->lock);
                 return block;
             } else {
@@ -235,7 +236,9 @@ void* mem_alloc(size_t size) {
                     mem_block_header_t *header = (mem_block_header_t*)p;
                     header->pool = pool;
                     header->block_size = pool->block_size;
+                    header->requested_size = 0;
                     header->is_large = 0;
+                    header->is_allocated = 0;
                     header->large_record = NULL; // 不是大内存
                     
                     // 数据区地址
@@ -267,7 +270,6 @@ void* mem_alloc(size_t size) {
                 return mem_alloc(size); // 递归调用获取内存
             }
         }
-        pool = pool->next;
     }
     
     // 大内存块分配
@@ -277,7 +279,9 @@ void* mem_alloc(size_t size) {
     
     header->pool = NULL;
     header->block_size = aligned_size;
+    header->requested_size = size;
     header->is_large = 1;
+    header->is_allocated = 1;
 
     //创建大内存记录
     large_block_record_t *record = malloc(sizeof(large_block_record_t));
@@ -321,8 +325,7 @@ void mem_free(void* ptr) {
         free(ptr);
         return;
     case KVS_MEM_BACKEND_JEMALLOC:
-        // fprintf(stderr, "[MEM] jemalloc free %p\n", ptr);
-        if (jemalloc_free_impl) {
+        if (jemalloc_callbacks_complete()) {
             jemalloc_free_impl(ptr);
             return;
         }
@@ -392,6 +395,13 @@ void mem_free(void* ptr) {
     mem_pool_t *pool = header->pool;
     if (pool) {
         pthread_mutex_lock(&pool->lock);
+        if (!header->is_allocated) {
+            pthread_mutex_unlock(&pool->lock);
+            KVS_LOG_ERROR("mempool", "double free ignored: ptr=%p", ptr);
+            return;
+        }
+        header->is_allocated = 0;
+        header->requested_size = 0;
         mem_block_t *block = (mem_block_t*)ptr;
         block->next = pool->free_list;
         pool->free_list = block;
@@ -423,17 +433,17 @@ void mem_destroy() {
     pthread_mutex_unlock(&g_mem_manager.large_blocks_lock);
     
     // 释放所有内存池
-    mem_pool_t* pool = g_mem_manager.pools;
-    while (pool) {
+    for (int i = 0; i < 13; i++) {
+        mem_pool_t* pool = g_mem_manager.pools[i];
         //释放前先获取锁 确保没有其他线程正在使用
         pthread_mutex_lock(&pool->lock);
-        mem_pool_t *next_pool = pool->next;
 
         //释放内存池中所有的块
         mem_chunk_t *chunk = pool->chunks;
         while(chunk){
             mem_chunk_t *next_chunk = chunk->next;
             free(chunk->chunk);//释放大块内存
+            free(chunk);
             chunk = next_chunk;
         }
         pool->chunks = NULL;
@@ -445,11 +455,8 @@ void mem_destroy() {
         pthread_mutex_unlock(&pool->lock);
         pthread_mutex_destroy(&pool->lock);
         free(pool);
-        pool = next_pool;
+        g_mem_manager.pools[i] = NULL;
     }
-
-    
-    g_mem_manager.pools = NULL;
 
     // 新增：重置初始化标志
     g_mem_manager.is_initialized = 0;
@@ -460,40 +467,25 @@ void mem_destroy() {
 
 //重新分配
 void* mem_realloc(void *ptr, size_t new_size){
-    if(!ptr){
-        //如果原指针为空 等同于分配新内存
-        switch (g_mem_backend) {
-        case KVS_MEM_BACKEND_SYSTEM:
-            return malloc(new_size);
-        case KVS_MEM_BACKEND_JEMALLOC:
-            if (jemalloc_free_impl) {
-                return jemalloc_alloc_impl(new_size);
-            }
-            return malloc(new_size);
-        case KVS_MEM_BACKEND_POOL:
-            return mem_alloc(new_size);
-        }     
+    if (new_size == 0) {
+        if (ptr) mem_free(ptr);
+        return NULL;
     }
 
-
-    if(new_size == 0){
-        //等于释放内存
-        switch (g_mem_backend) {
-        case KVS_MEM_BACKEND_SYSTEM:
-            free(ptr);
-            return NULL;
-        case KVS_MEM_BACKEND_JEMALLOC:
-            if (jemalloc_free_impl) {
-                jemalloc_free_impl(ptr);
-                return NULL;
-            }
-            free(ptr);
-            return NULL;
-        case KVS_MEM_BACKEND_POOL:
-            mem_free(ptr);
-            return NULL;
+    switch (g_mem_backend) {
+    case KVS_MEM_BACKEND_SYSTEM:
+        return realloc(ptr, new_size);
+    case KVS_MEM_BACKEND_JEMALLOC:
+        if (jemalloc_callbacks_complete()) {
+            return jemalloc_realloc_impl(ptr, new_size);
         }
+        return realloc(ptr, new_size);
+    case KVS_MEM_BACKEND_POOL:
+    default:
+        break;
     }
+
+    if (!ptr) return mem_alloc(new_size);
 
     //获取内存块头部
     mem_block_header_t *old_header = (mem_block_header_t *)((char *)ptr - sizeof(mem_block_header_t));
@@ -501,26 +493,53 @@ void* mem_realloc(void *ptr, size_t new_size){
     //对齐新大小
     size_t aligend_new_size = ALIGN_SIZE(new_size);
 
-    //检查是否可以在原内存块中容纳新大小
-    if(aligend_new_size <= old_header->block_size){
-        //新大小小于或等于原块大小 无需重新分配
+    mem_pool_t *old_pool = old_header->pool;
+    if (old_pool) {
+        pthread_mutex_lock(&old_pool->lock);
+        if (!old_header->is_allocated) {
+            pthread_mutex_unlock(&old_pool->lock);
+            return NULL;
+        }
+        size_t old_requested_size = old_header->requested_size;
+
+        // 原块容量足够时保留地址，同时更新用户申请长度。
+        if (aligend_new_size <= old_header->block_size) {
+            old_header->requested_size = new_size;
+            pthread_mutex_unlock(&old_pool->lock);
+            return ptr;
+        }
+        pthread_mutex_unlock(&old_pool->lock);
+
+        void *new_ptr = mem_alloc(new_size);
+        if (!new_ptr) return NULL;
+        size_t copy_size = old_requested_size < new_size ? old_requested_size : new_size;
+        memcpy(new_ptr, ptr, copy_size);
+        mem_free(ptr);
+        return new_ptr;
+    }
+
+    // 大块由 manager 的登记链表管理，按 requested_size 拷贝。
+    if (!old_header->is_large || !old_header->large_record) {
+        return NULL;
+    }
+    pthread_mutex_lock(&g_mem_manager.large_blocks_lock);
+    large_block_record_t *record = old_header->large_record;
+    if (record->block != old_header || !old_header->is_allocated) {
+        pthread_mutex_unlock(&g_mem_manager.large_blocks_lock);
+        return NULL;
+    }
+    size_t old_requested_size = old_header->requested_size;
+    if (aligend_new_size <= old_header->block_size) {
+        old_header->requested_size = new_size;
+        pthread_mutex_unlock(&g_mem_manager.large_blocks_lock);
         return ptr;
     }
+    pthread_mutex_unlock(&g_mem_manager.large_blocks_lock);
 
-    //若需要重新分配更大的内存块
     void *new_ptr = mem_alloc(new_size);
-    if(!new_ptr){
-        return NULL;//分配失败
-    }
-
-    //计算需要复制的数据量 原块大小和新大小 的较小值
-    size_t copy_size = old_header->block_size < new_size ? old_header->block_size : new_size;
-
-    //复制数据
+    if (!new_ptr) return NULL;
+    size_t copy_size = old_requested_size < new_size ? old_requested_size : new_size;
     memcpy(new_ptr, ptr, copy_size);
-
-    //释放原内存
     mem_free(ptr);
-
     return new_ptr;
 }
